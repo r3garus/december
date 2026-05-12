@@ -105,6 +105,33 @@ function buildMessageContent(
   return content;
 }
 
+function extractResponseText(resp: any): string {
+  if (typeof resp?.output_text === "string" && resp.output_text.trim()) {
+    return resp.output_text;
+  }
+
+  const parts: string[] = [];
+  for (const item of resp?.output || []) {
+    for (const c of item?.content || []) {
+      if (typeof c?.text === "string") parts.push(c.text);
+      if (typeof c?.output_text === "string") parts.push(c.output_text);
+      if (typeof c?.value === "string") parts.push(c.value);
+    }
+  }
+
+  const out = parts.join("").trim();
+  return out || "Sorry, I could not generate a response.";
+}
+
+function buildFlattenedInput(messages: Array<{ role: string; content: any }>): string {
+  return messages
+    .map((m) => {
+      const c = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
+      return `${m.role.toUpperCase()}:\n${c}`;
+    })
+    .join("\n\n");
+}
+
 export async function sendMessage(
   containerId: string,
   userMessage: string,
@@ -145,16 +172,16 @@ ${codeContext}`;
     })),
   ];
 
-  const completion = await openai.chat.completions.create({
+  const flattenedInput = buildFlattenedInput(openaiMessages);
+
+  const response = await openai.responses.create({
     model: config.aiSdk.model,
-    messages: openaiMessages,
+    input: flattenedInput,
     //@ts-ignore
     temperature: config.aiSdk.temperature,
   });
 
-  const assistantContent =
-    completion.choices[0]?.message?.content ||
-    "Sorry, I could not generate a response.";
+  const assistantContent = extractResponseText(response);
 
   const assistantMsg: Message = {
     id: `assistant-${Date.now()}`,
@@ -177,78 +204,13 @@ export async function* sendMessageStream(
   userMessage: string,
   attachments: Attachment[] = []
 ): AsyncGenerator<{ type: "user" | "assistant" | "done"; data: any }> {
-  const session = getOrCreateChatSession(containerId);
-
-  const userMsg: Message = {
-    id: `user-${Date.now()}`,
-    role: "user",
-    content: userMessage,
-    timestamp: new Date().toISOString(),
-    attachments: attachments.length > 0 ? attachments : undefined,
-  };
-
-  session.messages.push(userMsg);
-  yield { type: "user", data: userMsg };
-
-  const fileContentTree = await fileService.getFileContentTree(
-    dockerService.docker,
-    containerId
+  const { userMessage: userMsg, assistantMessage } = await sendMessage(
+    containerId,
+    userMessage,
+    attachments
   );
 
-  const codeContext = JSON.stringify(fileContentTree, null, 2);
-
-  const systemPrompt = `${prompt}
-
-Current codebase structure and content:
-${codeContext}`;
-
-  const openaiMessages = [
-    { role: "system" as const, content: systemPrompt },
-    ...session.messages.map((msg) => ({
-      role: msg.role as "user" | "assistant",
-      content:
-        msg.role === "user" && msg.attachments
-          ? buildMessageContent(msg.content, msg.attachments)
-          : msg.content,
-    })),
-  ];
-
-  const assistantId = `assistant-${Date.now()}`;
-  let assistantContent = "";
-
-  const stream = await openai.chat.completions.create({
-    model: config.aiSdk.model,
-    messages: openaiMessages,
-    //@ts-ignore
-    temperature: config.aiSdk.temperature,
-    stream: true,
-  });
-
-  for await (const chunk of stream) {
-    const delta = chunk.choices[0]?.delta;
-    if (delta?.content) {
-      assistantContent += delta.content;
-      yield {
-        type: "assistant",
-        data: {
-          id: assistantId,
-          role: "assistant",
-          content: assistantContent,
-          timestamp: new Date().toISOString(),
-        },
-      };
-    }
-  }
-
-  const finalAssistantMsg: Message = {
-    id: assistantId,
-    role: "assistant",
-    content: assistantContent,
-    timestamp: new Date().toISOString(),
-  };
-
-  session.messages.push(finalAssistantMsg);
-  session.updatedAt = new Date().toISOString();
-
-  yield { type: "done", data: finalAssistantMsg };
+  yield { type: "user", data: userMsg };
+  yield { type: "assistant", data: assistantMessage };
+  yield { type: "done", data: assistantMessage };
 }
