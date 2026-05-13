@@ -6,6 +6,7 @@ import * as fileService from "../services/file";
 import * as packageService from "../services/package";
 
 const router = express.Router();
+const previewBase = process.env.PREVIEW_BASE_URL || "http://localhost";
 
 router.get("/", async (req, res) => {
   try {
@@ -41,7 +42,7 @@ router.post("/create", async (req, res) => {
         containerId: container.id,
         status: "running",
         port: port,
-        url: `http://localhost:${port}`,
+        url: `${previewBase}:${port}`,
         createdAt: new Date().toISOString(),
         type: "Next.js App",
       },
@@ -66,7 +67,7 @@ router.post("/:containerId/start", async (req, res) => {
       success: true,
       containerId,
       port,
-      url: `http://localhost:${port}`,
+      url: `${previewBase}:${port}`,
       status: "running",
       message: "Container started successfully",
     });
