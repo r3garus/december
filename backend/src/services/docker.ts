@@ -5,7 +5,7 @@ import path from "path";
 import { promisify } from "util";
 
 const execAsync = promisify(exec);
-const docker = new Docker();
+const docker = new Docker({ socketPath: "/var/run/docker.sock" });
 const BASE_PORT = 8000;
 
 const usedPorts = new Set<number>();
