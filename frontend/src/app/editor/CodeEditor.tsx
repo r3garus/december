@@ -44,7 +44,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ containerId }) => {
       try {
         setIsLoading(true);
         const response = await fetch(
-          `http://localhost:4000/containers/${containerId}/file-tree`
+          `http://https://api.meshfirestudios.com/containers/${containerId}/file-tree`
         );
 
         if (!response.ok) {
@@ -188,7 +188,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ containerId }) => {
   const loadFileContent = async (file: File) => {
     try {
       const response = await fetch(
-        `http://localhost:4000/containers/${containerId}/file?path=${encodeURIComponent(
+        `http://https://api.meshfirestudios.com/containers/${containerId}/file?path=${encodeURIComponent(
           file.path || file.id
         )}`
       );
@@ -257,7 +257,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ containerId }) => {
 
     try {
       const response = await fetch(
-        `http://localhost:4000/containers/${containerId}/files`,
+        `http://https://api.meshfirestudios.com/containers/${containerId}/files`,
         {
           method: "PUT",
           headers: {
