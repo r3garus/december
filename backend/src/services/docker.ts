@@ -6,7 +6,7 @@ import { promisify } from "util";
 
 const execAsync = promisify(exec);
 const docker = new Docker({ socketPath: "/var/run/docker.sock" });
-const BASE_PORT = 8000;
+const BASE_PORT = 8100;
 
 const usedPorts = new Set<number>();
 
@@ -248,7 +248,9 @@ export async function listProjectContainers(): Promise<any[]> {
       image: container.Image,
       created: new Date(container.Created * 1000).toISOString(),
       assignedPort,
-      url: assignedPort ? `http://localhost:${assignedPort}` : null,
+url: assignedPort
+  ? `${process.env.PREVIEW_BASE_URL || "http://localhost"}:${assignedPort}`
+  : null,
       ports:
         container.Ports?.map((port) => ({
           private: port.PrivatePort,
