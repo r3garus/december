@@ -35,9 +35,156 @@ export interface ChatSession {
 
 const chatSessions = new Map<string, ChatSession>();
 
-export async function createChatSession(
-  containerId: string
-): Promise<ChatSession> {
+const PLANNER_SYSTEM_PROMPT = `
+You are a senior product strategist for a coding agent.
+Given a user's request, produce an implementation brief that is practical and specific.
+Return concise plain text with these sections:
+1) Goal
+2) Audience
+3) UI/UX Direction
+4) Required Pages/Sections
+5) Technical Plan
+6) Acceptance Checklist
+
+Important:
+- If request is short, infer missing details professionally.
+- Prefer high-quality modern UI and responsive behavior.
+- Keep output actionable for coding.
+`;
+
+const BUILDER_SYSTEM_PROMPT = `
+You are a senior full-stack engineer and frontend architect.
+Implement with production-minded quality:
+- responsive layouts
+- semantic HTML
+- maintainable code structure
+- clear UX hierarchy
+- avoid generic repetitive template output
+
+Follow project constraints and keep changes coherent.
+`;
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withRetries<T>(fn: () => Promise<T>, retries: number): Promise<T> {
+  let lastError: unknown;
+
+  for (let i = 0; i <= retries; i++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      if (i < retries) {
+        await sleep(500 * (i + 1));
+      }
+    }
+  }
+
+  throw lastError;
+}
+
+function clipText(input: string, maxLength: number): string {
+  if (input.length <= maxLength) return input;
+  return `${input.slice(0, maxLength)}\n\n[TRUNCATED_FOR_CONTEXT]`;
+}
+
+function buildMessageContent(message: string, attachments: Attachment[] = []): any[] {
+  const content: any[] = [{ type: "text", text: message }];
+
+  for (const attachment of attachments) {
+    if (attachment.type === "image") {
+      content.push({
+        type: "image_url",
+        image_url: {
+          url: `data:${attachment.mimeType};base64,${attachment.data}`,
+        },
+      });
+    } else if (attachment.type === "document") {
+      const decodedText = Buffer.from(attachment.data, "base64").toString("utf-8");
+      content.push({
+        type: "text",
+        text: `\n\nDocument "${attachment.name}" content:\n${decodedText}`,
+      });
+    }
+  }
+
+  return content;
+}
+
+function extractResponseText(resp: any): string {
+  if (typeof resp?.output_text === "string" && resp.output_text.trim()) {
+    return resp.output_text;
+  }
+
+  const parts: string[] = [];
+  for (const item of resp?.output || []) {
+    for (const c of item?.content || []) {
+      if (typeof c?.text === "string") parts.push(c.text);
+      if (typeof c?.output_text === "string") parts.push(c.output_text);
+      if (typeof c?.value === "string") parts.push(c.value);
+    }
+  }
+
+  const out = parts.join("").trim();
+  return out || "Sorry, I could not generate a response.";
+}
+
+function buildFlattenedInput(messages: Array<{ role: string; content: any }>): string {
+  return messages
+    .map((m) => {
+      const c = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
+      return `${m.role.toUpperCase()}:\n${c}`;
+    })
+    .join("\n\n");
+}
+
+async function createPlannerBrief(
+  userMessage: string,
+  recentConversation: string
+): Promise<string> {
+  const plannerInput = `
+SYSTEM:
+${PLANNER_SYSTEM_PROMPT}
+
+RECENT CONVERSATION:
+${recentConversation || "No prior conversation."}
+
+USER REQUEST:
+${userMessage}
+`;
+
+  const plannerResponse = await withRetries(
+    () =>
+      openai.responses.create({
+        model: config.aiSdk.model,
+        input: plannerInput,
+        // @ts-ignore
+        temperature: Math.min(config.aiSdk.temperature, 0.2),
+      }),
+    config.aiSdk.maxRetries
+  );
+
+  return extractResponseText(plannerResponse);
+}
+
+async function createBuilderResponse(input: string): Promise<string> {
+  const response = await withRetries(
+    () =>
+      openai.responses.create({
+        model: config.aiSdk.model,
+        input,
+        // @ts-ignore
+        temperature: config.aiSdk.temperature,
+      }),
+    config.aiSdk.maxRetries
+  );
+
+  return extractResponseText(response);
+}
+
+export async function createChatSession(containerId: string): Promise<ChatSession> {
   const sessionId = `${containerId}-${Date.now()}`;
   const session: ChatSession = {
     id: sessionId,
@@ -77,61 +224,6 @@ export function getOrCreateChatSession(containerId: string): ChatSession {
   return session;
 }
 
-function buildMessageContent(
-  message: string,
-  attachments: Attachment[] = []
-): any[] {
-  const content: any[] = [{ type: "text", text: message }];
-
-  for (const attachment of attachments) {
-    if (attachment.type === "image") {
-      content.push({
-        type: "image_url",
-        image_url: {
-          url: `data:${attachment.mimeType};base64,${attachment.data}`,
-        },
-      });
-    } else if (attachment.type === "document") {
-      const decodedText = Buffer.from(attachment.data, "base64").toString(
-        "utf-8"
-      );
-      content.push({
-        type: "text",
-        text: `\n\nDocument "${attachment.name}" content:\n${decodedText}`,
-      });
-    }
-  }
-
-  return content;
-}
-
-function extractResponseText(resp: any): string {
-  if (typeof resp?.output_text === "string" && resp.output_text.trim()) {
-    return resp.output_text;
-  }
-
-  const parts: string[] = [];
-  for (const item of resp?.output || []) {
-    for (const c of item?.content || []) {
-      if (typeof c?.text === "string") parts.push(c.text);
-      if (typeof c?.output_text === "string") parts.push(c.output_text);
-      if (typeof c?.value === "string") parts.push(c.value);
-    }
-  }
-
-  const out = parts.join("").trim();
-  return out || "Sorry, I could not generate a response.";
-}
-
-function buildFlattenedInput(messages: Array<{ role: string; content: any }>): string {
-  return messages
-    .map((m) => {
-      const c = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
-      return `${m.role.toUpperCase()}:\n${c}`;
-    })
-    .join("\n\n");
-}
-
 export async function sendMessage(
   containerId: string,
   userMessage: string,
@@ -154,11 +246,24 @@ export async function sendMessage(
     containerId
   );
 
-  const codeContext = JSON.stringify(fileContentTree, null, 2);
+  const rawContext = JSON.stringify(fileContentTree, null, 2);
+  const codeContext = clipText(rawContext, 120_000);
+
+  const recentMessages = session.messages
+    .slice(-8)
+    .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
+    .join("\n");
+
+  const plannerBrief = await createPlannerBrief(userMessage, recentMessages);
 
   const systemPrompt = `${prompt}
 
-Current codebase structure and content:
+${BUILDER_SYSTEM_PROMPT}
+
+PLANNER BRIEF:
+${plannerBrief}
+
+CURRENT CODEBASE SNAPSHOT:
 ${codeContext}`;
 
   const openaiMessages = [
@@ -173,15 +278,7 @@ ${codeContext}`;
   ];
 
   const flattenedInput = buildFlattenedInput(openaiMessages);
-
-  const response = await openai.responses.create({
-    model: config.aiSdk.model,
-    input: flattenedInput,
-    //@ts-ignore
-    temperature: config.aiSdk.temperature,
-  });
-
-  const assistantContent = extractResponseText(response);
+  const assistantContent = await createBuilderResponse(flattenedInput);
 
   const assistantMsg: Message = {
     id: `assistant-${Date.now()}`,
