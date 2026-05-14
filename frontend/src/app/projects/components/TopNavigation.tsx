@@ -38,7 +38,7 @@ export const TopNavigation = ({
     if (containerId) {
       const fetchContainerUrl = async () => {
         try {
-          const response = await fetch(`http://https://api.meshfirestudios.com/containers`);
+          const response = await fetch(`https://api.meshfirestudios.com/containers`);
           const data = await response.json();
           if (data.success) {
             const container = data.containers.find(

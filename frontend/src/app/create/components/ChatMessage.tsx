@@ -107,7 +107,7 @@ const parseSpecialTags = (
             } chars)`
           );
           response = await fetch(
-            `http://https://api.meshfirestudios.com/containers/${containerId}/files`,
+            `https://api.meshfirestudios.com/containers/${containerId}/files`,
             {
               method: "PUT",
               headers: { "Content-Type": "application/json" },
@@ -124,7 +124,7 @@ const parseSpecialTags = (
         case "rename":
           console.log(`[FILE OP] Renaming file: ${match[1]} → ${match[2]}`);
           response = await fetch(
-            `http://https://api.meshfirestudios.com/containers/${containerId}/files/rename`,
+            `https://api.meshfirestudios.com/containers/${containerId}/files/rename`,
             {
               method: "PUT",
               headers: { "Content-Type": "application/json" },
@@ -138,7 +138,7 @@ const parseSpecialTags = (
         case "delete":
           console.log(`[FILE OP] Deleting file: ${match[1]}`);
           response = await fetch(
-            `http://https://api.meshfirestudios.com/containers/${containerId}/files`,
+            `https://api.meshfirestudios.com/containers/${containerId}/files`,
             {
               method: "DELETE",
               headers: { "Content-Type": "application/json" },
@@ -158,7 +158,7 @@ const parseSpecialTags = (
             }`
           );
           response = await fetch(
-            `http://https://api.meshfirestudios.com/containers/${containerId}/dependencies`,
+            `https://api.meshfirestudios.com/containers/${containerId}/dependencies`,
             {
               method: "POST",
               headers: { "Content-Type": "application/json" },
