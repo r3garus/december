@@ -33,12 +33,17 @@ export interface ChatSession {
   updatedAt: string;
 }
 
+interface CriticResult {
+  score: number;
+  verdict: "PASS" | "FAIL";
+  feedback: string;
+}
+
 const chatSessions = new Map<string, ChatSession>();
 
 const PLANNER_SYSTEM_PROMPT = `
 You are a senior product strategist for a coding agent.
-Given a user's request, produce an implementation brief that is practical and specific.
-Return concise plain text with these sections:
+Given a user's request, produce an implementation brief in concise plain text with:
 1) Goal
 2) Audience
 3) UI/UX Direction
@@ -46,22 +51,40 @@ Return concise plain text with these sections:
 5) Technical Plan
 6) Acceptance Checklist
 
-Important:
-- If request is short, infer missing details professionally.
-- Prefer high-quality modern UI and responsive behavior.
-- Keep output actionable for coding.
+If request is short, infer missing details professionally.
 `;
 
 const BUILDER_SYSTEM_PROMPT = `
 You are a senior full-stack engineer and frontend architect.
-Implement with production-minded quality:
-- responsive layouts
-- semantic HTML
-- maintainable code structure
-- clear UX hierarchy
+Deliver production-minded quality:
+- responsive layout
+- semantic and accessible structure
+- maintainable code
+- strong visual hierarchy
 - avoid generic repetitive template output
+`;
 
-Follow project constraints and keep changes coherent.
+const CRITIC_SYSTEM_PROMPT = `
+You are a strict software + design quality reviewer.
+Evaluate the assistant output and return EXACTLY this format:
+
+SCORE: <0-100>
+VERDICT: <PASS or FAIL>
+FEEDBACK:
+- <short actionable point 1>
+- <short actionable point 2>
+- <short actionable point 3>
+
+Scoring criteria:
+- Implementation completeness
+- UI/UX quality and hierarchy
+- Responsiveness expectations
+- Code quality / maintainability
+- Avoidance of generic template output
+
+Rules:
+- PASS only if score >= required minimum and quality is clearly strong.
+- Keep feedback specific and actionable.
 `;
 
 function sleep(ms: number) {
@@ -70,7 +93,6 @@ function sleep(ms: number) {
 
 async function withRetries<T>(fn: () => Promise<T>, retries: number): Promise<T> {
   let lastError: unknown;
-
   for (let i = 0; i <= retries; i++) {
     try {
       return await fn();
@@ -81,7 +103,6 @@ async function withRetries<T>(fn: () => Promise<T>, retries: number): Promise<T>
       }
     }
   }
-
   throw lastError;
 }
 
@@ -140,6 +161,27 @@ function buildFlattenedInput(messages: Array<{ role: string; content: any }>): s
     .join("\n\n");
 }
 
+function parseCriticResult(text: string): CriticResult {
+  const scoreMatch = text.match(/SCORE:\s*(\d{1,3})/i);
+  const verdictMatch = text.match(/VERDICT:\s*(PASS|FAIL)/i);
+
+  const score = scoreMatch ? Number(scoreMatch[1]) : 0;
+  const verdictRaw = verdictMatch ? verdictMatch[1].toUpperCase() : "FAIL";
+  const verdict: "PASS" | "FAIL" = verdictRaw === "PASS" ? "PASS" : "FAIL";
+
+  let feedback = text;
+  const feedbackStart = text.search(/FEEDBACK:/i);
+  if (feedbackStart >= 0) {
+    feedback = text.slice(feedbackStart + "FEEDBACK:".length).trim();
+  }
+
+  return {
+    score: Number.isFinite(score) ? Math.min(Math.max(score, 0), 100) : 0,
+    verdict,
+    feedback: feedback || "- Improve overall quality and completeness.",
+  };
+}
+
 async function createPlannerBrief(
   userMessage: string,
   recentConversation: string
@@ -182,6 +224,92 @@ async function createBuilderResponse(input: string): Promise<string> {
   );
 
   return extractResponseText(response);
+}
+
+async function createCriticReview(input: string): Promise<CriticResult> {
+  const response = await withRetries(
+    () =>
+      openai.responses.create({
+        model: config.aiSdk.model,
+        input,
+        // @ts-ignore
+        temperature: 0.1,
+      }),
+    config.aiSdk.maxRetries
+  );
+
+  const text = extractResponseText(response);
+  return parseCriticResult(text);
+}
+
+async function improveWithCriticLoop(params: {
+  userMessage: string;
+  plannerBrief: string;
+  codeContext: string;
+  recentMessages: string;
+  draft: string;
+}): Promise<string> {
+  let currentDraft = params.draft;
+
+  for (let round = 1; round <= config.aiSdk.maxCriticRounds; round++) {
+    const criticInput = `
+SYSTEM:
+${CRITIC_SYSTEM_PROMPT}
+
+MINIMUM_SCORE:
+${config.aiSdk.minQualityScore}
+
+USER_REQUEST:
+${params.userMessage}
+
+PLANNER_BRIEF:
+${params.plannerBrief}
+
+RECENT_CONVERSATION:
+${params.recentMessages || "No recent conversation."}
+
+ASSISTANT_OUTPUT_TO_REVIEW:
+${currentDraft}
+`;
+
+    const critic = await createCriticReview(criticInput);
+
+    const passes =
+      critic.verdict === "PASS" && critic.score >= config.aiSdk.minQualityScore;
+
+    if (passes) {
+      return currentDraft;
+    }
+
+    const revisionInput = `
+SYSTEM:
+${prompt}
+
+${BUILDER_SYSTEM_PROMPT}
+
+You are revising a previous assistant response after strict quality review.
+Improve the response quality based on feedback while preserving user intent.
+
+USER_REQUEST:
+${params.userMessage}
+
+PLANNER_BRIEF:
+${params.plannerBrief}
+
+QUALITY_FEEDBACK:
+${critic.feedback}
+
+PREVIOUS_ASSISTANT_OUTPUT:
+${currentDraft}
+
+CURRENT_CODEBASE_SNAPSHOT:
+${params.codeContext}
+`;
+
+    currentDraft = await createBuilderResponse(revisionInput);
+  }
+
+  return currentDraft;
 }
 
 export async function createChatSession(containerId: string): Promise<ChatSession> {
@@ -278,7 +406,15 @@ ${codeContext}`;
   ];
 
   const flattenedInput = buildFlattenedInput(openaiMessages);
-  const assistantContent = await createBuilderResponse(flattenedInput);
+  let assistantContent = await createBuilderResponse(flattenedInput);
+
+  assistantContent = await improveWithCriticLoop({
+    userMessage,
+    plannerBrief,
+    codeContext: clipText(codeContext, 80_000),
+    recentMessages: clipText(recentMessages, 10_000),
+    draft: assistantContent,
+  });
 
   const assistantMsg: Message = {
     id: `assistant-${Date.now()}`,
