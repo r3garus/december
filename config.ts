@@ -1,16 +1,15 @@
-// Make sure to replace the values with your actual API key and model
-
-// USING ANTHROPIC CLAUDE SONNET 4 is strongly recommended for best results
-
 export const config = {
   aiSdk: {
-    // The base URL for the AI SDK, leave blank for e.g. openai
-    baseUrl: "https://openrouter.ai/api/v1",
-
-    // Your API key for provider, if using Ollama enter "ollama" here
-    apiKey: "sk-or-v1-824...",
-
-    // The model to use, e.g., "gpt-4", "gpt-3.5-turbo", or "ollama/llama2"
-    model: "anthropic/claude-sonnet-4",
+    baseUrl: process.env.AI_BASE_URL || "https://api.gptclubapi.xyz/openai/v1",
+    apiKey:
+      process.env.AI_API_KEY ||
+      process.env.OPENROUTER_API_KEY ||
+      process.env.OPENAI_API_KEY ||
+      "",
+    model: process.env.AI_MODEL || "gpt-5.3-codex",
+    temperature: Number(process.env.AI_TEMPERATURE || "0.15"),
+    maxRetries: Number(process.env.AI_MAX_RETRIES || "2"),
+    minQualityScore: Number(process.env.AI_MIN_QUALITY_SCORE || "80"),
+    maxCriticRounds: Number(process.env.AI_MAX_CRITIC_ROUNDS || "2"),
   },
 } as const;

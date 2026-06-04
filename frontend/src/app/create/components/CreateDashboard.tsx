@@ -139,14 +139,14 @@ The app fetches live Bitcoin price data and displays it in multiple formats - bo
   };
 
   return (
-    <div className="flex h-screen bg-gray-950 text-white">
+    <div className="flex h-[100dvh] bg-gray-950 text-white">
       <div className="flex flex-col w-full">
         <TopNavigation
           sidebarOpen={sidebarOpen}
           setSidebarOpen={setSidebarOpen}
         />
 
-        <div className="flex min-h-0 flex-1">
+        <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
           {sidebarOpen && (
             <ChatSidebar
               messages={messages}

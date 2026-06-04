@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { Toaster } from "react-hot-toast";
 import "./globals.css";
@@ -14,9 +14,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "December - Your Personal Full Stack Engineer",
+  title: "Klawpen Builder",
   description:
-    "Idea to app in seconds, with your personal full stack engineer. Build, deploy, and manage containerized applications with AI assistance.",
+    "Create, edit, preview, and export AI-generated websites from the Klawpen Builder workspace.",
   keywords: [
     "AI",
     "full stack",
@@ -26,27 +26,31 @@ export const metadata: Metadata = {
     "deployment",
     "coding assistant",
   ],
-  authors: [{ name: "December" }],
-  creator: "December",
-  publisher: "December",
+  authors: [{ name: "Klawpen" }],
+  creator: "Klawpen",
+  publisher: "Klawpen",
   openGraph: {
-    title: "December - Your Personal Full Stack Engineer",
+    title: "Klawpen Builder",
     description:
-      "Idea to app in seconds, with your personal full stack engineer",
+      "Create, edit, preview, and export AI-generated websites from the Klawpen Builder workspace.",
     type: "website",
     locale: "en_US",
   },
   twitter: {
     card: "summary_large_image",
-    title: "December - Your Personal Full Stack Engineer",
+    title: "Klawpen Builder",
     description:
-      "Idea to app in seconds, with your personal full stack engineer",
+      "Create, edit, preview, and export AI-generated websites from the Klawpen Builder workspace.",
   },
   robots: {
     index: true,
     follow: true,
   },
-  viewport: "width=device-width, initial-scale=1",
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
 };
 
 export default function RootLayout({
@@ -63,7 +67,7 @@ export default function RootLayout({
         <Toaster
           position="top-right"
           toastOptions={{
-            className: "bg-gray-800 text-white",
+            className: "motion-toast bg-gray-800 text-white",
             style: {
               fontFamily: "var(--font-geist-sans)",
               fontSize: "14px",

@@ -75,7 +75,7 @@ export const ProjectCard = ({
           <div className="relative">
             <img
               className="w-12 h-12 rounded-lg shadow-lg"
-              src="/december-logo.png"
+              src="/brand-logo-mark.png"
               alt="Project Icon"
             />
             <div
@@ -99,7 +99,7 @@ export const ProjectCard = ({
             <button
               onClick={() => setShowDeleteConfirm(true)}
               disabled={isDeleting}
-              className="p-2 text-white/40 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-all duration-200 backdrop-blur-sm border border-transparent hover:border-red-500/20"
+              className="motion-icon-interactive p-2 text-white/40 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-all duration-200 backdrop-blur-sm border border-transparent hover:border-red-500/20"
             >
               <Trash2 className="w-4 h-4" />
             </button>
@@ -143,7 +143,7 @@ export const ProjectCard = ({
             <button
               onClick={handleToggleStatus}
               disabled={isLoading}
-              className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-all duration-200 backdrop-blur-sm border ${
+              className={`motion-interactive flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-all duration-200 backdrop-blur-sm border ${
                 isRunning
                   ? "bg-red-500/10 hover:bg-red-500/20 text-red-300 border-red-500/20 hover:border-red-400/30"
                   : "bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border-emerald-500/20 hover:border-emerald-400/30"
@@ -164,7 +164,7 @@ export const ProjectCard = ({
             {isRunning && (
               <a
                 href={`/projects/${container.id}`}
-                className="flex items-center gap-2 px-3 py-2 bg-white/10 hover:bg-white/15 text-white border border-white/20 hover:border-white/30 rounded-lg text-xs font-medium transition-all duration-200 backdrop-blur-sm hover:scale-105"
+                className="motion-interactive flex items-center gap-2 px-3 py-2 bg-white/10 hover:bg-white/15 text-white border border-white/20 hover:border-white/30 rounded-lg text-xs font-medium transition-all duration-200 backdrop-blur-sm hover:scale-105"
               >
                 <Code className="w-3.5 h-3.5" />
                 Open
@@ -177,7 +177,7 @@ export const ProjectCard = ({
               href={container.url}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex items-center gap-2 px-3 py-2 text-xs font-medium text-white/70 hover:text-white bg-black/20 hover:bg-black/30 rounded-lg transition-all duration-200 backdrop-blur-sm border border-white/10 hover:border-white/20 hover:scale-105"
+              className="motion-interactive flex items-center gap-2 px-3 py-2 text-xs font-medium text-white/70 hover:text-white bg-black/20 hover:bg-black/30 rounded-lg transition-all duration-200 backdrop-blur-sm border border-white/10 hover:border-white/20 hover:scale-105"
               title="Open in new tab"
             >
               <ExternalLink className="w-3.5 h-3.5" />
@@ -200,7 +200,7 @@ export const ProjectCard = ({
               <button
                 onClick={handleDelete}
                 disabled={isDeleting}
-                className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/30 rounded-lg text-sm font-medium transition-all duration-200"
+                className="motion-interactive flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/30 rounded-lg text-sm font-medium transition-all duration-200"
               >
                 {isDeleting ? (
                   <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin"></div>
@@ -211,7 +211,7 @@ export const ProjectCard = ({
               </button>
               <button
                 onClick={() => setShowDeleteConfirm(false)}
-                className="flex-1 px-4 py-2 bg-white/5 hover:bg-white/10 text-white/70 hover:text-white border border-white/10 rounded-lg text-sm font-medium transition-all duration-200"
+                className="motion-interactive flex-1 px-4 py-2 bg-white/5 hover:bg-white/10 text-white/70 hover:text-white border border-white/10 rounded-lg text-sm font-medium transition-all duration-200"
               >
                 Cancel
               </button>

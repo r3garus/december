@@ -1,14 +1,54 @@
-import { exec } from "child_process";
+import { execFile } from "child_process";
 import Docker from "dockerode";
 import fs from "fs/promises";
+import path from "path";
 import { promisify } from "util";
 import { v4 as uuidv4 } from "uuid";
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 const BASE_PATH = "/app/my-nextjs-app";
+const MAX_FILE_WRITE_BYTES = 10_000_000;
 
-function getAbsolutePath(filePath: string): string {
-  return filePath.startsWith("/") ? filePath : `${BASE_PATH}/${filePath}`;
+function assertSafeContainerId(containerId: string): void {
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(containerId)) {
+    throw new Error("Invalid container id");
+  }
+}
+
+function toSafeContainerPath(filePath: string = BASE_PATH): string {
+  if (typeof filePath !== "string" || filePath.includes("\0")) {
+    throw new Error("Invalid file path");
+  }
+
+  const trimmedPath = filePath.trim();
+  const normalizedPath = path.posix.normalize(
+    trimmedPath.startsWith("/")
+      ? trimmedPath
+      : path.posix.join(BASE_PATH, trimmedPath || ".")
+  );
+
+  if (
+    normalizedPath !== BASE_PATH &&
+    !normalizedPath.startsWith(`${BASE_PATH}/`)
+  ) {
+    throw new Error("File path must stay inside the project workspace");
+  }
+
+  return normalizedPath;
+}
+
+function toSafeMutablePath(filePath: string): string {
+  const safePath = toSafeContainerPath(filePath);
+
+  if (safePath === BASE_PATH) {
+    throw new Error("Refusing to modify the project root");
+  }
+
+  return safePath;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 export interface FileItem {
@@ -32,12 +72,15 @@ export async function getFileTree(
   containerId: string,
   containerPath: string = BASE_PATH
 ): Promise<FileItem[]> {
+  assertSafeContainerId(containerId);
+  const safeContainerPath = toSafeContainerPath(containerPath);
   const container = docker.getContainer(containerId);
+  const quotedPath = shellQuote(safeContainerPath);
 
   const findCommand = [
     "sh",
     "-c",
-    `find ${containerPath} \\( -name node_modules -o -name .next \\) -prune -o -type f -o -type d | grep -v -E "(node_modules|\\.next)" | sort`,
+    `find ${quotedPath} \\( -name node_modules -o -name .next \\) -prune -o -type f -o -type d | grep -v -E "(node_modules|\\.next)" | sort`,
   ];
 
   const exec = await container.exec({
@@ -59,19 +102,19 @@ export async function getFileTree(
   const paths = output
     .trim()
     .split("\n")
-    .filter((p) => p && p !== containerPath);
+    .filter((p) => p && p !== safeContainerPath);
   const fileTree: Map<string, FileItem> = new Map();
 
-  fileTree.set(containerPath, {
+  fileTree.set(safeContainerPath, {
     name: "root",
-    path: containerPath,
+    path: safeContainerPath,
     type: "directory",
     children: [],
   });
 
   for (const filePath of paths) {
     const stat = await getFileStat(container, filePath);
-    const relativePath = filePath.replace(containerPath + "/", "");
+    const relativePath = filePath.replace(safeContainerPath + "/", "");
     const parts = relativePath.split("/");
     const fileName = parts[parts.length - 1] || "";
 
@@ -88,13 +131,13 @@ export async function getFileTree(
     fileTree.set(filePath, fileItem);
 
     const parentPath = filePath.substring(0, filePath.lastIndexOf("/"));
-    const parent = fileTree.get(parentPath || containerPath);
+    const parent = fileTree.get(parentPath || safeContainerPath);
     if (parent && parent.children) {
       parent.children.push(fileItem);
     }
   }
 
-  const root = fileTree.get(containerPath);
+  const root = fileTree.get(safeContainerPath);
   return root?.children || [];
 }
 
@@ -103,12 +146,15 @@ export async function getFileContentTree(
   containerId: string,
   containerPath: string = BASE_PATH
 ): Promise<FileContentItem[]> {
+  assertSafeContainerId(containerId);
+  const safeContainerPath = toSafeContainerPath(containerPath);
   const container = docker.getContainer(containerId);
+  const quotedPath = shellQuote(safeContainerPath);
 
   const findCommand = [
     "sh",
     "-c",
-    `find ${containerPath} \\( -name node_modules -o -name .next -o -path "*/components/ui" \\) -prune -o -type f -o -type d | grep -v -E "(node_modules|\\.next|components/ui|bun\\.lock|components\\.json|next-env\\.d\\.ts|package-lock\\.json|postcss\\.config\\.mjs|favicon\\.ico|\\.gitignore)" | sort`,
+    `find ${quotedPath} \\( -name node_modules -o -name .next -o -path "*/components/ui" \\) -prune -o -type f -o -type d | grep -v -E "(node_modules|\\.next|components/ui|bun\\.lock|components\\.json|next-env\\.d\\.ts|package-lock\\.json|postcss\\.config\\.mjs|favicon\\.ico|\\.gitignore)" | sort`,
   ];
 
   const exec = await container.exec({
@@ -130,13 +176,13 @@ export async function getFileContentTree(
   const paths = output
     .trim()
     .split("\n")
-    .filter((p) => p && p !== containerPath);
+    .filter((p) => p && p !== safeContainerPath);
 
   const fileTree: Map<string, FileContentItem> = new Map();
 
-  fileTree.set(containerPath, {
+  fileTree.set(safeContainerPath, {
     name: "root",
-    path: containerPath,
+    path: safeContainerPath,
     type: "directory",
     children: [],
   });
@@ -146,7 +192,7 @@ export async function getFileContentTree(
 
   for (const filePath of paths) {
     const stat = await getFileStat(container, filePath);
-    const relativePath = filePath.replace(containerPath + "/", "");
+    const relativePath = filePath.replace(safeContainerPath + "/", "");
     const parts = relativePath.split("/");
     const fileName = parts[parts.length - 1] || "";
 
@@ -180,13 +226,13 @@ export async function getFileContentTree(
       0,
       fileItem.path.lastIndexOf("/")
     );
-    const parent = fileTree.get(parentPath || containerPath);
+    const parent = fileTree.get(parentPath || safeContainerPath);
     if (parent && parent.children) {
       parent.children.push(fileItem);
     }
   }
 
-  const root = fileTree.get(containerPath);
+  const root = fileTree.get(safeContainerPath);
   return root?.children || [];
 }
 
@@ -253,10 +299,12 @@ export async function readFile(
   containerId: string,
   filePath: string
 ): Promise<string> {
+  assertSafeContainerId(containerId);
+  const safePath = toSafeMutablePath(filePath);
   const container = docker.getContainer(containerId);
 
   const exec = await container.exec({
-    Cmd: ["sh", "-c", `cat "${filePath}" | head -c 10000000`],
+    Cmd: ["head", "-c", "10000000", safePath],
     AttachStdout: true,
     AttachStderr: true,
   });
@@ -306,9 +354,11 @@ export async function listFiles(
   containerId: string,
   containerPath: string = BASE_PATH
 ): Promise<any[]> {
+  assertSafeContainerId(containerId);
+  const safeContainerPath = toSafeContainerPath(containerPath);
   const container = docker.getContainer(containerId);
   const exec = await container.exec({
-    Cmd: ["ls", "-la", containerPath],
+    Cmd: ["ls", "-la", safeContainerPath],
     AttachStdout: true,
     AttachStderr: true,
   });
@@ -348,6 +398,13 @@ export async function writeFile(
   filePath: string,
   content: string
 ): Promise<void> {
+  assertSafeContainerId(containerId);
+  if (typeof content !== "string") {
+    throw new Error("File content must be a string");
+  }
+  if (Buffer.byteLength(content, "utf8") > MAX_FILE_WRITE_BYTES) {
+    throw new Error("File content exceeds the 10MB write limit");
+  }
   console.log(`Writing file: ${filePath} (${content.length} characters)`);
 
   const tempFile = `/tmp/file-${uuidv4()}`;
@@ -356,13 +413,15 @@ export async function writeFile(
     await fs.writeFile(tempFile, content, "utf8");
     console.log(`Temporary file created: ${tempFile}`);
 
-    const absolutePath = getAbsolutePath(filePath);
+    const absolutePath = toSafeMutablePath(filePath);
     console.log(`Target path: ${absolutePath}`);
 
     try {
-      const copyCommand = `docker cp "${tempFile}" "${containerId}:${absolutePath}"`;
-      console.log(`Executing: ${copyCommand}`);
-      const { stdout, stderr } = await execAsync(copyCommand);
+      const { stdout, stderr } = await execFileAsync("docker", [
+        "cp",
+        tempFile,
+        `${containerId}:${absolutePath}`,
+      ]);
 
       if (stderr) {
         console.log(`Copy stderr: ${stderr}`);
@@ -376,16 +435,15 @@ export async function writeFile(
       console.log("Copy failed, trying to create directory first:", copyError);
 
       const dirPath = absolutePath.substring(0, absolutePath.lastIndexOf("/"));
-      const createDirCommand = `docker exec "${containerId}" mkdir -p "${dirPath}"`;
-      console.log(`Executing: ${createDirCommand}`);
 
-      await execAsync(createDirCommand);
+      await execFileAsync("docker", ["exec", containerId, "mkdir", "-p", dirPath]);
       console.log("Directory created");
 
-      const retryCommand = `docker cp "${tempFile}" "${containerId}:${absolutePath}"`;
-      console.log(`Retrying: ${retryCommand}`);
-
-      const { stdout, stderr } = await execAsync(retryCommand);
+      const { stdout, stderr } = await execFileAsync("docker", [
+        "cp",
+        tempFile,
+        `${containerId}:${absolutePath}`,
+      ]);
       if (stderr) {
         console.log(`Retry stderr: ${stderr}`);
       }
@@ -397,8 +455,14 @@ export async function writeFile(
     }
 
     try {
-      const verifyCommand = `docker exec "${containerId}" head -n 5 "${absolutePath}"`;
-      const { stdout: verifyOutput } = await execAsync(verifyCommand);
+      const { stdout: verifyOutput } = await execFileAsync("docker", [
+        "exec",
+        containerId,
+        "head",
+        "-n",
+        "5",
+        absolutePath,
+      ]);
       console.log(`File verification (first 5 lines):\n${verifyOutput}`);
     } catch (verifyError) {
       console.log("Could not verify file content:", verifyError);
@@ -422,22 +486,27 @@ export async function renameFile(
   oldPath: string,
   newPath: string
 ): Promise<void> {
-  const absoluteOldPath = getAbsolutePath(oldPath);
-  const absoluteNewPath = getAbsolutePath(newPath);
+  assertSafeContainerId(containerId);
+  const absoluteOldPath = toSafeMutablePath(oldPath);
+  const absoluteNewPath = toSafeMutablePath(newPath);
 
   const newDir = absoluteNewPath.substring(0, absoluteNewPath.lastIndexOf("/"));
-  const createDirCommand = `docker exec "${containerId}" mkdir -p "${newDir}"`;
-  await execAsync(createDirCommand);
+  await execFileAsync("docker", ["exec", containerId, "mkdir", "-p", newDir]);
 
-  const moveCommand = `docker exec "${containerId}" mv "${absoluteOldPath}" "${absoluteNewPath}"`;
-  await execAsync(moveCommand);
+  await execFileAsync("docker", [
+    "exec",
+    containerId,
+    "mv",
+    absoluteOldPath,
+    absoluteNewPath,
+  ]);
 }
 
 export async function removeFile(
   containerId: string,
   filePath: string
 ): Promise<void> {
-  const absolutePath = getAbsolutePath(filePath);
-  const removeCommand = `docker exec "${containerId}" rm -rf "${absolutePath}"`;
-  await execAsync(removeCommand);
+  assertSafeContainerId(containerId);
+  const absolutePath = toSafeMutablePath(filePath);
+  await execFileAsync("docker", ["exec", containerId, "rm", "-rf", absolutePath]);
 }

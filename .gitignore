@@ -12,7 +12,9 @@ coverage
 
 # logs
 logs
-_.log
+*.log
+*.out.log
+*.err.log
 report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # dotenv environment variable files
@@ -29,6 +31,9 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # IntelliJ based IDEs
 .idea
+.vscode
+.vscode/
+.codex-screenshots/
 
 # Finder (MacOS) folder config
 .DS_Store
@@ -75,3 +80,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# root install artifacts created outside frontend/backend
+/package-lock.json

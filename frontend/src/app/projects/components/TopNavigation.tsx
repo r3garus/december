@@ -12,6 +12,7 @@ import {
   Smartphone,
 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { getContainers } from "@/lib/backend/api";
 
 interface TopNavigationProps {
   sidebarOpen: boolean;
@@ -38,15 +39,11 @@ export const TopNavigation = ({
     if (containerId) {
       const fetchContainerUrl = async () => {
         try {
-          const response = await fetch(`https://api.meshfirestudios.com/containers`);
-          const data = await response.json();
-          if (data.success) {
-            const container = data.containers.find(
-              (c: any) => c.id === containerId
-            );
-            if (container && container.url) {
-              setContainerUrl(container.url);
-            }
+          const containers = await getContainers();
+          const container = containers.find((c) => c.id === containerId);
+
+          if (container?.url) {
+            setContainerUrl(container.url);
           }
         } catch (error) {
           console.error("Error fetching container URL:", error);
@@ -78,7 +75,7 @@ export const TopNavigation = ({
         <div className="flex items-center gap-2">
           <button
             onClick={() => setSidebarOpen(!sidebarOpen)}
-            className="flex items-center gap-2 text-white hover:opacity-80 cursor-pointer"
+            className="motion-interactive flex items-center gap-2 text-white hover:opacity-80 cursor-pointer"
           >
             <div className="h-5 w-5 bg-gradient-to-br from-purple-500 to-blue-500 rounded"></div>
             <span className="hidden md:block font-medium">c-169675</span>
@@ -97,14 +94,14 @@ export const TopNavigation = ({
           <div className="flex items-center gap-2">
             <button
               onClick={handleRefresh}
-              className="p-1 hover:bg-gray-800 rounded cursor-pointer"
+              className="motion-icon-interactive p-1 hover:bg-gray-800 rounded cursor-pointer"
               disabled={!containerUrl}
             >
               <RefreshCw className="h-4 w-4" />
             </button>
             <button
               onClick={handleExternalLink}
-              className="p-1 hover:bg-gray-800 rounded cursor-pointer"
+              className="motion-icon-interactive p-1 hover:bg-gray-800 rounded cursor-pointer"
               disabled={!containerUrl}
             >
               <ExternalLink className="h-4 w-4" />
@@ -115,7 +112,7 @@ export const TopNavigation = ({
             {setIsDesktopView && (
               <button
                 onClick={() => setIsDesktopView(!isDesktopView)}
-                className="flex items-center gap-2 px-3 py-1 bg-gray-800/50 hover:bg-gray-700/50 rounded-lg border border-gray-700/50 backdrop-blur-sm text-gray-400 hover:text-white transition-all duration-200 cursor-pointer"
+                className="motion-interactive flex items-center gap-2 px-3 py-1 bg-gray-800/50 hover:bg-gray-700/50 rounded-lg border border-gray-700/50 backdrop-blur-sm text-gray-400 hover:text-white transition-all duration-200 cursor-pointer"
               >
                 {isDesktopView ? (
                   <Monitor className="h-4 w-4" />
@@ -162,7 +159,7 @@ export const TopNavigation = ({
           </div>
 
           <div className="flex items-center gap-2">
-            <button className="flex items-center gap-1 px-3 py-1 bg-green-600 hover:bg-green-700 rounded text-sm cursor-pointer">
+            <button className="motion-interactive flex items-center gap-1 px-3 py-1 bg-green-600 hover:bg-green-700 rounded text-sm cursor-pointer">
               <Globe className="h-4 w-4" />
               <span className="hidden xl:block">Publish</span>
             </button>

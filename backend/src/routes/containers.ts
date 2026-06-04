@@ -8,9 +8,24 @@ import * as packageService from "../services/package";
 const router = express.Router();
 const previewBase = process.env.PREVIEW_BASE_URL || "http://localhost";
 
+router.param("containerId", async (req, res, next, containerId: string) => {
+  try {
+    await dockerService.assertProjectContainer(containerId, req.account);
+    next();
+  } catch (error) {
+    res.status(404).json({
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Project container not found",
+    });
+  }
+});
+
 router.get("/", async (req, res) => {
   try {
-    const containers = await dockerService.listProjectContainers();
+    const containers = await dockerService.listProjectContainers(req.account);
 
     res.json({
       success: true,
@@ -31,7 +46,11 @@ router.post("/create", async (req, res) => {
     const imageName = await dockerService.buildImage(containerId);
     const { container, port } = await dockerService.createContainer(
       imageName,
-      containerId
+      containerId,
+      {
+        teamId: req.account!.teamId,
+        localUserId: req.account!.localUserId,
+      }
     );
 
     res.json({
@@ -61,7 +80,7 @@ router.post("/:containerId/start", async (req, res) => {
   const { containerId } = req.params;
 
   try {
-    const { port } = await dockerService.startContainer(containerId);
+    const { port } = await dockerService.startContainer(containerId, req.account);
 
     res.json({
       success: true,
@@ -83,7 +102,7 @@ router.post("/:containerId/stop", async (req, res) => {
   const { containerId } = req.params;
 
   try {
-    await dockerService.stopContainer(containerId);
+    await dockerService.stopContainer(containerId, req.account);
 
     res.json({
       success: true,
@@ -103,7 +122,7 @@ router.delete("/:containerId", async (req, res) => {
   const { containerId } = req.params;
 
   try {
-    await dockerService.deleteContainer(containerId);
+    await dockerService.deleteContainer(containerId, req.account);
 
     res.json({
       success: true,

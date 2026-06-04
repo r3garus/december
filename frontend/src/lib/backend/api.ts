@@ -1,4 +1,8 @@
-const API_BASE_URL = (process.env.NEXT_PUBLIC_API_URL || "https://api.meshfirestudios.com").replace(/\/$/, "");
+import { getBackendAuthHeaders } from "./auth";
+
+export const API_BASE_URL = (
+  process.env.NEXT_PUBLIC_API_URL || "https://api.builder.klawpen.com"
+).replace(/\/$/, "");
 
 export interface Container {
   id: string;
@@ -86,12 +90,14 @@ async function fetchApi<T>(
   endpoint: string,
   options?: RequestInit
 ): Promise<T> {
+  const authHeaders = await getBackendAuthHeaders();
   const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+    ...options,
     headers: {
       "Content-Type": "application/json",
+      ...authHeaders,
       ...options?.headers,
     },
-    ...options,
   });
 
   if (!response.ok) {
@@ -147,13 +153,14 @@ export async function deleteContainer(
 export async function sendChatMessage(
   containerId: string,
   message: string,
-  attachments?: any[]
+  attachments?: any[],
+  options?: Record<string, unknown>
 ): Promise<ChatResponse> {
   const response = await fetchApi<ChatResponse>(
     `/chat/${containerId}/messages`,
     {
       method: "POST",
-      body: JSON.stringify({ message, attachments }),
+      body: JSON.stringify({ message, attachments, options }),
     }
   );
   return response;
@@ -165,18 +172,23 @@ export function sendChatMessageStream(
   attachments: any[] = [],
   onMessage: (data: any) => void,
   onError?: (error: string) => void,
-  onComplete?: () => void
+  onComplete?: () => void,
+  options?: Record<string, unknown>
 ): () => void {
   let abortController = new AbortController();
 
-  fetch(`${API_BASE_URL}/chat/${containerId}/messages`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ message, attachments, stream: true }),
-    signal: abortController.signal,
-  })
+  getBackendAuthHeaders()
+    .then((authHeaders) =>
+      fetch(`${API_BASE_URL}/chat/${containerId}/messages`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...authHeaders,
+        },
+        body: JSON.stringify({ message, attachments, stream: true, options }),
+        signal: abortController.signal,
+      })
+    )
     .then(async (response) => {
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);

@@ -1,8 +1,20 @@
 import { ReactNode } from "react";
 
-export const Sidebar = ({ children }: { children: ReactNode }) => {
+export const Sidebar = ({
+  children,
+  isDark = false,
+}: {
+  children: ReactNode;
+  isDark?: boolean;
+}) => {
   return (
-    <aside className="flex flex-col w-60 h-full border-r-2 border-neutral-800">
+    <aside
+      className={`relative flex h-full w-[248px] flex-col overflow-hidden border-r ${
+        isDark
+          ? "border-[#262b33] bg-[#12161b]"
+          : "border-slate-200/70 bg-[#fbfdff]"
+      }`}
+    >
       {children}
     </aside>
   );

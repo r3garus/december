@@ -1,14 +1,18 @@
-import { exec } from "child_process";
 import Docker from "dockerode";
 import fs from "fs/promises";
+import net from "net";
 import path from "path";
-import { promisify } from "util";
 
-const execAsync = promisify(exec);
 const docker = new Docker({ socketPath: "/var/run/docker.sock" });
 const BASE_PORT = 8100;
+const ALLOW_LEGACY_CONTAINERS = process.env.ALLOW_LEGACY_CONTAINERS === "true";
 
 const usedPorts = new Set<number>();
+
+export interface ProjectOwner {
+  teamId: number;
+  localUserId?: number;
+}
 
 async function getAllAssignedPorts(): Promise<number[]> {
   const containers = await docker.listContainers({ all: true });
@@ -44,12 +48,15 @@ async function findAvailablePort(
 }
 
 async function isPortAvailable(port: number): Promise<boolean> {
-  try {
-    const { stdout } = await execAsync(`lsof -i :${port}`);
-    return stdout.trim() === "";
-  } catch {
-    return true;
-  }
+  return new Promise((resolve) => {
+    const server = net.createServer();
+
+    server.once("error", () => resolve(false));
+    server.once("listening", () => {
+      server.close(() => resolve(true));
+    });
+    server.listen(port, "0.0.0.0");
+  });
 }
 
 function releasePort(port: number): void {
@@ -125,7 +132,8 @@ export async function buildImage(containerId: string): Promise<string> {
 
 export async function createContainer(
   imageName: string,
-  containerId: string
+  containerId: string,
+  owner: ProjectOwner
 ): Promise<{ container: Docker.Container; port: number }> {
   const containerName = `dec-nextjs-${containerId}`;
   const assignedPort = await findAvailablePort();
@@ -143,6 +151,8 @@ export async function createContainer(
       project: "december",
       type: "nextjs-app",
       assignedPort: assignedPort.toString(),
+      teamId: String(owner.teamId),
+      userId: owner.localUserId ? String(owner.localUserId) : "",
     },
   });
 
@@ -153,10 +163,11 @@ export async function createContainer(
 }
 
 export async function startContainer(
-  containerId: string
+  containerId: string,
+  owner?: ProjectOwner
 ): Promise<{ port: number }> {
   try {
-    const container = docker.getContainer(containerId);
+    const container = await assertProjectContainer(containerId, owner);
     const containerInfo = await container.inspect();
 
     if (containerInfo.State.Running) {
@@ -226,13 +237,62 @@ export function getContainer(containerId: string): Docker.Container {
 
 export { docker };
 
-export async function listProjectContainers(): Promise<any[]> {
+function assertSafeContainerId(containerId: string): void {
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(containerId)) {
+    throw new Error("Invalid container id");
+  }
+}
+
+function isProjectContainerInfo(containerInfo: any): boolean {
+  const labels = containerInfo.Labels || containerInfo.Config?.Labels || {};
+  const names = containerInfo.Names || [containerInfo.Name].filter(Boolean);
+  const imageName = containerInfo.Image || containerInfo.Config?.Image || "";
+
+  return (
+    labels.project === "december" ||
+    names.some((name: string) => name.includes("dec-nextjs-")) ||
+    imageName.includes("dec-nextjs-")
+  );
+}
+
+function isOwnedByAccount(containerInfo: any, owner?: ProjectOwner): boolean {
+  if (!owner) return true;
+
+  const labels = containerInfo.Labels || containerInfo.Config?.Labels || {};
+
+  if (labels.teamId === String(owner.teamId)) {
+    return true;
+  }
+
+  return ALLOW_LEGACY_CONTAINERS && !labels.teamId;
+}
+
+export async function assertProjectContainer(
+  containerId: string,
+  owner?: ProjectOwner
+): Promise<Docker.Container> {
+  assertSafeContainerId(containerId);
+
+  const container = docker.getContainer(containerId);
+  const containerInfo = await container.inspect();
+
+  if (!isProjectContainerInfo(containerInfo)) {
+    throw new Error("Container is not managed by this workspace");
+  }
+
+  if (!isOwnedByAccount(containerInfo, owner)) {
+    throw new Error("Container does not belong to this account");
+  }
+
+  return container;
+}
+
+export async function listProjectContainers(owner?: ProjectOwner): Promise<any[]> {
   const containers = await docker.listContainers({ all: true });
 
   const projectContainers = containers.filter(
     (container) =>
-      container.Labels?.project === "december" ||
-      container.Names?.some((name) => name.includes("dec-nextjs-"))
+      isProjectContainerInfo(container) && isOwnedByAccount(container, owner)
   );
 
   return projectContainers.map((container) => {
@@ -248,9 +308,9 @@ export async function listProjectContainers(): Promise<any[]> {
       image: container.Image,
       created: new Date(container.Created * 1000).toISOString(),
       assignedPort,
-url: assignedPort
-  ? `${process.env.PREVIEW_BASE_URL || "http://localhost"}:${assignedPort}`
-  : null,
+      url: assignedPort
+        ? `${process.env.PREVIEW_BASE_URL || "http://localhost"}:${assignedPort}`
+        : null,
       ports:
         container.Ports?.map((port) => ({
           private: port.PrivatePort,
@@ -262,9 +322,12 @@ url: assignedPort
   });
 }
 
-export async function stopContainer(containerId: string): Promise<void> {
+export async function stopContainer(
+  containerId: string,
+  owner?: ProjectOwner
+): Promise<void> {
   try {
-    const container = docker.getContainer(containerId);
+    const container = await assertProjectContainer(containerId, owner);
     const containerInfo = await container.inspect();
 
     const port = getPortFromContainer(containerInfo);
@@ -281,9 +344,12 @@ export async function stopContainer(containerId: string): Promise<void> {
   }
 }
 
-export async function deleteContainer(containerId: string): Promise<void> {
+export async function deleteContainer(
+  containerId: string,
+  owner?: ProjectOwner
+): Promise<void> {
   try {
-    const container = docker.getContainer(containerId);
+    const container = await assertProjectContainer(containerId, owner);
     const containerInfo = await container.inspect();
 
     const port = getPortFromContainer(containerInfo);

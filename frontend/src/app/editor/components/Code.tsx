@@ -71,9 +71,9 @@ export const Code = ({ selectedFile, onChange }: CodeProps) => {
   else if (language === "ts" || language === "tsx") language = "typescript";
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden">
-      <div className="flex-1 p-2">
-        <div className="w-full h-full rounded-lg overflow-hidden border border-gray-700/50">
+    <div className="flex-1 flex flex-col min-h-0 min-w-0">
+      <div className="flex-1 flex flex-col min-h-0 min-w-0 p-2">
+        <div className="flex-1 min-h-0 min-w-0 rounded-lg overflow-hidden border border-gray-700/50">
           <Editor
             height="100%"
             language={language}
@@ -81,6 +81,7 @@ export const Code = ({ selectedFile, onChange }: CodeProps) => {
             theme="no-errors"
             onChange={onChange}
             onMount={handleEditorDidMount}
+            loading={<div className="text-gray-400 flex items-center justify-center h-full">Loading...</div>}
             options={{
               minimap: { enabled: false },
               fontSize: 14,

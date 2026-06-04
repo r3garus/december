@@ -1,7 +1,11 @@
 export const config = {
   aiSdk: {
     baseUrl: process.env.AI_BASE_URL || "https://api.gptclubapi.xyz/openai/v1",
-    apiKey: process.env.AI_API_KEY || "",
+    apiKey:
+      process.env.AI_API_KEY ||
+      process.env.OPENROUTER_API_KEY ||
+      process.env.OPENAI_API_KEY ||
+      "",
     model: process.env.AI_MODEL || "gpt-5.3-codex",
     temperature: Number(process.env.AI_TEMPERATURE || "0.15"),
     maxRetries: Number(process.env.AI_MAX_RETRIES || "2"),

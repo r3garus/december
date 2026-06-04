@@ -1,22 +1,142 @@
 "use client";
 
-import { Calendar, MoreHorizontal, Play, Square, Trash2 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
 import {
-  Container,
-  deleteContainer,
-  getContainers,
-  startContainer,
-  stopContainer,
-} from "../../../lib/backend/api";
+  Calendar,
+  ExternalLink,
+  MoreHorizontal,
+  PencilLine,
+  Share2,
+  Trash2,
+} from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Container, deleteContainer, getContainers } from "../../../lib/backend/api";
+import type { UiLanguage, UiTheme } from "./ProjectsPage";
 
-export const ProjectsGrid = () => {
+interface ProjectsGridProps {
+  language: UiLanguage;
+  theme: UiTheme;
+  variant?: "recent" | "projects";
+  searchQuery?: string;
+}
+
+interface StoredProjectMetadata {
+  title?: string;
+  summary?: string;
+  prompt?: string;
+}
+
+const PROJECT_METADATA_STORAGE_KEY = "december:project-metadata";
+
+const readStoredMetadata = (): Record<string, StoredProjectMetadata> => {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(PROJECT_METADATA_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, StoredProjectMetadata>;
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
+const writeStoredMetadata = (data: Record<string, StoredProjectMetadata>) => {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(PROJECT_METADATA_STORAGE_KEY, JSON.stringify(data));
+  } catch {
+    // ignore
+  }
+};
+
+const toTitleCase = (value: string) =>
+  value
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 6)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+
+const buildTitleFromPrompt = (prompt: string) => {
+  const cleaned = prompt
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned) return "Untitled Project";
+  return toTitleCase(cleaned);
+};
+
+const buildSummaryFromPrompt = (prompt: string) => {
+  const cleaned = prompt.replace(/\s+/g, " ").trim();
+  if (!cleaned) return "Custom project generated from your prompt.";
+  if (cleaned.length <= 120) return cleaned;
+  return `${cleaned.slice(0, 117)}...`;
+};
+
+const cleanContainerName = (name: string | null | undefined, id: string) => {
+  const raw = (name || "").replace(/[\/_-]+/g, " ").trim();
+  if (!raw) return `Project ${id.slice(0, 8)}`;
+  return toTitleCase(raw);
+};
+
+const getThumbnailUrl = (url: string | null) => {
+  if (!url) return null;
+  return `https://image.thum.io/get/width/1024/noanimate/${encodeURI(url)}`;
+};
+
+export const ProjectsGrid = ({
+  language,
+  theme,
+  variant = "projects",
+  searchQuery = "",
+}: ProjectsGridProps) => {
   const [containers, setContainers] = useState<Container[]>([]);
+  const [storedMetadata, setStoredMetadata] = useState<Record<string, StoredProjectMetadata>>({});
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [dropdownOpen, setDropdownOpen] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [brokenThumbnails, setBrokenThumbnails] = useState<Set<string>>(new Set());
   const dropdownRef = useRef<HTMLDivElement>(null);
+
+  const isDark = theme === "dark";
+  const gridClass =
+    variant === "recent"
+      ? "grid-cols-[repeat(auto-fill,minmax(min(210px,100%),1fr))]"
+      : "grid-cols-[repeat(auto-fill,minmax(min(220px,100%),1fr))]";
+  const labels = {
+    en: {
+      noProjects: "No projects yet",
+      noProjectsDesc: "Use the prompt above to create your first project.",
+      live: "Live",
+      draft: "Draft",
+      retry: "Retry",
+      unableLoad: "Unable to load projects",
+      created: "Created",
+      delete: "Delete",
+      edit: "Edit",
+      share: "Share",
+      open: "Open",
+      searchEmpty: "No project matches your search",
+      untitled: "Untitled Project",
+      defaultSummary: "Custom project generated from your prompt.",
+    },
+    tr: {
+      noProjects: "Henüz proje yok",
+      noProjectsDesc: "İlk projeni oluşturmak için yukarıdaki promptu kullan.",
+      live: "Canlı",
+      draft: "Taslak",
+      retry: "Tekrar dene",
+      unableLoad: "Projeler yüklenemedi",
+      created: "Oluşturulma",
+      delete: "Sil",
+      edit: "Düzenle",
+      share: "Paylaş",
+      open: "Aç",
+      searchEmpty: "Aramana uygun proje bulunamadı",
+      untitled: "İsimsiz Proje",
+      defaultSummary: "Promptundan oluşturulmuş özel proje.",
+    },
+  }[language];
 
   const fetchContainers = async () => {
     try {
@@ -31,6 +151,7 @@ export const ProjectsGrid = () => {
   };
 
   useEffect(() => {
+    setStoredMetadata(readStoredMetadata());
     fetchContainers();
   }, []);
 
@@ -50,260 +171,280 @@ export const ProjectsGrid = () => {
     };
   }, []);
 
-  const handleProjectCreated = () => {
-    fetchContainers();
-  };
-
-  const handleStatusChange = () => {
-    fetchContainers();
-  };
-
-  const handleToggleStatus = async (container: Container) => {
+  const handleDeleteContainer = async (container: Container) => {
+    if (!window.confirm(language === "tr" ? "Projeyi silmek istediğine emin misin?" : "Are you sure you want to delete this project?")) {
+      return;
+    }
     setActionLoading(container.id);
     try {
-      if (container.status === "running") {
-        await stopContainer(container.id);
-      } else {
-        await startContainer(container.id);
-      }
-      fetchContainers();
-    } catch (error) {
-      console.error("Failed to toggle container status:", error);
+      await deleteContainer(container.id);
+      const nextMeta = { ...storedMetadata };
+      delete nextMeta[container.id];
+      setStoredMetadata(nextMeta);
+      writeStoredMetadata(nextMeta);
+      await fetchContainers();
+    } catch (deleteError) {
+      console.error("Failed to delete container:", deleteError);
     } finally {
       setActionLoading(null);
       setDropdownOpen(null);
     }
   };
 
-  const handleDeleteContainer = async (container: Container) => {
-    setActionLoading(container.id);
+  const handleEditProject = (container: Container, currentTitle: string) => {
+    const nextTitle = window.prompt(
+      language === "tr" ? "Yeni proje başlığını gir" : "Enter a new project title",
+      currentTitle
+    );
+    if (!nextTitle) return;
+    const normalized = nextTitle.trim().slice(0, 70);
+    if (!normalized) return;
+    const nextMeta = {
+      ...storedMetadata,
+      [container.id]: {
+        ...storedMetadata[container.id],
+        title: normalized,
+      },
+    };
+    setStoredMetadata(nextMeta);
+    writeStoredMetadata(nextMeta);
+    setDropdownOpen(null);
+  };
+
+  const handleShareProject = async (container: Container) => {
     try {
-      await deleteContainer(container.id);
-      fetchContainers();
-    } catch (error) {
-      console.error("Failed to delete container:", error);
+      const projectUrl = `${window.location.origin}/projects/${container.id}`;
+      await navigator.clipboard.writeText(projectUrl);
+    } catch {
+      // ignore
     } finally {
-      setActionLoading(null);
       setDropdownOpen(null);
     }
   };
 
   const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
+    return new Date(dateString).toLocaleDateString(
+      language === "tr" ? "tr-TR" : "en-US",
+      {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      }
+    );
+  };
+
+  const projectCards = useMemo(() => {
+    return containers.map((container) => {
+      const saved = storedMetadata[container.id];
+      const promptFromLabel =
+        container.labels?.prompt ||
+        container.labels?.description ||
+        container.labels?.title ||
+        "";
+      const seedPrompt = saved?.prompt || promptFromLabel;
+      const title =
+        saved?.title ||
+        (seedPrompt ? buildTitleFromPrompt(seedPrompt) : cleanContainerName(container.name, container.id)) ||
+        labels.untitled;
+      const summary =
+        saved?.summary ||
+        (seedPrompt ? buildSummaryFromPrompt(seedPrompt) : labels.defaultSummary);
+      return {
+        container,
+        title,
+        summary,
+      };
     });
+  }, [containers, storedMetadata, labels.defaultSummary, labels.untitled]);
+
+  const filteredCards = useMemo(() => {
+    if (variant !== "projects") return projectCards.slice(0, 6);
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return projectCards;
+    return projectCards.filter(({ title, summary, container }) => {
+      const haystack = `${title} ${summary} ${container.name || ""}`.toLowerCase();
+      return haystack.includes(query);
+    });
+  }, [projectCards, searchQuery, variant]);
+
+  const renderPreview = (container: Container, cardTitle: string) => {
+    const thumbUrl = getThumbnailUrl(container.url);
+    const isBroken = brokenThumbnails.has(container.id);
+    if (!thumbUrl || isBroken) {
+      return (
+        <div className={`flex h-full w-full items-center justify-center ${isDark ? "bg-[#222223]" : "bg-[#eef2f8]"}`}>
+          <span className={`text-xs font-semibold ${isDark ? "text-slate-300" : "text-slate-600"}`}>
+            {cardTitle.slice(0, 20)}
+          </span>
+        </div>
+      );
+    }
+
+    return (
+      <img
+        src={thumbUrl}
+        alt={`${cardTitle} preview`}
+        className="h-full w-full object-cover"
+        loading="lazy"
+        onError={() => {
+          setBrokenThumbnails((prev) => new Set(prev).add(container.id));
+        }}
+      />
+    );
   };
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="flex flex-col items-center gap-4">
-          <div className="w-8 h-8 border-2 border-white/20 border-t-white/60 rounded-full animate-spin" />
-          <span className="text-white/70 font-medium">Loading projects...</span>
-        </div>
+      <div className={`grid gap-3 ${gridClass}`}>
+        {[0, 1, 2].map((index) => (
+          <div
+            key={index}
+            className={`motion-skeleton rounded-2xl border ${isDark ? "border-[#343840] bg-[#1e1e1f]" : "border-[#d7d9de] bg-[#ffffff]"}`}
+          >
+            <div className="aspect-square" />
+          </div>
+        ))}
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="flex flex-col items-center justify-center h-64 gap-6">
-        <div className="bg-red-500/10 backdrop-blur-md rounded-2xl border border-red-500/20 p-8 text-center shadow-xl max-w-md">
-          <div className="text-red-400 text-xl font-semibold mb-2">
-            Docker likely not running
-          </div>
-          <div className="text-white/60 mb-4">{error}</div>
-          <button
-            onClick={fetchContainers}
-            className="px-6 py-3 bg-white text-black hover:bg-gray-100 rounded-lg transition-all duration-200 font-medium shadow-lg hover:shadow-xl cursor-pointer"
-          >
-            Retry
-          </button>
-        </div>
+      <div className="rounded-2xl border border-red-200 bg-red-50 p-6 text-center">
+        <p className="text-lg font-semibold text-red-700">{labels.unableLoad}</p>
+        <p className="mt-1 text-sm text-red-600">{error}</p>
+        <button
+          onClick={fetchContainers}
+          className="motion-interactive mt-4 rounded-lg border border-red-300 bg-white px-4 py-2 text-sm font-medium text-red-700 transition-colors duration-150 hover:bg-red-100"
+          type="button"
+        >
+          {labels.retry}
+        </button>
       </div>
     );
   }
 
-  if (containers.length === 0) {
+  if (filteredCards.length === 0) {
     return (
-      <div className="text-center py-16">
-        <div className="max-w-md mx-auto">
-          <div className="w-16 h-16 bg-white/5 backdrop-blur-sm rounded-2xl border border-white/10 flex items-center justify-center mx-auto mb-6">
-            <svg
-              className="w-8 h-8 text-white/50"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={1.5}
-                d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"
-              />
-            </svg>
-          </div>
-          <h3 className="text-xl font-semibold text-white mb-3">
-            No projects yet
-          </h3>
-          <p className="text-gray-400 mb-6">
-            Use the prompt above to create your first project with AI
-            assistance.
+      <div
+        className={`rounded-2xl border p-8 text-center ${
+          isDark ? "border-[#343840] bg-[#1e1e1f]" : "border-[#d7d9de] bg-[#ffffff]"
+        }`}
+      >
+        <h3 className={`text-base font-semibold ${isDark ? "text-slate-100" : "text-slate-700"}`}>
+          {searchQuery ? labels.searchEmpty : labels.noProjects}
+        </h3>
+        {!searchQuery && (
+          <p className={`mt-1 text-[12px] ${isDark ? "text-slate-300" : "text-slate-500"}`}>
+            {labels.noProjectsDesc}
           </p>
-          <button
-            onClick={handleProjectCreated}
-            className="px-6 py-3 bg-white/10 hover:bg-white/15 text-white border border-white/20 hover:border-white/30 rounded-lg transition-all duration-200 font-medium backdrop-blur-sm cursor-pointer"
-          >
-            Create Your First Project
-          </button>
-        </div>
+        )}
       </div>
     );
   }
 
   return (
-    <div className="space-y-3">
-      {containers.map((container) => (
-        <div
+    <div className={`grid gap-3 ${gridClass}`}>
+      {filteredCards.map(({ container, title, summary }) => (
+        <article
           key={container.id}
-          className="group relative bg-gray-900/60 hover:bg-gray-800/70 border border-gray-700/50 hover:border-gray-600/70 rounded-lg p-4 transition-all duration-200 backdrop-blur-sm"
+          className={`motion-card overflow-hidden rounded-2xl border ${
+            isDark ? "border-[#343840] bg-[#1e1e1f]" : "border-[#d6d8de] bg-[#ffffff]"
+          }`}
         >
-          <div className="flex items-center gap-4">
-            <div className="relative flex-shrink-0">
-              <div className="w-10 h-10 bg-gradient-to-br from-purple-500 to-blue-600 rounded-lg flex items-center justify-center shadow-sm">
-                <span className="text-white font-bold text-sm">D</span>
-              </div>
-              <div
-                className={`absolute -top-1 -right-1 w-3 h-3 rounded-full border-2 border-gray-900 ${
-                  container.status === "running"
-                    ? "bg-green-400"
-                    : "bg-gray-500"
-                }`}
-              />
-            </div>
+          <a
+            href={`/projects/${container.id}`}
+            className="block aspect-square overflow-hidden"
+          >
+            {renderPreview(container, title)}
+          </a>
 
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-3 mb-1">
-                <h3 className="text-white font-medium text-base truncate">
-                  {container.name?.replace("/", "") ||
-                    `dec-nextjs-${container.id.slice(0, 8)}`}
-                </h3>
-                <span
-                  className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${
-                    container.status === "running"
-                      ? "bg-green-500/20 text-green-400 border border-green-500/30"
-                      : "bg-gray-500/20 text-gray-400 border border-gray-500/30"
+          <div className="space-y-3 p-3">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <p className={`line-clamp-1 text-[14px] font-semibold ${isDark ? "text-slate-100" : "text-slate-700"}`}>{title}</p>
+                <p className={`mt-1 line-clamp-2 text-[12px] ${isDark ? "text-slate-300" : "text-slate-500"}`}>{summary}</p>
+              </div>
+              <div className="relative" ref={dropdownOpen === container.id ? dropdownRef : undefined}>
+                <button
+                  className={`motion-icon-interactive rounded-md p-1.5 transition-colors duration-150 ${
+                    isDark ? "text-slate-300 hover:bg-[#262930]" : "text-slate-500 hover:bg-[#f4f6fa]"
                   }`}
-                >
-                  {container.status === "running" ? "Running" : "Exited"}
-                </span>
-              </div>
-
-              <div className="flex items-center gap-4 text-sm text-gray-400">
-                <div className="flex items-center gap-1">
-                  <Calendar className="w-4 h-4" />
-                  <span>Created {formatDate(container.created)}</span>
-                </div>
-                {container.assignedPort && (
-                  <span>Port :{container.assignedPort}</span>
-                )}
-                <span>Next.js</span>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2 flex-shrink-0">
-              {container.status !== "running" && (
-                <button
-                  onClick={() => handleToggleStatus(container)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600/20 hover:bg-green-600/30 text-green-400 border border-green-600/30 hover:border-green-500/50 rounded-md text-sm font-medium transition-all duration-200 cursor-pointer"
-                >
-                  <Play className="w-3.5 h-3.5" />
-                  Start
-                </button>
-              )}
-
-              <a
-                href={`/projects/${container.id}`}
-                className="px-4 py-1.5 bg-gray-700/50 hover:bg-gray-600/60 text-white border border-gray-600/50 hover:border-gray-500/70 rounded-md text-sm font-medium transition-all duration-200 cursor-pointer"
-              >
-                Open Project
-              </a>
-
-              <div className="relative z-[9999]">
-                <button
-                  className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-700/50 rounded-md transition-all duration-200 cursor-pointer"
                   onClick={(e) => {
                     e.stopPropagation();
-                    setDropdownOpen(
-                      dropdownOpen === container.id ? null : container.id
-                    );
+                    setDropdownOpen(dropdownOpen === container.id ? null : container.id);
                   }}
+                  type="button"
                 >
-                  <MoreHorizontal className="w-4 h-4" />
+                  <MoreHorizontal className="h-4 w-4" />
                 </button>
 
                 {dropdownOpen === container.id && (
                   <div
-                    ref={dropdownRef}
-                    className="absolute right-0 top-full mt-1 w-36 bg-gray-800/90 backdrop-blur-xl border border-gray-600/30 rounded-lg shadow-xl z-[9999] py-1"
+                    className={`motion-dropdown-panel absolute right-0 top-full z-20 mt-1 w-40 rounded-lg border py-1 shadow-lg ${
+                      isDark ? "border-[#3a3d46] bg-[#1e1e1f]" : "border-[#d4d8de] bg-white"
+                    }`}
                   >
-                    {container.status === "running" ? (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleToggleStatus(container);
-                        }}
-                        disabled={actionLoading === container.id}
-                        className="w-full text-left px-3 py-2 text-sm text-gray-300 hover:text-white hover:bg-gray-700/50 transition-all duration-200 flex items-center gap-2 disabled:opacity-50"
-                      >
-                        {actionLoading === container.id ? (
-                          <div className="w-3.5 h-3.5 border-2 border-current border-t-transparent rounded-full animate-spin" />
-                        ) : (
-                          <Square className="w-3.5 h-3.5" />
-                        )}
-                        Stop
-                      </button>
-                    ) : (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleToggleStatus(container);
-                        }}
-                        disabled={actionLoading === container.id}
-                        className="w-full text-left px-3 py-2 text-sm text-gray-300 hover:text-white hover:bg-gray-700/50 transition-all duration-200 flex items-center gap-2 disabled:opacity-50"
-                      >
-                        {actionLoading === container.id ? (
-                          <div className="w-3.5 h-3.5 border-2 border-current border-t-transparent rounded-full animate-spin" />
-                        ) : (
-                          <Play className="w-3.5 h-3.5" />
-                        )}
-                        Start
-                      </button>
-                    )}
-
+                    <button
+                      onClick={() => handleEditProject(container, title)}
+                      className={`motion-list-item flex w-full items-center gap-2 px-3 py-2 text-left text-sm ${
+                        isDark ? "text-slate-100 hover:bg-[#262930]" : "text-slate-700 hover:bg-slate-100"
+                      }`}
+                      type="button"
+                    >
+                      <PencilLine className="h-3.5 w-3.5" />
+                      {labels.edit}
+                    </button>
+                    <button
+                      onClick={() => handleShareProject(container)}
+                      className={`motion-list-item flex w-full items-center gap-2 px-3 py-2 text-left text-sm ${
+                        isDark ? "text-slate-100 hover:bg-[#262930]" : "text-slate-700 hover:bg-slate-100"
+                      }`}
+                      type="button"
+                    >
+                      <Share2 className="h-3.5 w-3.5" />
+                      {labels.share}
+                    </button>
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
                         handleDeleteContainer(container);
                       }}
                       disabled={actionLoading === container.id}
-                      className="w-full text-left px-3 py-2 text-sm text-red-400 hover:text-red-300 hover:bg-red-500/10 transition-all duration-200 flex items-center gap-2 disabled:opacity-50"
+                      className={`motion-list-item flex w-full items-center gap-2 px-3 py-2 text-left text-sm disabled:opacity-50 ${
+                        isDark ? "text-red-400 hover:bg-[#262930]" : "text-red-600 hover:bg-red-50"
+                      }`}
+                      type="button"
                     >
                       {actionLoading === container.id ? (
-                        <div className="w-3.5 h-3.5 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                        <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />
                       ) : (
-                        <Trash2 className="w-3.5 h-3.5" />
+                        <Trash2 className="h-3.5 w-3.5" />
                       )}
-                      Delete
+                      {labels.delete}
                     </button>
                   </div>
                 )}
               </div>
             </div>
+
+            <div className="flex items-center justify-between">
+              <div className={`inline-flex items-center gap-1 text-[11px] ${isDark ? "text-slate-300" : "text-slate-500"}`}>
+                <Calendar className="h-3 w-3" />
+                {labels.created} {formatDate(container.created)}
+              </div>
+              <a
+                href={`/projects/${container.id}`}
+                className={`motion-interactive inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] ${
+                  isDark ? "border-[#3a3d46] bg-[#1e1e1f] text-slate-100 hover:bg-[#262930]" : "border-[#d0d2d7] bg-white text-slate-700 hover:bg-slate-50"
+                }`}
+              >
+                <ExternalLink className="h-3 w-3" />
+                {labels.open}
+              </a>
+            </div>
           </div>
-        </div>
+        </article>
       ))}
     </div>
   );

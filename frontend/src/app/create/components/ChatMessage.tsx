@@ -3,9 +3,9 @@ import {
   BookOpen,
   Brain,
   CheckCircle,
+  Clock3,
   Code,
   Edit3,
-  File,
   FileText,
   GitBranch,
   Image,
@@ -15,6 +15,8 @@ import {
   Terminal,
   Trash2,
 } from "lucide-react";
+import { API_BASE_URL } from "@/lib/backend/api";
+import { getBackendAuthHeaders } from "@/lib/backend/auth";
 import React, { useEffect, useState } from "react";
 
 interface Attachment {
@@ -38,13 +40,296 @@ interface ChatMessageProps {
   formatMessageContent: (content: string) => React.ReactNode[];
   containerId?: string;
   isStreaming?: boolean;
+  isDark?: boolean;
+  workStartedAt?: string;
+  labels?: Partial<Record<string, string>>;
 }
+
+interface ChangeSummaryFile {
+  path: string;
+  name?: string;
+  directory?: string;
+  operation?: "created" | "updated" | "deleted" | "renamed" | string;
+  additions?: number;
+  deletions?: number;
+  fromPath?: string;
+}
+
+interface ChangeSummaryPayload {
+  files?: ChangeSummaryFile[];
+  folders?: Array<{ path: string; count?: number }>;
+  dependencies?: string[];
+  totals?: {
+    files?: number;
+    folders?: number;
+    additions?: number;
+    deletions?: number;
+    dependencies?: number;
+  };
+}
+
+const operationTagTypes = new Set(["write", "rename", "delete", "dependency"]);
+
+const normalizeDisplayPath = (path: string) =>
+  path
+    .replace(/\\/g, "/")
+    .replace(/^\/app\/my-nextjs-app\/?/, "")
+    .replace(/^\.\//, "")
+    .replace(/^\/+/, "");
+
+const getFileName = (path: string) => {
+  const normalized = normalizeDisplayPath(path);
+  return normalized.split("/").filter(Boolean).pop() || normalized || path;
+};
+
+const getDirectoryName = (path: string) => {
+  const normalized = normalizeDisplayPath(path);
+  const parts = normalized.split("/").filter(Boolean);
+  parts.pop();
+  return parts.join("/") || "root";
+};
+
+const splitCodeLines = (content: string) => {
+  if (!content) return [];
+  const normalized = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const trimmedTrailingNewline = normalized.endsWith("\n")
+    ? normalized.slice(0, -1)
+    : normalized;
+  return trimmedTrailingNewline ? trimmedTrailingNewline.split("\n") : [];
+};
+
+const buildFallbackChangeSummary = (content: string): ChangeSummaryPayload | null => {
+  const files: ChangeSummaryFile[] = [];
+  const dependencies: string[] = [];
+  const folders = new Map<string, number>();
+  const addFolder = (path: string) => {
+    const directory = getDirectoryName(path);
+    folders.set(directory, (folders.get(directory) || 0) + 1);
+    return directory;
+  };
+
+  const writePattern = /<dec-write\s+(?:path|file_path)="([^"]+)">([\s\S]*?)<\/dec-write>/g;
+  const renamePattern = /<dec-rename\s+from="([^"]+)"\s+to="([^"]+)"\s*\/>/g;
+  const deletePattern = /<dec-delete\s+(?:path|file_path)="([^"]+)"\s*\/>/g;
+  const dependencyPattern =
+    /<dec-add-dependency(?:\s+name="([^"]+)"(?:\s+version="([^"]+)")?)?>(.*?)<\/dec-add-dependency>/g;
+
+  let match: RegExpExecArray | null;
+
+  while ((match = writePattern.exec(content)) !== null) {
+    const path = normalizeDisplayPath(match[1]);
+    files.push({
+      path,
+      name: getFileName(path),
+      directory: addFolder(path),
+      operation: "updated",
+      additions: splitCodeLines(match[2].trim()).length,
+      deletions: 0,
+    });
+  }
+
+  while ((match = renamePattern.exec(content)) !== null) {
+    const path = normalizeDisplayPath(match[2]);
+    files.push({
+      path,
+      name: getFileName(path),
+      directory: addFolder(path),
+      operation: "renamed",
+      fromPath: normalizeDisplayPath(match[1]),
+      additions: 0,
+      deletions: 0,
+    });
+  }
+
+  while ((match = deletePattern.exec(content)) !== null) {
+    const path = normalizeDisplayPath(match[1]);
+    files.push({
+      path,
+      name: getFileName(path),
+      directory: addFolder(path),
+      operation: "deleted",
+      additions: 0,
+      deletions: 0,
+    });
+  }
+
+  while ((match = dependencyPattern.exec(content)) !== null) {
+    const packageName = (match[1] || match[3] || "").trim();
+    if (packageName) dependencies.push(packageName);
+  }
+
+  if (!files.length && !dependencies.length) return null;
+
+  return {
+    files,
+    dependencies,
+    folders: Array.from(folders.entries()).map(([path, count]) => ({ path, count })),
+    totals: {
+      files: files.length,
+      folders: folders.size,
+      additions: files.reduce((total, file) => total + (file.additions || 0), 0),
+      deletions: files.reduce((total, file) => total + (file.deletions || 0), 0),
+      dependencies: dependencies.length,
+    },
+  };
+};
+
+const getChangeSummary = (content: string): ChangeSummaryPayload | null => {
+  const summaryMatch = content.match(
+    /<dec-change-summary>([\s\S]*?)<\/dec-change-summary>/
+  );
+
+  if (summaryMatch) {
+    try {
+      return JSON.parse(summaryMatch[1]) as ChangeSummaryPayload;
+    } catch {
+      return buildFallbackChangeSummary(content);
+    }
+  }
+
+  return buildFallbackChangeSummary(content);
+};
+
+const renderChangeSummary = (
+  summary: ChangeSummaryPayload | null,
+  isDark: boolean,
+  labels: Partial<Record<string, string>>
+) => {
+  if (!summary) return null;
+
+  const label = (key: string, fallback: string) => labels[key] || fallback;
+  const files = summary.files || [];
+  const dependencies = summary.dependencies || [];
+  const folders = summary.folders || [];
+  const totalFiles = summary.totals?.files ?? files.length;
+  const totalFolders = summary.totals?.folders ?? folders.length;
+  const additions =
+    summary.totals?.additions ??
+    files.reduce((total, file) => total + (file.additions || 0), 0);
+  const deletions =
+    summary.totals?.deletions ??
+    files.reduce((total, file) => total + (file.deletions || 0), 0);
+  const visibleFiles = files.slice(0, 4);
+  const remainingFiles = Math.max(0, files.length - visibleFiles.length);
+  const folderText = folders
+    .slice(0, 2)
+    .map((folder) => normalizeDisplayPath(folder.path))
+    .join(", ");
+
+  const operationLabel = (operation?: string) => {
+    switch (operation) {
+      case "created":
+        return label("created", "Created");
+      case "deleted":
+        return label("deleted", "Deleted");
+      case "renamed":
+        return label("renamed", "Renamed");
+      default:
+        return label("updated", "Updated");
+    }
+  };
+
+  const shell = isDark
+    ? "border-[#2d3a35] text-slate-300"
+    : "border-emerald-200/70 text-slate-700";
+  const muted = isDark ? "text-slate-500" : "text-slate-500";
+  const iconWrap = isDark
+    ? "bg-emerald-300/[0.07] text-emerald-200/70 ring-1 ring-emerald-300/10"
+    : "bg-emerald-50 text-emerald-700/70 ring-1 ring-emerald-200/70";
+  const fileText = isDark ? "text-slate-300" : "text-slate-700";
+  const fileMeta = isDark ? "text-slate-500" : "text-slate-500";
+  const plusText = isDark ? "text-emerald-200/70" : "text-emerald-700/75";
+  const minusText = isDark ? "text-rose-200/65" : "text-rose-600/75";
+
+  return (
+    <div className={`my-2.5 border-l pl-3 ${shell}`}>
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px]">
+        <span className={`flex h-[18px] w-[18px] items-center justify-center rounded-full ${iconWrap}`}>
+          <CheckCircle className="h-3 w-3" />
+        </span>
+        <span className="font-medium">{label("changeSummary", "Changes")}</span>
+        <span className={muted}>
+          {totalFiles} {label("fileCountLabel", "files")}
+          {totalFolders ? `, ${totalFolders} ${label("folderCountLabel", "folders")}` : ""}
+        </span>
+        <span className={`font-mono text-[11px] ${plusText}`}>+{additions}</span>
+        <span className={`font-mono text-[11px] ${minusText}`}>-{deletions}</span>
+      </div>
+
+      {folderText && (
+        <div className={`mt-1 text-[11px] ${muted}`}>
+          {label("changedIn", "in")} {folderText}
+        </div>
+      )}
+
+      {visibleFiles.length > 0 && (
+        <div className="mt-1.5 flex flex-col gap-1">
+          {visibleFiles.map((file) => (
+            <div
+              key={`${file.operation || "updated"}-${file.path}`}
+              className="flex min-w-0 items-center gap-2 text-[11px]"
+              title={normalizeDisplayPath(file.path)}
+            >
+              <span className={`w-14 shrink-0 ${muted}`}>
+                {operationLabel(file.operation)}
+              </span>
+              <span className={`min-w-0 flex-1 truncate font-mono ${fileText}`}>
+                {file.name || getFileName(file.path)}
+              </span>
+              <span className={`hidden min-w-0 max-w-[92px] truncate sm:inline ${fileMeta}`}>
+                {file.directory || getDirectoryName(file.path)}
+              </span>
+              <span className={`shrink-0 font-mono ${plusText}`}>
+                +{file.additions || 0}
+              </span>
+              <span className={`shrink-0 font-mono ${minusText}`}>
+                -{file.deletions || 0}
+              </span>
+            </div>
+          ))}
+          {remainingFiles > 0 && (
+            <div className={`text-[11px] ${muted}`}>
+              +{remainingFiles} {label("moreFiles", "more")}
+            </div>
+          )}
+        </div>
+      )}
+
+      {dependencies.length > 0 && (
+        <div className={`mt-1.5 flex items-center gap-1.5 text-[11px] ${muted}`}>
+          <Package className="h-3 w-3" />
+          <span className="truncate">
+            {label("dependencies", "Dependencies")}: {dependencies.slice(0, 3).join(", ")}
+            {dependencies.length > 3 ? ` +${dependencies.length - 3}` : ""}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const sanitizeAssistantText = (content: string) =>
+  content
+    .replace(/```[\s\S]*?```/g, "")
+    .replace(/<dec-code>[\s\S]*?<\/dec-code>/g, "")
+    .replace(/<dec-write\s+(?:path|file_path)="[^"]+">[\s\S]*?<\/dec-write>/g, "")
+    .replace(/<dec-change-summary>[\s\S]*?<\/dec-change-summary>/g, "")
+    .replace(/<\/?dec-[^>]*>/g, "")
+    .replace(
+      /<\/?(response_format|user_message|ai_message|examples|guidelines|console-logs|useful-context|current-route|instructions-reminder|last-diff)[^>]*>/g,
+      ""
+    )
+    .replace(/^\s*(import|export|const|let|var|function|class|type|interface)\s.+$/gm, "")
+    .replace(/^\s*(cevap|yanit|answer|response)\s*:\s*/i, "")
+    .trim();
 
 const parseSpecialTags = (
   content: string,
   containerId?: string,
   messageId?: string,
-  executeOperations: boolean = true
+  executeOperations: boolean = true,
+  isDark: boolean = true,
+  labels: Partial<Record<string, string>> = {}
 ) => {
   const components: React.ReactNode[] = [];
   let currentIndex = 0;
@@ -92,12 +377,19 @@ const parseSpecialTags = (
     );
   };
 
+  const operationPromises: Promise<void>[] = [];
+  const shouldExecuteOperations =
+    executeOperations &&
+    !!containerId &&
+    !!messageId &&
+    !isMessageExecuted(containerId, messageId);
+
   const executeFileOperation = async (type: string, match: RegExpExecArray) => {
-    if (!containerId || !messageId || !executeOperations) return;
-    if (isMessageExecuted(containerId, messageId)) return;
+    if (!containerId || !messageId || !shouldExecuteOperations) return;
 
     try {
       let response;
+      const authHeaders = await getBackendAuthHeaders();
 
       switch (type) {
         case "write":
@@ -107,10 +399,10 @@ const parseSpecialTags = (
             } chars)`
           );
           response = await fetch(
-            `https://api.meshfirestudios.com/containers/${containerId}/files`,
+            `${API_BASE_URL}/containers/${containerId}/files`,
             {
               method: "PUT",
-              headers: { "Content-Type": "application/json" },
+              headers: { "Content-Type": "application/json", ...authHeaders },
               body: JSON.stringify({
                 path: match[1],
                 content: match[2].trim(),
@@ -122,26 +414,26 @@ const parseSpecialTags = (
           );
           break;
         case "rename":
-          console.log(`[FILE OP] Renaming file: ${match[1]} → ${match[2]}`);
+          console.log(`[FILE OP] Renaming file: ${match[1]} â†’ ${match[2]}`);
           response = await fetch(
-            `https://api.meshfirestudios.com/containers/${containerId}/files/rename`,
+            `${API_BASE_URL}/containers/${containerId}/files/rename`,
             {
               method: "PUT",
-              headers: { "Content-Type": "application/json" },
+              headers: { "Content-Type": "application/json", ...authHeaders },
               body: JSON.stringify({ oldPath: match[1], newPath: match[2] }),
             }
           );
           console.log(
-            `[FILE OP] Rename ${match[1]} → ${match[2]} - Status: ${response.status}`
+            `[FILE OP] Rename ${match[1]} â†’ ${match[2]} - Status: ${response.status}`
           );
           break;
         case "delete":
           console.log(`[FILE OP] Deleting file: ${match[1]}`);
           response = await fetch(
-            `https://api.meshfirestudios.com/containers/${containerId}/files`,
+            `${API_BASE_URL}/containers/${containerId}/files`,
             {
               method: "DELETE",
-              headers: { "Content-Type": "application/json" },
+              headers: { "Content-Type": "application/json", ...authHeaders },
               body: JSON.stringify({ path: match[1] }),
             }
           );
@@ -158,10 +450,10 @@ const parseSpecialTags = (
             }`
           );
           response = await fetch(
-            `https://api.meshfirestudios.com/containers/${containerId}/dependencies`,
+            `${API_BASE_URL}/containers/${containerId}/dependencies`,
             {
               method: "POST",
-              headers: { "Content-Type": "application/json" },
+              headers: { "Content-Type": "application/json", ...authHeaders },
               body: JSON.stringify({ packageName, isDev: false }),
             }
           );
@@ -177,9 +469,6 @@ const parseSpecialTags = (
       }
 
       console.log(`[FILE OP] ${type} operation completed successfully`);
-      if (messageId && containerId) {
-        markMessageExecuted(containerId, messageId);
-      }
     } catch (error) {
       console.error(`[FILE OP] ${type} operation failed:`, error);
     }
@@ -211,12 +500,16 @@ const parseSpecialTags = (
     const { type, match, start, end } = matchData;
 
     if (start > currentIndex) {
-      const beforeContent = content.slice(currentIndex, start);
+      const beforeContent = sanitizeAssistantText(
+        content.slice(currentIndex, start)
+      );
       if (beforeContent.trim()) {
         components.push(
           <div
             key={`before-${index}`}
-            className="prose prose-sm prose-invert max-w-none"
+            className={`prose prose-sm max-w-none ${
+              isDark ? "prose-invert" : "prose-slate"
+            }`}
           >
             {beforeContent
               .split("\n")
@@ -231,26 +524,29 @@ const parseSpecialTags = (
       }
     }
 
-    if (
-      ["write", "rename", "delete", "dependency"].includes(type) &&
-      executeOperations
-    ) {
-      executeFileOperation(type, match);
+    if (operationTagTypes.has(type) && shouldExecuteOperations) {
+      operationPromises.push(executeFileOperation(type, match));
     }
 
-    if (type !== "code") {
-      components.push(renderSpecialComponent(type, match, index));
+    if (type !== "code" && !operationTagTypes.has(type)) {
+      components.push(renderSpecialComponent(type, match, index, isDark, labels));
     }
     currentIndex = end;
   });
 
   if (currentIndex < content.length) {
-    let remainingContent = content.slice(currentIndex);
-    remainingContent = remainingContent.replace(/<\/dec-code>/g, "");
+    const remainingContent = sanitizeAssistantText(
+      content.slice(currentIndex)
+    );
 
     if (remainingContent.trim()) {
       components.push(
-        <div key="remaining" className="prose prose-sm prose-invert max-w-none">
+        <div
+          key="remaining"
+          className={`prose prose-sm max-w-none ${
+            isDark ? "prose-invert" : "prose-slate"
+          }`}
+        >
           {remainingContent
             .split("\n")
             .filter((line) => line.trim())
@@ -264,35 +560,59 @@ const parseSpecialTags = (
     }
   }
 
+  if (operationPromises.length && containerId && messageId) {
+    Promise.allSettled(operationPromises).then(() => {
+      markMessageExecuted(containerId, messageId);
+    });
+  }
+
   return components.length > 0 ? components : null;
 };
 
 const renderSpecialComponent = (
   type: string,
   match: RegExpExecArray,
-  index: number
+  index: number,
+  isDark: boolean = true,
+  labels: Partial<Record<string, string>> = {}
 ): React.ReactNode => {
+  const label = (key: string, fallback: string) => labels[key] || fallback;
+  const neutralCard = isDark
+    ? "my-3 overflow-hidden rounded-xl border border-white/[0.07] bg-white/[0.04]"
+    : "my-3 overflow-hidden rounded-xl border border-slate-200/80 bg-slate-50/80";
+  const neutralPaddedCard = `${neutralCard} p-3`;
+  const neutralIcon = isDark ? "text-slate-400" : "text-slate-500";
+  const neutralTitle = isDark ? "text-slate-200" : "text-slate-700";
+  const neutralMeta = isDark ? "text-slate-400" : "text-slate-500";
+  const neutralChip = isDark
+    ? "bg-white/[0.06] text-slate-300"
+    : "bg-white text-slate-500 border border-slate-200/80";
+  const compactSuccessCard = isDark
+    ? "my-1.5 border-emerald-300/10 bg-emerald-300/[0.04] text-emerald-100/80"
+    : "my-1.5 border-emerald-200/70 bg-emerald-50/75 text-emerald-800/85";
+  const compactSuccessChip = isDark
+    ? "bg-black/20 text-emerald-100/72"
+    : "bg-white/80 text-emerald-700";
+
   switch (type) {
     case "write":
+      const updatedFileName = match[1].split(/[\\/]/).pop() || match[1];
+
       return (
         <div
           key={`write-${index}`}
-          className="my-4 bg-blue-500/10 border border-blue-500/30 rounded-lg overflow-hidden"
+          className={`inline-flex max-w-full items-center gap-2 rounded-xl border px-2.5 py-1.5 text-xs shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] ${compactSuccessCard}`}
         >
-          <div className="flex items-center gap-2 bg-blue-500/20 px-3 py-2 border-b border-blue-500/30">
-            <File className="w-4 h-4 text-blue-400" />
-            <span className="text-sm font-medium text-blue-400">
-              Create/Update File
-            </span>
-            <code className="ml-auto text-xs text-blue-300 bg-blue-500/20 px-2 py-0.5 rounded">
-              {match[1]}
-            </code>
-          </div>
-          <div className="p-3">
-            <pre className="bg-gray-800/60 rounded p-3 text-xs overflow-x-auto">
-              <code className="text-gray-300">{match[2].trim()}</code>
-            </pre>
-          </div>
+          <span className="relative flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-emerald-300/10">
+            <CheckCircle className="relative h-3.5 w-3.5 text-emerald-300/70" />
+          </span>
+          <span className="shrink-0 font-medium">{label("updated", "Updated")}</span>
+          <span
+            className={`min-w-0 max-w-[9rem] truncate rounded-md px-1.5 py-0.5 font-mono text-[11px] ${compactSuccessChip}`}
+            title={match[1]}
+          >
+            {updatedFileName}
+          </span>
         </div>
       );
 
@@ -300,20 +620,20 @@ const renderSpecialComponent = (
       return (
         <div
           key={`rename-${index}`}
-          className="my-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-3"
+          className={neutralPaddedCard}
         >
           <div className="flex items-center gap-2 mb-2">
-            <Edit3 className="w-4 h-4 text-yellow-400" />
-            <span className="text-sm font-medium text-yellow-400">
-              Rename File
+            <Edit3 className={`w-4 h-4 ${neutralIcon}`} />
+            <span className={`text-sm font-medium ${neutralTitle}`}>
+              {label("renameFile", "Rename File")}
             </span>
           </div>
           <div className="flex items-center gap-2 text-xs">
-            <code className="bg-yellow-500/20 text-yellow-300 px-2 py-1 rounded">
+            <code className={`rounded px-2 py-1 ${neutralChip}`}>
               {match[1]}
             </code>
-            <span className="text-yellow-400">→</span>
-            <code className="bg-yellow-500/20 text-yellow-300 px-2 py-1 rounded">
+            <span className={neutralMeta}>-&gt;</span>
+            <code className={`rounded px-2 py-1 ${neutralChip}`}>
               {match[2]}
             </code>
           </div>
@@ -324,14 +644,14 @@ const renderSpecialComponent = (
       return (
         <div
           key={`delete-${index}`}
-          className="my-3 bg-red-500/10 border border-red-500/30 rounded-lg p-3"
+          className={neutralPaddedCard}
         >
           <div className="flex items-center gap-2">
-            <Trash2 className="w-4 h-4 text-red-400" />
-            <span className="text-sm font-medium text-red-400">
-              Delete File
+            <Trash2 className="w-4 h-4 text-red-400/90" />
+            <span className="text-sm font-medium text-red-400/90">
+              {label("deleteFile", "Delete File")}
             </span>
-            <code className="ml-auto text-xs text-red-300 bg-red-500/20 px-2 py-0.5 rounded">
+            <code className="ml-auto rounded-md bg-red-500/10 px-2 py-0.5 text-xs text-red-400">
               {match[1]}
             </code>
           </div>
@@ -343,14 +663,14 @@ const renderSpecialComponent = (
       return (
         <div
           key={`dependency-${index}`}
-          className="my-3 bg-purple-500/10 border border-purple-500/30 rounded-lg p-3"
+          className={neutralPaddedCard}
         >
           <div className="flex items-center gap-2">
-            <Package className="w-4 h-4 text-purple-400" />
-            <span className="text-sm font-medium text-purple-400">
-              Add Dependency
+            <Package className={`w-4 h-4 ${neutralIcon}`} />
+            <span className={`text-sm font-medium ${neutralTitle}`}>
+              {label("addDependency", "Add Dependency")}
             </span>
-            <code className="text-xs text-purple-300 bg-purple-500/20 px-2 py-0.5 rounded">
+            <code className={`rounded-md px-2 py-0.5 text-xs ${neutralChip}`}>
               {packageName}
             </code>
           </div>
@@ -361,18 +681,13 @@ const renderSpecialComponent = (
       return (
         <div
           key={`code-${index}`}
-          className="my-4 bg-gray-500/10 border border-gray-500/30 rounded-lg overflow-hidden"
+          className={neutralPaddedCard}
         >
-          <div className="flex items-center gap-2 bg-gray-500/20 px-3 py-2 border-b border-gray-500/30">
-            <Code className="w-4 h-4 text-gray-400" />
-            <span className="text-sm font-medium text-gray-400">
-              Code Block
+          <div className="flex items-center gap-2">
+            <Code className={`w-4 h-4 ${neutralIcon}`} />
+            <span className={`text-sm font-medium ${neutralTitle}`}>
+              {label("preparedCodeChanges", "I prepared the code changes.")}
             </span>
-          </div>
-          <div className="p-3">
-            <pre className="bg-gray-800/60 rounded p-3 text-xs overflow-x-auto">
-              <code className="text-gray-300">{match[1].trim()}</code>
-            </pre>
           </div>
         </div>
       );
@@ -381,15 +696,15 @@ const renderSpecialComponent = (
       return (
         <div
           key={`thinking-${index}`}
-          className="my-3 bg-indigo-500/10 border border-indigo-500/30 rounded-lg p-3"
+          className={neutralPaddedCard}
         >
           <div className="flex items-center gap-2 mb-2">
-            <Brain className="w-4 h-4 text-indigo-400" />
-            <span className="text-sm font-medium text-indigo-400">
-              Thinking Process
+            <Brain className={`w-4 h-4 ${neutralIcon}`} />
+            <span className={`text-sm font-medium ${neutralTitle}`}>
+              {label("thinkingProcess", "Thinking Process")}
             </span>
           </div>
-          <div className="text-sm text-indigo-300 italic">
+          <div className={`text-sm italic ${neutralMeta}`}>
             {match[1].trim()}
           </div>
         </div>
@@ -399,13 +714,15 @@ const renderSpecialComponent = (
       return (
         <div
           key={`error-${index}`}
-          className="my-3 bg-red-500/10 border border-red-500/30 rounded-lg p-3"
+          className="my-3 rounded-xl border border-red-500/20 bg-red-500/[0.07] p-3"
         >
           <div className="flex items-center gap-2 mb-2">
-            <AlertTriangle className="w-4 h-4 text-red-400" />
-            <span className="text-sm font-medium text-red-400">Error</span>
+            <AlertTriangle className="w-4 h-4 text-red-400/90" />
+            <span className="text-sm font-medium text-red-400/90">
+              {label("error", "Error")}
+            </span>
           </div>
-          <div className="text-sm text-red-300">{match[1].trim()}</div>
+          <div className="text-sm text-red-300/90">{match[1].trim()}</div>
         </div>
       );
 
@@ -413,13 +730,15 @@ const renderSpecialComponent = (
       return (
         <div
           key={`success-${index}`}
-          className="my-3 bg-green-500/10 border border-green-500/30 rounded-lg p-3"
+          className="my-3 rounded-xl border border-emerald-500/20 bg-emerald-500/[0.07] p-3"
         >
           <div className="flex items-center gap-2 mb-2">
-            <CheckCircle className="w-4 h-4 text-green-400" />
-            <span className="text-sm font-medium text-green-400">Success</span>
+            <CheckCircle className="w-4 h-4 text-emerald-400/90" />
+            <span className="text-sm font-medium text-emerald-400/90">
+              {label("success", "Success")}
+            </span>
           </div>
-          <div className="text-sm text-green-300">{match[1].trim()}</div>
+          <div className="text-sm text-emerald-300/90">{match[1].trim()}</div>
         </div>
       );
 
@@ -427,18 +746,13 @@ const renderSpecialComponent = (
       return (
         <div
           key={`console-${index}`}
-          className="my-4 bg-gray-800/60 border border-gray-600/40 rounded-lg overflow-hidden"
+          className={neutralPaddedCard}
         >
-          <div className="flex items-center gap-2 bg-gray-700/40 px-3 py-2 border-b border-gray-600/40">
-            <Terminal className="w-4 h-4 text-gray-400" />
-            <span className="text-sm font-medium text-gray-400">
-              Console Output
+          <div className="flex items-center gap-2">
+            <Terminal className={`w-4 h-4 ${neutralIcon}`} />
+            <span className={`text-sm font-medium ${neutralTitle}`}>
+              {label("checkedConsole", "I checked the console output.")}
             </span>
-          </div>
-          <div className="p-3">
-            <pre className="text-xs text-green-400 font-mono">
-              <code>{match[1].trim()}</code>
-            </pre>
           </div>
         </div>
       );
@@ -447,16 +761,13 @@ const renderSpecialComponent = (
       return (
         <div
           key={`examples-${index}`}
-          className="my-4 bg-cyan-500/10 border border-cyan-500/30 rounded-lg p-3"
+          className={neutralPaddedCard}
         >
           <div className="flex items-center gap-2 mb-2">
-            <BookOpen className="w-4 h-4 text-cyan-400" />
-            <span className="text-sm font-medium text-cyan-400">Examples</span>
-          </div>
-          <div className="text-sm text-cyan-300">
-            <pre className="bg-cyan-500/10 rounded p-2 text-xs overflow-x-auto">
-              <code>{match[1].trim()}</code>
-            </pre>
+            <BookOpen className={`w-4 h-4 ${neutralIcon}`} />
+            <span className={`text-sm font-medium ${neutralTitle}`}>
+              {label("usedExamples", "I used the provided examples as context.")}
+            </span>
           </div>
         </div>
       );
@@ -465,14 +776,14 @@ const renderSpecialComponent = (
       return (
         <div
           key={`route-${index}`}
-          className="my-3 bg-orange-500/10 border border-orange-500/30 rounded-lg p-3"
+          className={neutralPaddedCard}
         >
           <div className="flex items-center gap-2">
-            <Navigation className="w-4 h-4 text-orange-400" />
-            <span className="text-sm font-medium text-orange-400">
-              Current Route
+            <Navigation className={`w-4 h-4 ${neutralIcon}`} />
+            <span className={`text-sm font-medium ${neutralTitle}`}>
+              {label("currentRoute", "Current Route")}
             </span>
-            <code className="ml-auto text-xs text-orange-300 bg-orange-500/20 px-2 py-0.5 rounded">
+            <code className={`ml-auto rounded-md px-2 py-0.5 text-xs ${neutralChip}`}>
               {match[1].trim()}
             </code>
           </div>
@@ -483,18 +794,13 @@ const renderSpecialComponent = (
       return (
         <div
           key={`diff-${index}`}
-          className="my-4 bg-pink-500/10 border border-pink-500/30 rounded-lg overflow-hidden"
+          className={neutralPaddedCard}
         >
-          <div className="flex items-center gap-2 bg-pink-500/20 px-3 py-2 border-b border-pink-500/30">
-            <GitBranch className="w-4 h-4 text-pink-400" />
-            <span className="text-sm font-medium text-pink-400">
-              Recent Changes
+          <div className="flex items-center gap-2">
+            <GitBranch className={`w-4 h-4 ${neutralIcon}`} />
+            <span className={`text-sm font-medium ${neutralTitle}`}>
+              {label("reviewedChanges", "I reviewed the recent changes.")}
             </span>
-          </div>
-          <div className="p-3">
-            <pre className="bg-gray-800/60 rounded p-3 text-xs overflow-x-auto">
-              <code className="text-gray-300">{match[1].trim()}</code>
-            </pre>
           </div>
         </div>
       );
@@ -503,29 +809,20 @@ const renderSpecialComponent = (
       return (
         <div
           key={`instructions-${index}`}
-          className="my-3 bg-teal-500/10 border border-teal-500/30 rounded-lg p-3"
+          className={neutralPaddedCard}
         >
           <div className="flex items-center gap-2 mb-2">
-            <Info className="w-4 h-4 text-teal-400" />
-            <span className="text-sm font-medium text-teal-400">
-              Instructions
+            <Info className={`w-4 h-4 ${neutralIcon}`} />
+            <span className={`text-sm font-medium ${neutralTitle}`}>
+              {label("instructions", "Instructions")}
             </span>
           </div>
-          <div className="text-sm text-teal-300">{match[1].trim()}</div>
+          <div className={`text-sm ${neutralMeta}`}>{match[1].trim()}</div>
         </div>
       );
 
     default:
-      return (
-        <div
-          key={`default-${index}`}
-          className="my-3 bg-gray-500/10 border border-gray-500/30 rounded-lg p-3"
-        >
-          <div className="text-sm text-gray-300">
-            {match[1]?.trim() || match[0]}
-          </div>
-        </div>
-      );
+      return null;
   }
 };
 
@@ -534,12 +831,83 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
   formatMessageContent,
   containerId,
   isStreaming = false,
+  isDark = true,
+  workStartedAt,
+  labels = {},
 }) => {
   const [hasExecutedOperations, setHasExecutedOperations] = useState(false);
+  const label = (key: string, fallback: string) => labels[key] || fallback;
+  const ui = {
+    assistantName: isDark ? "text-white/90" : "text-slate-800",
+    timestamp: isDark ? "text-white/40" : "text-slate-400",
+    activityCard: isDark
+      ? "text-slate-500"
+      : "text-slate-500",
+    activityIcon: isDark
+      ? "text-emerald-200/55"
+      : "text-emerald-700/60",
+    activityRail: isDark ? "border-emerald-300/20" : "border-emerald-500/25",
+    assistantBubble: isDark
+      ? "border-transparent bg-transparent text-slate-100 shadow-none"
+      : "border-transparent bg-transparent text-slate-700 shadow-none",
+    assistantGlow: "bg-transparent",
+    userBubble: isDark
+      ? "text-slate-200"
+      : "text-slate-700",
+    userSeparator: isDark ? "border-white/[0.055]" : "border-slate-200/80",
+    userGlow: "bg-transparent",
+    attachment: isDark
+      ? "bg-black/20 border-white/10"
+      : "bg-slate-950/[0.035] border-slate-200/80",
+    attachmentMeta: isDark ? "text-white/60" : "text-slate-500",
+    prose: isDark
+      ? "prose-invert [&_h2]:text-white [&_h3]:text-white [&_h4]:text-white [&_strong]:text-white [&_code]:bg-slate-600/60 [&_code]:text-slate-200 [&_code]:border-slate-500/30"
+      : "prose-slate [&_h2]:text-slate-950 [&_h3]:text-slate-950 [&_h4]:text-slate-950 [&_strong]:text-slate-950 [&_code]:bg-slate-100 [&_code]:text-slate-800 [&_code]:border-slate-200",
+  };
 
   const formatTimestamp = (timestamp: string) => {
     const date = new Date(timestamp);
     return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  };
+
+  const formatRelativeTime = (timestamp: string) => {
+    const date = new Date(timestamp).getTime();
+    const diffSeconds = Math.max(0, Math.floor((Date.now() - date) / 1000));
+
+    if (diffSeconds < 45) return label("justNow", "just now");
+    if (diffSeconds < 90) return label("oneMinuteAgo", "1 minute ago");
+    if (diffSeconds < 3600) {
+      return `${Math.floor(diffSeconds / 60)} ${label("minutesAgo", "minutes ago")}`;
+    }
+    if (diffSeconds < 7200) return label("oneHourAgo", "1 hour ago");
+    if (diffSeconds < 86400) {
+      return `${Math.floor(diffSeconds / 3600)} ${label("hoursAgo", "hours ago")}`;
+    }
+    if (diffSeconds < 172800) return label("oneDayAgo", "1 day ago");
+    return `${Math.floor(diffSeconds / 86400)} ${label("daysAgo", "days ago")}`;
+  };
+
+  const formatWorkedTime = (startedAt?: string, finishedAt?: string) => {
+    if (!startedAt || !finishedAt) return label("workedMoment", "Worked for a moment");
+
+    const started = new Date(startedAt).getTime();
+    const finished = new Date(finishedAt).getTime();
+    const diffSeconds = Math.max(1, Math.floor((finished - started) / 1000));
+
+    if (diffSeconds < 60) return label("workedUnderMinute", "Worked for under a minute");
+
+    const minutes = Math.max(1, Math.round(diffSeconds / 60));
+    if (minutes < 60) {
+      return `${label("workedFor", "Worked for")} ${minutes} ${minutes === 1 ? label("minute", "minute") : label("minutes", "minutes")}`;
+    }
+
+    const hours = Math.floor(minutes / 60);
+    const remainingMinutes = minutes % 60;
+    return `${label("workedFor", "Worked for")} ${hours} ${
+      hours === 1 ? label("hour", "hour") : label("hours", "hours")
+    }${
+      remainingMinutes ? ` ${remainingMinutes} ${label("min", "min")}` : ""
+    }`;
   };
 
   const formatFileSize = (bytes: number) => {
@@ -554,6 +922,21 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
     /<dec-|<response_format|<user_message|<ai_message|<examples|<guidelines|<console-logs|<useful-context|<current-route|<instructions-reminder|<last-diff/.test(
       message.content
     );
+  const visibleAssistantContent = sanitizeAssistantText(message.content);
+  const displayAssistantContent =
+    visibleAssistantContent || label("doneDefault", "Done - I applied the requested changes.");
+  const changeSummary =
+    message.role === "assistant" ? getChangeSummary(message.content) : null;
+  const parsedAssistantContent = hasSpecialTags
+    ? parseSpecialTags(
+        message.content,
+        containerId,
+        message.id,
+        false,
+        isDark,
+        labels
+      )
+    : null;
 
   useEffect(() => {
     if (
@@ -562,7 +945,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
       hasSpecialTags &&
       containerId
     ) {
-      parseSpecialTags(message.content, containerId, message.id, true);
+      parseSpecialTags(message.content, containerId, message.id, true, isDark, labels);
       setHasExecutedOperations(true);
     }
   }, [
@@ -581,31 +964,33 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
       }`}
     >
       {message.role === "assistant" && (
-        <div className="flex items-center gap-2 mb-2 w-full">
+        <div className="mb-2 flex w-full items-center gap-2">
           <img
-            className="w-4 h-4 rounded"
-            src="/december-logo.png"
-            alt="Assistant Avatar"
+            className="h-3.5 w-3.5 rounded"
+            src="/brand-logo-mark.png"
+            alt={label("assistantAvatar", "Assistant Avatar")}
           />
-          <span className="text-sm font-medium text-white/90">Assistant</span>
-          <span className="text-xs text-white/40 ml-auto">
+          <span className={`text-[12px] font-medium tracking-[-0.01em] ${ui.assistantName}`}>
+            {label("assistant", "Assistant")}
+          </span>
+          <span className={`text-xs ml-auto ${ui.timestamp}`}>
             {formatTimestamp(message.timestamp)}
           </span>
         </div>
       )}
 
       <div
-        className={`rounded-xl px-4 py-3 text-sm leading-relaxed backdrop-blur-md border shadow-sm relative ${
+        className={
           message.role === "user"
-            ? "bg-blue-600/20 border-blue-500/30 text-white ml-8 max-w-[85%]"
-            : "bg-gray-700/60 border-gray-600/40 text-gray-100 w-full"
-        }`}
+            ? `relative ml-8 max-w-[88%] overflow-hidden text-right text-[13px] font-medium leading-5 ${ui.userBubble}`
+            : `relative w-full overflow-hidden rounded-[1.25rem] border px-3.5 py-2.5 text-[13.5px] leading-6 backdrop-blur-xl ${ui.assistantBubble}`
+        }
       >
         {message.role === "assistant" && (
-          <div className="absolute inset-0 bg-gradient-to-br from-gray-600/10 via-transparent to-gray-700/10 rounded-xl" />
+          <div className={`absolute inset-0 rounded-xl ${ui.assistantGlow}`} />
         )}
         {message.role === "user" && (
-          <div className="absolute inset-0 bg-gradient-to-br from-blue-500/10 via-transparent to-blue-600/10 rounded-xl" />
+          <div className={`absolute inset-0 rounded-xl ${ui.userGlow}`} />
         )}
 
         <div className="relative z-10">
@@ -614,11 +999,15 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
               {message.attachments.map((attachment, index) => (
                 <div
                   key={index}
-                  className="flex items-center gap-2 bg-black/20 rounded-lg px-3 py-2 border border-white/10"
+                  className={`flex items-center gap-2 rounded-lg px-3 py-2 border ${ui.attachment}`}
                 >
                   {attachment.type === "image" ? (
                     <>
-                      <Image className="w-4 h-4 text-green-400" />
+                      <Image
+                        className={`w-4 h-4 ${
+                          isDark ? "text-slate-400" : "text-slate-500"
+                        }`}
+                      />
                       <img
                         src={`data:${attachment.mimeType};base64,${attachment.data}`}
                         alt={attachment.name}
@@ -626,13 +1015,17 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
                       />
                     </>
                   ) : (
-                    <FileText className="w-4 h-4 text-blue-400" />
+                    <FileText
+                      className={`w-4 h-4 ${
+                        isDark ? "text-slate-400" : "text-slate-500"
+                      }`}
+                    />
                   )}
                   <div className="flex flex-col">
                     <span className="text-xs font-medium truncate max-w-24">
                       {attachment.name}
                     </span>
-                    <span className="text-xs text-white/60">
+                    <span className={`text-xs ${ui.attachmentMeta}`}>
                       {formatFileSize(attachment.size)}
                     </span>
                   </div>
@@ -642,26 +1035,27 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
           )}
 
           {message.role === "user" ? (
-            <div>{message.content}</div>
+            <div className="whitespace-pre-wrap break-words">
+              {message.content}
+            </div>
           ) : (
             <div className="space-y-1">
               {hasSpecialTags ? (
                 <>
-                  {parseSpecialTags(
-                    message.content,
-                    containerId,
-                    message.id,
-                    false
-                  ) || (
-                    <div className="prose prose-sm prose-invert max-w-none [&_h2]:text-white [&_h3]:text-white [&_h4]:text-white [&_strong]:text-white">
-                      {formatMessageContent(message.content)}
+                  {parsedAssistantContent || (
+                  <div className={`prose prose-sm max-w-none leading-6 ${ui.prose}`}>
+                      {formatMessageContent(displayAssistantContent)}
                     </div>
                   )}
+                  {renderChangeSummary(changeSummary, isDark, labels)}
                 </>
               ) : (
-                <div className="prose prose-sm prose-invert max-w-none [&_h2]:text-white [&_h3]:text-white [&_h4]:text-white [&_strong]:text-white [&_code]:bg-gray-600/60 [&_code]:text-gray-200 [&_code]:px-1.5 [&_code]:py-0.5 [&_code]:rounded [&_code]:border [&_code]:border-gray-500/30">
-                  {formatMessageContent(message.content)}
-                </div>
+                <>
+                  <div className={`prose prose-sm max-w-none leading-6 ${ui.prose} [&_code]:px-1.5 [&_code]:py-0.5 [&_code]:rounded [&_code]:border`}>
+                    {formatMessageContent(displayAssistantContent)}
+                  </div>
+                  {renderChangeSummary(changeSummary, isDark, labels)}
+                </>
               )}
             </div>
           )}
@@ -669,9 +1063,32 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
       </div>
 
       {message.role === "user" && (
-        <span className="text-xs text-white/40 mt-1.5 mr-2">
+        <span className={`mt-1 text-[10px] ${ui.timestamp}`}>
           {formatTimestamp(message.timestamp)}
         </span>
+      )}
+
+      {message.role === "user" && (
+        <span
+          className={`mt-2 block w-[72%] max-w-[240px] border-t ${ui.userSeparator}`}
+          aria-hidden="true"
+        />
+      )}
+
+      {message.role === "assistant" && !isStreaming && (
+        <div className={`mt-2 flex w-full flex-wrap items-center gap-x-2 gap-y-1 border-l pl-3 pr-3 text-[11px] ${ui.activityRail} ${ui.activityCard}`}>
+          <span className="inline-flex items-center gap-1.5">
+            <CheckCircle className={`h-3 w-3 ${ui.activityIcon}`} />
+            <span>{label("checkpointMade", "Checkpoint made")}</span>
+          </span>
+          <span className={ui.timestamp}>Â·</span>
+          <span className={ui.timestamp}>{formatRelativeTime(message.timestamp)}</span>
+          <span className={ui.timestamp}>Â·</span>
+          <span className="inline-flex items-center gap-1.5">
+            <Clock3 className="h-3 w-3 text-slate-400/70" />
+            <span>{formatWorkedTime(workStartedAt, message.timestamp)}</span>
+          </span>
+        </div>
       )}
     </div>
   );

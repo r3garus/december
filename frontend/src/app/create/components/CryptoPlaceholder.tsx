@@ -1,11 +1,11 @@
 export const CryptoPlaceholder = () => {
   return (
-    <div className="flex-1 bg-gray-950 p-6">
+    <div className="min-h-0 flex-1 bg-gray-950 p-3 sm:p-6">
       <div className="h-full w-full bg-gray-900 rounded-lg border border-gray-800 flex items-center justify-center">
-        <div className="text-center max-w-md">
-          <div className="w-20 h-20 bg-gradient-to-br from-green-400 to-blue-500 rounded-full mx-auto mb-6 flex items-center justify-center">
+        <div className="max-w-md px-4 text-center">
+          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-gradient-to-br from-green-400 to-blue-500 sm:mb-6 sm:h-20 sm:w-20">
             <svg
-              className="w-10 h-10 text-white"
+              className="h-8 w-8 text-white sm:h-10 sm:w-10"
               fill="currentColor"
               viewBox="0 0 20 20"
             >
@@ -16,10 +16,10 @@ export const CryptoPlaceholder = () => {
               />
             </svg>
           </div>
-          <h1 className="text-2xl font-bold text-white mb-4">
+          <h1 className="mb-3 text-xl font-bold text-white sm:mb-4 sm:text-2xl">
             Crypto Dashboard
           </h1>
-          <p className="text-gray-400 text-lg mb-6">
+          <p className="mb-4 text-sm text-gray-400 sm:mb-6 sm:text-lg">
             Your crypto trading interface will be rendered here
           </p>
           <div className="text-sm text-gray-500 space-y-2">
