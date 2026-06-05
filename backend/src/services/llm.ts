@@ -21,9 +21,9 @@ const aiSdkConfig = config.aiSdk as typeof config.aiSdk & {
 };
 const aiTemperature = aiSdkConfig.temperature ?? 0.15;
 const aiMaxRetries = aiSdkConfig.maxRetries ?? 2;
-const aiMinQualityScore = aiSdkConfig.minQualityScore ?? 80;
-const aiMaxCriticRounds = aiSdkConfig.maxCriticRounds ?? 2;
-const AI_REQUEST_TIMEOUT_MS = Number(process.env.AI_REQUEST_TIMEOUT_MS || "90000");
+const aiMinQualityScore = aiSdkConfig.minQualityScore ?? 88;
+const aiMaxCriticRounds = aiSdkConfig.maxCriticRounds ?? 3;
+const AI_REQUEST_TIMEOUT_MS = Number(process.env.AI_REQUEST_TIMEOUT_MS || "150000");
 
 function getAiClient(provider: AiProviderConfig) {
   const cacheKey = `${provider.key}:${provider.baseUrl}`;
@@ -386,10 +386,11 @@ Given a user's request, produce an implementation brief in concise plain text wi
 1) Goal
 2) Audience
 3) UI/UX Direction
-4) Required Pages/Sections
-5) Technical Plan
-6) Acceptance Checklist
-7) Design Differentiators
+4) Information Architecture
+5) Required Routes and Sections
+6) Technical Plan
+7) Acceptance Checklist
+8) Design Differentiators
 
 Only produce an implementation brief when the user clearly asks to build,
 change, update, remove, design, or implement something.
@@ -402,6 +403,10 @@ If a short request has clear build intent, infer missing details professionally.
 Do not create a generic SaaS/agency brief unless the user's domain is actually SaaS/agency.
 If the user names a sector, make the brief sector-specific: page order, proof points,
 CTA logic, objections, copy tone, and visual direction must match that sector.
+For broad website/app requests, plan a real multi-route project by default:
+- Home route plus 2-4 supporting routes such as about, services/features, pricing/menu/treatments, FAQ, contact, dashboard, or blog when sensible.
+- Shared content/config data, reusable components, responsive navigation, and meaningful page transitions.
+- Use a modern animated visual system unless the user explicitly asks for static/minimal.
 `;
 
 const BUILDER_SYSTEM_PROMPT = `
@@ -411,23 +416,26 @@ Deliver production-minded quality:
 - semantic and accessible structure
 - maintainable code
 - strong visual hierarchy
+- modern motion/animation by default unless the user explicitly asks for static/minimal
 - avoid generic repetitive template output
 - never produce the same landing page with only the logo/title changed
 - infer the industry, audience, product promise, trust objections, and CTA from the prompt
 - make every generated page visibly prompt-specific through copy, layout, proof, section order, and visual language
 - choose a distinct design direction per request: editorial, luxury service, operational dashboard, boutique studio, local business, or clean SaaS when appropriate
 - when implementing, output executable edit tags only; plain markdown code is not applied
-- for any new website or landing page, rewrite src/app/page.tsx at minimum
-- for broad website/application builds, split the implementation into real files instead of dumping everything into one page: src/app/page.tsx plus at least one component file and one content/config/data file when appropriate
+- for any new website/application, rewrite src/app/page.tsx at minimum
+- for broad website/application builds, create a real multi-page App Router project by default: home plus 2-4 supporting routes such as src/app/about/page.tsx, src/app/services/page.tsx, src/app/pricing/page.tsx, src/app/faq/page.tsx, src/app/contact/page.tsx, src/app/dashboard/page.tsx, or domain-specific equivalents
+- only keep a broad build as one page when the user explicitly asks for a single-page/one-page/landing-only result
+- split the implementation into real files instead of dumping everything into one page: page routes, at least one shared component file, and at least one content/config/data file
 - prefer a complete, polished implementation over shallow file count, but never use a tiny one-file toy page for a broad build
 - do not use placeholder copy, fake generic stats, lorem ipsum, or repeated card names
 - when the request implies a website, create a coherent site experience, not only a decorative hero section
 - if multiple pages are explicitly requested, create real App Router pages and navigation
-- if pages are not specified, build the strongest sensible first version: homepage plus sections that feel like a complete product/site
+- if pages are not specified, infer the strongest sensible information architecture and implement several real routes
 - make the result feel closer to a polished Replit/Lovable-quality prototype than a simple landing-page template
-- include thoughtful empty states, microcopy, responsive behavior, and conversion logic where relevant
+- include thoughtful empty states, microcopy, responsive behavior, conversion logic, hover states, and page/section transitions where relevant
 - ask focused questions only when missing information would materially change the product; otherwise make professional defaults and build
-- for full website requests, build at least 7 meaningful sections unless the requested scope is smaller
+- for full website requests, build at least 7 meaningful sections across multiple routes unless the requested scope is smaller
 - generated sites must have a clear visual concept: color system, spacing rhythm, typography scale, card geometry, and section transitions
 - do not generate a centered hero followed by identical cards unless the user explicitly asks for a minimal template
 - when the user asks for pages such as pricing, FAQ, contact, dashboard, login, register, blog, or about, create those routes/files instead of only naming them in nav
@@ -448,20 +456,24 @@ FEEDBACK:
 
 Scoring criteria:
 - Implementation completeness
+- Multi-route information architecture for broad website/app requests
 - UI/UX quality and hierarchy
 - Responsiveness expectations
 - Code quality / maintainability
 - Avoidance of generic template output
 - Product-specific information architecture, not just a hero and generic cards
-- Professional visual craft: typography, spacing, palette, sections, states, and conversion flow
+- Professional visual craft: typography, spacing, palette, sections, motion, states, and conversion flow
 
 Rules:
 - PASS only if score >= required minimum and quality is clearly strong.
 - FAIL generic/simple landing pages that could fit any industry after only changing the logo.
 - FAIL outputs that ignore requested pages or do not create routes for explicitly requested pages.
-- FAIL outputs with fewer than 7 meaningful sections for broad website/landing requests unless the user asked for something intentionally small.
+- FAIL broad website/application builds that create only one page unless the user explicitly requested a one-page/landing-only result.
+- FAIL broad website/application builds with fewer than 3 real App Router page files.
+- FAIL outputs with fewer than 7 meaningful sections across the project for broad website/app requests unless the user asked for something intentionally small.
 - FAIL when the visual system is basic, repeated, or looks like a logo/title swap.
-- FAIL broad website/application builds that only rewrite src/app/page.tsx with a small one-file implementation.
+- FAIL broad website/application builds that lack shared components/content/config structure.
+- FAIL broad website/application builds that have no purposeful animation, transition, hover state, or motion system unless the user requested static/minimal.
 - FAIL outputs that use Klawpen, Klawpen Cloud, or Klawpen Studio as the generated customer brand unless the user explicitly requested Klawpen itself.
 - Keep feedback specific and actionable.
 `;
@@ -1100,6 +1112,50 @@ function getWriteOperations(assistantContent: string) {
   );
 }
 
+function isExplicitSinglePageRequest(message: string) {
+  const normalized = normalizePromptText(message);
+
+  return /\b(tek sayfa|one page|single page|landing only|landing-only|sadece landing|yalniz landing|yalnizca landing|only landing)\b/.test(
+    normalized
+  );
+}
+
+function getRouteWriteCount(writes: CodeOperation[]) {
+  return writes.filter((operation) =>
+    /^src\/app\/(?:page|[^/]+\/page)\.tsx$/.test(
+      normalizeProjectPath(operation.path || "")
+    )
+  ).length;
+}
+
+function getSupportingRouteWriteCount(writes: CodeOperation[]) {
+  return writes.filter((operation) =>
+    /^src\/app\/[^/]+\/page\.tsx$/.test(
+      normalizeProjectPath(operation.path || "")
+    )
+  ).length;
+}
+
+function hasContentStructure(writes: CodeOperation[]) {
+  return writes.some((operation) =>
+    /^src\/(lib|data|config)\//.test(normalizeProjectPath(operation.path || ""))
+  );
+}
+
+function hasComponentStructure(writes: CodeOperation[]) {
+  return writes.some((operation) =>
+    /^src\/components\//.test(normalizeProjectPath(operation.path || ""))
+  );
+}
+
+function hasMotionSystem(writes: CodeOperation[]) {
+  const combined = writes.map((operation) => operation.content || "").join("\n");
+
+  return /\b(animate-|transition-|duration-|ease-|hover:|group-hover:|motion-safe|@keyframes|animation:|framer-motion|whileHover|initial=|animate=)\b/.test(
+    combined
+  );
+}
+
 function hasOnlySmallSinglePageBuild(assistantContent: string) {
   const writes = getWriteOperations(assistantContent);
 
@@ -1132,12 +1188,19 @@ function hasShallowBroadBuildStructure(assistantContent: string) {
     (total, operation) => total + (operation.content || "").length,
     0
   );
+  const routeWriteCount = getRouteWriteCount(writes);
+  const supportingRouteWriteCount = getSupportingRouteWriteCount(writes);
 
   return (
     !hasPageWrite ||
+    routeWriteCount < 3 ||
+    supportingRouteWriteCount < 2 ||
     writes.length < 3 ||
     !hasSupportingStructure ||
-    totalWrittenBytes < 14_000 ||
+    !hasComponentStructure(writes) ||
+    !hasContentStructure(writes) ||
+    !hasMotionSystem(writes) ||
+    totalWrittenBytes < 20_000 ||
     hasOnlySmallSinglePageBuild(assistantContent)
   );
 }
@@ -1149,6 +1212,7 @@ function shouldRepairBuildDepth(
 ) {
   return (
     isBroadBuildRequest(userMessage, options) &&
+    !isExplicitSinglePageRequest(userMessage) &&
     hasShallowBroadBuildStructure(assistantContent)
   );
 }
@@ -1797,27 +1861,71 @@ export default function Home() {
 `;
 }
 
+function buildFallbackServicesPage(_userMessage: string): string {
+  return `import type { Metadata } from "next";
+import { GeneratedLandingPage } from "../../components/klawpen-generated-site";
+import { siteContent } from "../../lib/klawpen-generated-content";
+
+export const metadata: Metadata = {
+  title: siteContent.profile.servicesTitle + " | " + siteContent.businessName,
+  description: siteContent.profile.intro,
+};
+
+export default function ServicesPage() {
+  return <GeneratedLandingPage />;
+}
+`;
+}
+
+function buildFallbackContactPage(_userMessage: string): string {
+  return `import type { Metadata } from "next";
+import { GeneratedLandingPage } from "../../components/klawpen-generated-site";
+import { siteContent } from "../../lib/klawpen-generated-content";
+
+export const metadata: Metadata = {
+  title: siteContent.labels.finalTitle + " | " + siteContent.businessName,
+  description: siteContent.labels.finalText,
+};
+
+export default function ContactPage() {
+  return <GeneratedLandingPage />;
+}
+`;
+}
+
 function buildFallbackOperations(userMessage: string): CodeOperation[] {
   const content = buildFallbackSiteContent(userMessage);
 
   return [
     {
       type: "write",
-      index: Number.MAX_SAFE_INTEGER - 2,
+      index: Number.MAX_SAFE_INTEGER - 4,
       path: "src/lib/klawpen-generated-content.ts",
       content: buildFallbackContentFile(content),
     },
     {
       type: "write",
-      index: Number.MAX_SAFE_INTEGER - 1,
+      index: Number.MAX_SAFE_INTEGER - 3,
       path: "src/components/klawpen-generated-site.tsx",
       content: buildFallbackGeneratedSiteComponent(),
     },
     {
       type: "write",
-      index: Number.MAX_SAFE_INTEGER,
+      index: Number.MAX_SAFE_INTEGER - 2,
       path: "src/app/page.tsx",
       content: buildFallbackLandingPage(userMessage),
+    },
+    {
+      type: "write",
+      index: Number.MAX_SAFE_INTEGER - 1,
+      path: "src/app/services/page.tsx",
+      content: buildFallbackServicesPage(userMessage),
+    },
+    {
+      type: "write",
+      index: Number.MAX_SAFE_INTEGER,
+      path: "src/app/contact/page.tsx",
+      content: buildFallbackContactPage(userMessage),
     },
   ];
 }
@@ -2016,29 +2124,30 @@ function createLocalPlannerBrief(
 
   if (turkish) {
     return [
-      `Goal: ${inferredTitle} için üretime hazır, modern ve mobil uyumlu bir web sayfası oluştur.`,
+      `Goal: ${inferredTitle} için üretime hazır, modern, mobil uyumlu ve çok sayfalı bir web projesi oluştur.`,
       `Inferred Context: Sektör=${inferredProfile.sector}, tasarım yönü=${inferredProfile.layout}, ana CTA=${inferredProfile.primary}.`,
       planningLine,
       "Audience: Hizmet veya ürün arayan son kullanıcılar.",
-      "UI/UX Direction: Prompt'a özel, güven veren, net hiyerarşili, premium ve dönüşüm odaklı bir landing page.",
-      "Required Pages/Sections: Sektöre özel hero, güven unsurları, hizmetler/özellikler, süreç, sosyal kanıt, SSS ve iletişim CTA.",
-      "Technical Plan: Next.js App Router içinde src/app/page.tsx dosyasını tam ve çalışır şekilde yeniden yaz.",
-      "Acceptance Checklist: Responsive tasarım, anlamlı sektörel metinler, erişilebilir HTML, bozuk import yok, placeholder veya tekrar template hissi yok.",
+      "UI/UX Direction: Prompt'a özel, güven veren, net hiyerarşili, premium, modern ve animasyonlu bir ürün/site deneyimi.",
+      "Information Architecture: Ana sayfa + 2-4 destek sayfası oluştur; örnek route'lar: hizmetler/özellikler, fiyatlar/menü/tedaviler, hakkımızda, SSS, iletişim veya sektöre uygun eşdeğerleri.",
+      "Required Pages/Sections: Her route kendi amacına sahip olsun; hero, kanıt, hizmet mimarisi, süreç, sosyal kanıt, SSS, iletişim/dönüşüm CTA ve sektöre özel ek bölümler projeye yayılsın.",
+      "Technical Plan: Next.js App Router içinde src/app/page.tsx yanında gerçek route dosyaları, shared component dosyası, content/config dosyası ve modern transition/hover animasyonları oluştur.",
+      "Acceptance Checklist: En az 3 gerçek page route, shared component/content yapısı, responsive tasarım, anlamlı sektörel metinler, erişilebilir HTML, bozuk import yok, tek sayfa/template hissi yok.",
     ].join("\n");
   }
 
   return [
-    `Goal: Build a production-ready, modern, mobile-responsive web page for ${inferredTitle}.`,
+    `Goal: Build a production-ready, modern, mobile-responsive multi-page web project for ${inferredTitle}.`,
     `Inferred Context: Sector=${inferredProfile.sector}, design direction=${inferredProfile.layout}, primary CTA=${inferredProfile.primary}.`,
     planningLine,
     "Audience: End users evaluating the service or product.",
-    "UI/UX Direction: Prompt-specific, trustworthy, premium, conversion-focused landing page with clear hierarchy.",
-    "Required Pages/Sections: Sector-specific hero, trust strip, services/features, process, social proof, FAQ, and contact CTA.",
-    "Technical Plan: Rewrite src/app/page.tsx completely using the Next.js App Router structure.",
-    "Acceptance Checklist: Responsive layout, meaningful sector-specific copy, accessible HTML, no broken imports, no placeholder or repeated-template feel.",
+    "UI/UX Direction: Prompt-specific, trustworthy, premium, modern, animated product/site experience with clear hierarchy.",
+    "Information Architecture: Build a homepage plus 2-4 supporting pages; sensible routes include services/features, pricing/menu/treatments, about, FAQ, contact, dashboard, blog, or domain-specific equivalents.",
+    "Required Pages/Sections: Each route should have a clear job; distribute hero, proof, service architecture, process, social proof, FAQ, contact/conversion CTA, and sector-specific sections across the project.",
+    "Technical Plan: Use Next.js App Router with src/app/page.tsx plus real route files, shared component files, content/config data, and modern transition/hover animation patterns.",
+    "Acceptance Checklist: At least 3 real page routes, shared component/content structure, responsive layout, meaningful sector-specific copy, accessible HTML, no broken imports, no one-page/template feel.",
   ].join("\n");
 }
-
 async function createBuilderResponse(
   input: string,
   provider: AiProviderConfig,
@@ -2056,13 +2165,22 @@ async function createBuilderResponse(
         "Return exactly one <dec-code> block.",
         "Use executable edit tags only.",
         "Rewrite src/app/page.tsx completely.",
-        "For broad website or app requests, also create at least one focused component file and one content/config file when it improves structure.",
+        isBroadBuildRequest(userMessage, options) &&
+        !isExplicitSinglePageRequest(userMessage)
+          ? [
+              "This is a broad website/app build: create a multi-page project, not a one-page landing.",
+              "Create at least 3 real App Router page files: src/app/page.tsx plus 2+ supporting routes that fit the domain.",
+              "Create shared components for navigation/layout/sections and a content/config/data file to avoid hardcoded repetition.",
+              "Navigation links must point to real routes or real anchors; do not fake pages with navbar labels only.",
+              "Include purposeful modern motion: page/section reveal classes, hover transitions, animated visual details, or CSS keyframes.",
+            ].join("\n")
+          : "If the user explicitly requested a single-page result, keep it one route but still make it polished and componentized.",
         "Do not name the generated customer-facing brand Klawpen unless the user asks for Klawpen itself.",
         "The result must be specific to this prompt, not a reused generic template.",
         options.planMode
           ? "Plan mode is enabled and the clarification gate has already passed: include a concise implementation plan inside the <dec-code> block, then implement decisively."
           : "Plan mode is disabled: infer professional defaults for missing minor details and implement directly.",
-        "Raise the UI quality bar: build polished navigation, rich sections, responsive behavior, strong typography, deliberate color, and product-specific copy. Avoid simple toy layouts.",
+        "Raise the UI quality bar: build polished navigation, rich routes, responsive behavior, strong typography, deliberate color, animations, states, and product-specific copy. Avoid simple toy layouts.",
       ].join("\n"),
       temperature: Math.max(aiTemperature, 0.22),
     });
@@ -2268,7 +2386,7 @@ async function repairMissingExecutableEdits(params: {
   const repairReason = missingExecutableEdits
     ? "The previous assistant output is invalid because it did not contain executable edit operations."
     : shallowBroadBuild
-      ? "The previous assistant output was too shallow for a broad build: it only produced a small single-page implementation."
+      ? "The previous assistant output was too shallow for a broad build: it did not create enough real routes, shared structure, motion, or implementation depth."
       : "The previous assistant output reused Klawpen as the customer-facing generated brand without user intent.";
 
   const repairInput = `
@@ -2279,8 +2397,13 @@ ${BUILDER_SYSTEM_PROMPT}
 
 ${repairReason}
 Return exactly one <dec-code> block with executable edit tags.
-For this build request, rewrite src/app/page.tsx and add focused supporting files where useful, such as src/components/generated-site.tsx and src/lib/generated-content.ts.
-The implementation must feel prompt-specific, visually polished, responsive, and complete enough to preview as a real first version.
+For this build request, rewrite src/app/page.tsx and create a real multi-page App Router project:
+- at least 3 page files total, including src/app/page.tsx plus 2+ supporting routes that fit the user's domain
+- shared component files for navigation, layout, cards/sections, and reusable visual primitives
+- a content/config/data file so copy and page metadata are organized instead of hardcoded repeatedly
+- real links between pages and meaningful CTAs
+- purposeful modern motion: transitions, hover states, reveal animations, or CSS keyframes
+The implementation must feel prompt-specific, visually polished, responsive, and complete enough to preview as a professional first version.
 Do not use Klawpen, Klawpen Cloud, or Klawpen Studio as the customer-facing site name unless the user explicitly asks for Klawpen.
 Do not use markdown code fences. Do not only explain. Do not repeat the previous invalid response.
 

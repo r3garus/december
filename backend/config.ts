@@ -7,9 +7,9 @@ export const config = {
       process.env.OPENAI_API_KEY ||
       "",
     model: process.env.AI_MODEL || "gpt-5.3-codex",
-    temperature: Number(process.env.AI_TEMPERATURE || "0.15"),
+    temperature: Number(process.env.AI_TEMPERATURE || "0.18"),
     maxRetries: Number(process.env.AI_MAX_RETRIES || "2"),
-    minQualityScore: Number(process.env.AI_MIN_QUALITY_SCORE || "80"),
-    maxCriticRounds: Number(process.env.AI_MAX_CRITIC_ROUNDS || "2"),
+    minQualityScore: Number(process.env.AI_MIN_QUALITY_SCORE || "88"),
+    maxCriticRounds: Number(process.env.AI_MAX_CRITIC_ROUNDS || "3"),
   },
 } as const;
