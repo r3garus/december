@@ -6,7 +6,6 @@ import * as fileService from "../services/file";
 import * as packageService from "../services/package";
 
 const router = express.Router();
-const previewBase = process.env.PREVIEW_BASE_URL || "http://localhost";
 
 router.param("containerId", async (req, res, next, containerId: string) => {
   try {
@@ -61,7 +60,8 @@ router.post("/create", async (req, res) => {
         containerId: container.id,
         status: "running",
         port: port,
-        url: `${previewBase}:${port}`,
+        url: dockerService.buildPreviewUrl(container.id),
+        rawUrl: dockerService.buildRawPreviewUrl(port),
         createdAt: new Date().toISOString(),
         type: "Next.js App",
       },
@@ -86,7 +86,8 @@ router.post("/:containerId/start", async (req, res) => {
       success: true,
       containerId,
       port,
-      url: `${previewBase}:${port}`,
+      url: dockerService.buildPreviewUrl(containerId),
+      rawUrl: dockerService.buildRawPreviewUrl(port),
       status: "running",
       message: "Container started successfully",
     });

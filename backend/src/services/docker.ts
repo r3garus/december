@@ -1,6 +1,8 @@
 import Docker from "dockerode";
+import crypto from "crypto";
 import fs from "fs/promises";
 import net from "net";
+import os from "os";
 import path from "path";
 
 const docker = new Docker({ socketPath: "/var/run/docker.sock" });
@@ -8,8 +10,23 @@ const BASE_PORT = 8100;
 const ALLOW_LEGACY_CONTAINERS = process.env.ALLOW_LEGACY_CONTAINERS === "true";
 const TEMPLATE_IMAGE_NAME =
   process.env.PROJECT_TEMPLATE_IMAGE || "dec-nextjs-template-klawpen";
+const TEMPLATE_IMAGE_VERSION = (
+  process.env.PROJECT_TEMPLATE_VERSION || "klawpen-preview-proxy-v1"
+).replace(/[^a-zA-Z0-9_.-]/g, "-");
+const TEMPLATE_VERSION_LABEL = "klawpen.template.version";
+const DEFAULT_PUBLIC_API_ORIGIN =
+  process.env.NODE_ENV === "production"
+    ? "https://api.builder.klawpen.com"
+    : "http://localhost:4000";
+const PUBLIC_PREVIEW_PROXY_ORIGIN = (
+  process.env.PREVIEW_PROXY_PUBLIC_ORIGIN ||
+  process.env.PUBLIC_API_URL ||
+  process.env.NEXT_PUBLIC_API_URL ||
+  DEFAULT_PUBLIC_API_ORIGIN
+).replace(/\/$/, "");
 
 const usedPorts = new Set<number>();
+let detectedProjectNetwork: Promise<string | null> | null = null;
 
 export interface ProjectOwner {
   teamId: number;
@@ -65,24 +82,102 @@ function releasePort(port: number): void {
   usedPorts.delete(port);
 }
 
+async function resolveProjectNetwork(): Promise<string | null> {
+  if (process.env.PROJECT_CONTAINER_NETWORK) {
+    const network = process.env.PROJECT_CONTAINER_NETWORK.trim();
+    return network && network !== "default" ? network : null;
+  }
+
+  if (process.env.AUTO_ATTACH_PROJECT_NETWORK === "false") {
+    return null;
+  }
+
+  if (!detectedProjectNetwork) {
+    detectedProjectNetwork = (async () => {
+      try {
+        const selfContainer = docker.getContainer(os.hostname());
+        const info = await selfContainer.inspect();
+        const networks = Object.keys(info.NetworkSettings?.Networks || {});
+        return networks[0] || null;
+      } catch {
+        return null;
+      }
+    })();
+  }
+
+  return detectedProjectNetwork;
+}
+
+function getPreviewSecret(): string {
+  return process.env.PREVIEW_PROXY_SECRET || process.env.BACKEND_API_TOKEN || "";
+}
+
+export function signPreviewToken(containerId: string): string | null {
+  const secret = getPreviewSecret();
+  if (!secret) return null;
+
+  return crypto
+    .createHmac("sha256", secret)
+    .update(containerId)
+    .digest("hex")
+    .slice(0, 48);
+}
+
+export function isValidPreviewToken(
+  containerId: string,
+  token?: string
+): boolean {
+  const expectedToken = signPreviewToken(containerId);
+  if (!expectedToken) return true;
+  if (!token) return false;
+
+  const expected = Buffer.from(expectedToken);
+  const received = Buffer.from(token);
+
+  return (
+    expected.length === received.length &&
+    crypto.timingSafeEqual(expected, received)
+  );
+}
+
+export function buildPreviewUrl(containerId: string): string {
+  const token = signPreviewToken(containerId);
+  const tokenQuery = token ? `?token=${encodeURIComponent(token)}` : "";
+  return `${PUBLIC_PREVIEW_PROXY_ORIGIN}/preview/${containerId}/${tokenQuery}`;
+}
+
+export function buildRawPreviewUrl(port: number): string {
+  return `${process.env.PREVIEW_BASE_URL || "http://localhost"}:${port}`;
+}
+
 export async function getDockerfile(): Promise<string> {
   return await fs.readFile("./src/Dockerfile", "utf-8");
 }
 
 export async function buildImage(containerId: string): Promise<string> {
   try {
-    await docker.getImage(TEMPLATE_IMAGE_NAME).inspect();
-    console.log(`Using cached template image: ${TEMPLATE_IMAGE_NAME}`);
-    return TEMPLATE_IMAGE_NAME;
+    const existingImage = docker.getImage(TEMPLATE_IMAGE_NAME);
+    const imageInfo = await existingImage.inspect();
+    const imageVersion = imageInfo.Config?.Labels?.[TEMPLATE_VERSION_LABEL];
+
+    if (imageVersion === TEMPLATE_IMAGE_VERSION) {
+      console.log(`Using cached template image: ${TEMPLATE_IMAGE_NAME}`);
+      return TEMPLATE_IMAGE_NAME;
+    }
+
+    console.log(
+      `Template image version changed (${imageVersion || "none"} -> ${TEMPLATE_IMAGE_VERSION}); rebuilding.`
+    );
+    await existingImage.remove({ force: true });
   } catch {
-    // Image does not exist yet; build it once and reuse it for new projects.
+    // Image does not exist or could not be inspected; build it once and reuse it.
   }
 
   const tempDir = path.join("/tmp", `docker-app-${containerId}`);
   await fs.mkdir(tempDir, { recursive: true });
 
   try {
-    const dockerfileContent = await getDockerfile();
+    const dockerfileContent = `${(await getDockerfile()).trimEnd()}\n\nLABEL ${TEMPLATE_VERSION_LABEL}="${TEMPLATE_IMAGE_VERSION}"\n`;
     await fs.writeFile(path.join(tempDir, "Dockerfile"), dockerfileContent);
 
     const imageName = TEMPLATE_IMAGE_NAME;
@@ -147,6 +242,7 @@ export async function createContainer(
 ): Promise<{ container: Docker.Container; port: number }> {
   const containerName = `dec-nextjs-${containerId}`;
   const assignedPort = await findAvailablePort();
+  const networkMode = await resolveProjectNetwork();
 
   console.log(`Creating container: ${containerName} on port ${assignedPort}`);
 
@@ -156,6 +252,7 @@ export async function createContainer(
     ExposedPorts: { "3000/tcp": {} },
     HostConfig: {
       PortBindings: { "3000/tcp": [{ HostPort: assignedPort.toString() }] },
+      ...(networkMode ? { NetworkMode: networkMode } : {}),
     },
     Labels: {
       project: "december",
@@ -249,6 +346,37 @@ export function getContainer(containerId: string): Docker.Container {
   return docker.getContainer(containerId);
 }
 
+export async function getPreviewRuntime(
+  containerId: string
+): Promise<{ containerInfo: any; port: number; upstreamUrls: string[] }> {
+  const container = await assertProjectContainer(containerId);
+  const containerInfo = await container.inspect();
+  const port = getPortFromContainer(containerInfo);
+  const containerName = containerInfo.Name?.replace(/^\//, "");
+  const networkUrls = Object.values(containerInfo.NetworkSettings?.Networks || {})
+    .map((network: any) => network?.IPAddress)
+    .filter(Boolean)
+    .map((ip) => `http://${ip}:3000`);
+
+  const upstreamUrls = [
+    process.env.PREVIEW_UPSTREAM_URL_TEMPLATE?.replace("{port}", String(port)),
+    process.env.PREVIEW_UPSTREAM_HOST
+      ? `http://${process.env.PREVIEW_UPSTREAM_HOST}:${port}`
+      : null,
+    containerName ? `http://${containerName}:3000` : null,
+    ...networkUrls,
+    process.env.PREVIEW_BASE_URL ? `${process.env.PREVIEW_BASE_URL}:${port}` : null,
+    `http://host.docker.internal:${port}`,
+    `http://172.17.0.1:${port}`,
+  ].filter((url): url is string => Boolean(url));
+
+  return {
+    containerInfo,
+    port,
+    upstreamUrls: Array.from(new Set(upstreamUrls)),
+  };
+}
+
 export { docker };
 
 function assertSafeContainerId(containerId: string): void {
@@ -322,9 +450,8 @@ export async function listProjectContainers(owner?: ProjectOwner): Promise<any[]
       image: container.Image,
       created: new Date(container.Created * 1000).toISOString(),
       assignedPort,
-      url: assignedPort
-        ? `${process.env.PREVIEW_BASE_URL || "http://localhost"}:${assignedPort}`
-        : null,
+      url: assignedPort ? buildPreviewUrl(container.Id) : null,
+      rawUrl: assignedPort ? buildRawPreviewUrl(assignedPort) : null,
       ports:
         container.Ports?.map((port) => ({
           private: port.PrivatePort,

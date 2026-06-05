@@ -3,6 +3,7 @@ import { requireAccount } from "./services/account";
 import accountRoutes from "./routes/account";
 import chatRoutes from "./routes/chat";
 import containerRoutes from "./routes/containers";
+import previewRoutes from "./routes/preview";
 
 const app = express();
 
@@ -153,6 +154,8 @@ app.use((req, res, next): void => {
 
   next();
 });
+
+app.use("/preview", previewRoutes);
 
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));

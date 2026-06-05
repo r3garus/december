@@ -12,6 +12,7 @@ export interface Container {
   created: string;
   assignedPort: number | null;
   url: string | null;
+  rawUrl?: string | null;
   ports: Array<{
     private: number;
     public: number;
@@ -50,6 +51,7 @@ export interface CreateContainerResponse {
     status: string;
     port: number;
     url: string;
+    rawUrl?: string;
     createdAt: string;
     type: string;
   };
@@ -59,6 +61,7 @@ export interface StartContainerResponse {
   containerId: string;
   port: number;
   url: string;
+  rawUrl?: string;
   status: string;
   message: string;
 }
