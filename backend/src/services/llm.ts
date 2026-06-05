@@ -418,7 +418,8 @@ Deliver production-minded quality:
 - choose a distinct design direction per request: editorial, luxury service, operational dashboard, boutique studio, local business, or clean SaaS when appropriate
 - when implementing, output executable edit tags only; plain markdown code is not applied
 - for any new website or landing page, rewrite src/app/page.tsx at minimum
-- prefer one complete, polished page over many shallow files
+- for broad website/application builds, split the implementation into real files instead of dumping everything into one page: src/app/page.tsx plus at least one component file and one content/config/data file when appropriate
+- prefer a complete, polished implementation over shallow file count, but never use a tiny one-file toy page for a broad build
 - do not use placeholder copy, fake generic stats, lorem ipsum, or repeated card names
 - when the request implies a website, create a coherent site experience, not only a decorative hero section
 - if multiple pages are explicitly requested, create real App Router pages and navigation
@@ -431,6 +432,7 @@ Deliver production-minded quality:
 - do not generate a centered hero followed by identical cards unless the user explicitly asks for a minimal template
 - when the user asks for pages such as pricing, FAQ, contact, dashboard, login, register, blog, or about, create those routes/files instead of only naming them in nav
 - keep copy in the user's language and make it specific enough that it cannot be reused for an unrelated sector
+- Klawpen is the builder brand, not the default brand for the generated customer website; do not name the generated project "Klawpen", "Klawpen Cloud", or "Klawpen Studio" unless the user explicitly asks for it
 `;
 
 const CRITIC_SYSTEM_PROMPT = `
@@ -459,6 +461,8 @@ Rules:
 - FAIL outputs that ignore requested pages or do not create routes for explicitly requested pages.
 - FAIL outputs with fewer than 7 meaningful sections for broad website/landing requests unless the user asked for something intentionally small.
 - FAIL when the visual system is basic, repeated, or looks like a logo/title swap.
+- FAIL broad website/application builds that only rewrite src/app/page.tsx with a small one-file implementation.
+- FAIL outputs that use Klawpen, Klawpen Cloud, or Klawpen Studio as the generated customer brand unless the user explicitly requested Klawpen itself.
 - Keep feedback specific and actionable.
 `;
 
@@ -1061,6 +1065,107 @@ function hasExecutableCodeOperations(assistantContent: string) {
   );
 }
 
+function getExecutableCodeOperations(assistantContent: string): CodeOperation[] {
+  const taggedOperations = extractCodeOperations(assistantContent);
+  return taggedOperations.length > 0
+    ? taggedOperations
+    : extractMarkdownCodeOperations(assistantContent);
+}
+
+function isBroadBuildRequest(message: string, options: BuildOptions = {}) {
+  if (!hasBuildIntent(message, options)) return false;
+
+  const normalized = normalizePromptText(message);
+  const hasCreationIntent =
+    /\b(yap|yapalim|olustur|hazirla|kur|tasarla|kodla|build|create|make|design|generate)\b/.test(
+      normalized
+    ) ||
+    (/\b(istiyorum|lazim|ihtiyacim|need|want)\b/.test(normalized) &&
+      /\b(site|website|web sitesi|landing|landing page|sayfa|dashboard|panel|app|uygulama|platform|product|urun|proje)\b/.test(
+        normalized
+      ));
+
+  if (!hasCreationIntent && options.forceBuild !== true) return false;
+
+  return (
+    /\b(site|website|web sitesi|landing|landing page|sayfa|dashboard|panel|app|uygulama|platform|product|urun|proje)\b/.test(
+      normalized
+    ) || options.forceBuild === true
+  );
+}
+
+function getWriteOperations(assistantContent: string) {
+  return getExecutableCodeOperations(assistantContent).filter(
+    (operation) => operation.type === "write" && operation.path
+  );
+}
+
+function hasOnlySmallSinglePageBuild(assistantContent: string) {
+  const writes = getWriteOperations(assistantContent);
+
+  if (writes.length !== 1) return false;
+
+  const onlyWrite = writes[0];
+  if (!onlyWrite) return false;
+  const normalizedPath = normalizeProjectPath(onlyWrite.path || "");
+  const content = onlyWrite.content || "";
+
+  return (
+    normalizedPath === "src/app/page.tsx" &&
+    (content.length < 12_000 || splitCodeLines(content).length < 240)
+  );
+}
+
+function hasShallowBroadBuildStructure(assistantContent: string) {
+  const writes = getWriteOperations(assistantContent);
+  if (!writes.length) return false;
+
+  const hasPageWrite = writes.some(
+    (operation) => normalizeProjectPath(operation.path || "") === "src/app/page.tsx"
+  );
+  const hasSupportingStructure = writes.some((operation) =>
+    /^src\/(components|lib|data|config)\//.test(
+      normalizeProjectPath(operation.path || "")
+    )
+  );
+  const totalWrittenBytes = writes.reduce(
+    (total, operation) => total + (operation.content || "").length,
+    0
+  );
+
+  return (
+    !hasPageWrite ||
+    writes.length < 3 ||
+    !hasSupportingStructure ||
+    totalWrittenBytes < 14_000 ||
+    hasOnlySmallSinglePageBuild(assistantContent)
+  );
+}
+
+function shouldRepairBuildDepth(
+  userMessage: string,
+  assistantContent: string,
+  options: BuildOptions = {}
+) {
+  return (
+    isBroadBuildRequest(userMessage, options) &&
+    hasShallowBroadBuildStructure(assistantContent)
+  );
+}
+
+function shouldRepairGeneratedBrandReuse(
+  userMessage: string,
+  assistantContent: string
+) {
+  if (/\bklawpen\b/i.test(userMessage)) return false;
+
+  return getWriteOperations(assistantContent).some((operation) =>
+    /\bKlawpen\s+(Cloud|Studio|Dashboard|App|AI|Core)\b/i.test(
+      operation.content || ""
+    )
+  );
+}
+
 function normalizePromptText(userMessage: string) {
   return userMessage
     .toLocaleLowerCase("tr-TR")
@@ -1083,7 +1188,7 @@ function inferBusinessTitle(userMessage: string) {
   if (/avukat|hukuk|law|legal/.test(plain)) return "Lexora Hukuk";
   if (/restoran|restaurant|cafe|kahve|menu/.test(plain)) return "Mira Table";
   if (/fitness|gym|spor|pilates/.test(plain)) return "Pulse Studio";
-  if (/saas|software|dashboard|crm|app/.test(plain)) return "Klawpen Cloud";
+  if (/saas|software|dashboard|crm|app/.test(plain)) return "OrbitOps";
 
   const stopWords = new Set(["bana", "bir", "icin", "ile", "modern", "site", "website", "landing", "page", "yap", "olustur", "tasarla"]);
   const firstWords = normalizePromptText(normalized)
@@ -1093,7 +1198,7 @@ function inferBusinessTitle(userMessage: string) {
     .map((word) => word.charAt(0).toLocaleUpperCase("tr-TR") + word.slice(1))
     .join(" ");
 
-  return firstWords ? `${firstWords} Studio` : "Klawpen Studio";
+  return firstWords ? `${firstWords} Studio` : "Nova Studio";
 }
 
 type FallbackProfile = {
@@ -1265,135 +1370,408 @@ function chooseFallbackProfile(userMessage: string): FallbackProfile {
   };
 }
 
-function buildFallbackLandingPage(userMessage: string): string {
-  const title = inferBusinessTitle(userMessage);
+function buildFallbackSiteContent(userMessage: string) {
+  const businessName = inferBusinessTitle(userMessage);
   const profile = chooseFallbackProfile(userMessage);
+  const isTurkish = isLikelyTurkish(userMessage);
 
-  return `import type { Metadata } from "next";
+  const stats = isTurkish
+    ? [
+        ["7+", "Anlamlı bölüm"],
+        ["3", "Net dönüşüm adımı"],
+        ["24s", "İlk değer algısı"],
+      ]
+    : [
+        ["7+", "Meaningful sections"],
+        ["3", "Clear conversion steps"],
+        ["24s", "First-value clarity"],
+      ];
 
-const businessName = ${JSON.stringify(title)};
-const profile = ${JSON.stringify(profile, null, 2)} as const;
+  const nav = isTurkish
+    ? [
+        ["Çözüm", "#solution"],
+        ["Akış", "#workflow"],
+        ["Kanıt", "#proof"],
+        ["SSS", "#faq"],
+      ]
+    : [
+        ["Solution", "#solution"],
+        ["Workflow", "#workflow"],
+        ["Proof", "#proof"],
+        ["FAQ", "#faq"],
+      ];
 
-export const metadata: Metadata = {
-  title: ${JSON.stringify(`${title} | Klawpen Built Website`)},
-  description: profile.intro,
-};
+  const signals = profile.services.map(([title, text], index) => ({
+    title,
+    text,
+    eyebrow: isTurkish ? `Sinyal 0${index + 1}` : `Signal 0${index + 1}`,
+  }));
 
-export default function Home() {
+  const workflow = profile.steps.map((step, index) => ({
+    step,
+    text: isTurkish
+      ? [
+          "İhtiyaç ve hedef netleştirilir; kullanıcıyı durduran belirsizlikler çıkarılır.",
+          "Sayfa akışı, güven unsurları ve aksiyon noktaları birlikte tasarlanır.",
+          "Mobil ve masaüstü deneyim yayına hazır, net bir ilk sürüm haline getirilir.",
+        ][index] || "Deneyim ölçümlenebilir ve geliştirilebilir hale getirilir."
+      : [
+          "Need and objective are clarified; user doubts are surfaced early.",
+          "Page flow, trust proof, and action points are designed together.",
+          "Mobile and desktop experience becomes a launch-ready first version.",
+        ][index] || "The experience becomes measurable and easy to iterate.",
+  }));
+
+  const outcomes = isTurkish
+    ? [
+        ["Daha net ilk izlenim", "Ziyaretçi ilk ekranda ne sunduğunuzu, neden güveneceğini ve sonraki adımı anlar."],
+        ["Sektöre özel anlatım", "Metinler genel ajans kalıbı yerine hedef kitleye, itiraza ve satın alma motivasyonuna göre yazılır."],
+        ["Yayına hazır yapı", "Responsive düzen, okunabilir hiyerarşi ve düzenlenebilir component yapısı birlikte gelir."],
+      ]
+    : [
+        ["Sharper first impression", "Visitors understand the offer, trust reason, and next step from the first screen."],
+        ["Sector-specific story", "Copy is shaped around audience, objections, and motivation instead of generic agency text."],
+        ["Launch-ready structure", "Responsive layout, readable hierarchy, and editable component structure ship together."],
+      ];
+
+  const caseStudy = isTurkish
+    ? {
+        label: "Örnek kullanım senaryosu",
+        title: "Kararsız ziyaretçiyi yönlendiren net bir akış",
+        text: "Sayfa, önce değeri anlatır; sonra güven unsurlarını, hizmet mimarisini ve karar vermeyi kolaylaştıran SSS alanını sırayla gösterir.",
+      }
+    : {
+        label: "Example use case",
+        title: "A clear flow that guides unsure visitors",
+        text: "The page explains value first, then reveals trust proof, service architecture, and FAQ content that makes decisions easier.",
+      };
+
+  const labels = isTurkish
+    ? {
+        primaryCta: profile.primary,
+        secondaryCta: profile.secondary,
+        heroMeta: "Profesyonel ilk sürüm",
+        dashboardTitle: "Canlı deneyim haritası",
+        dashboardSubtitle: "Mesaj, kanıt ve aksiyon noktaları tek akışta.",
+        signalTitle: "Ziyaretçinin karar vermesini kolaylaştıran yapı",
+        workflowTitle: profile.processTitle,
+        workflowIntro: "Her bölüm bir sonraki aksiyonu daha doğal hissettirmek için kurgulanır.",
+        outcomesTitle: "Bu sayfa neyi iyileştirir?",
+        proofTitle: "Güven ve dönüşüm alanı",
+        faqTitle: "Sık sorulan sorular",
+        finalTitle: profile.ctaTitle,
+        finalText: profile.ctaText,
+        builtBy: "Yayına hazır ilk sürüm",
+      }
+    : {
+        primaryCta: profile.primary,
+        secondaryCta: profile.secondary,
+        heroMeta: "Professional first version",
+        dashboardTitle: "Live experience map",
+        dashboardSubtitle: "Message, proof, and action points in one flow.",
+        signalTitle: "A structure that makes decisions easier",
+        workflowTitle: profile.processTitle,
+        workflowIntro: "Every section is shaped to make the next action feel natural.",
+        outcomesTitle: "What this page improves",
+        proofTitle: "Trust and conversion area",
+        faqTitle: "Frequently asked questions",
+        finalTitle: profile.ctaTitle,
+        finalText: profile.ctaText,
+        builtBy: "Launch-ready first version",
+      };
+
+  return {
+    businessName,
+    profile,
+    nav,
+    stats,
+    signals,
+    workflow,
+    outcomes,
+    caseStudy,
+    labels,
+  };
+}
+
+function buildFallbackContentFile(content: ReturnType<typeof buildFallbackSiteContent>): string {
+  return `export const siteContent = ${JSON.stringify(content, null, 2)} as const;\n`;
+}
+
+function buildFallbackGeneratedSiteComponent(): string {
+  return `import { siteContent } from "../lib/klawpen-generated-content";
+
+export function GeneratedLandingPage() {
+  const content = siteContent;
+  const profile = content.profile;
+
   return (
-    <main style={{ background: profile.palette.bg, color: profile.palette.text }} className="min-h-screen overflow-hidden">
-      <section className="relative px-5 py-6 sm:px-8 lg:px-14">
+    <main
+      className="min-h-screen overflow-hidden"
+      style={{ background: profile.palette.bg, color: profile.palette.text }}
+    >
+      <section className="relative px-4 py-5 sm:px-6 lg:px-10">
         <div
-          className="pointer-events-none absolute inset-0 opacity-80"
+          className="pointer-events-none absolute inset-0 opacity-90"
           style={{
             background:
-              profile.layout === "editorial"
-                ? "radial-gradient(circle at 20% 12%, " + profile.palette.soft + ", transparent 28%), linear-gradient(135deg, transparent, " + profile.palette.border + ")"
-                : profile.layout === "cards"
-                  ? "radial-gradient(circle at 80% 0%, " + profile.palette.soft + ", transparent 30%), radial-gradient(circle at 10% 80%, " + profile.palette.border + ", transparent 24%)"
-                  : "radial-gradient(circle at 14% 18%, " + profile.palette.soft + ", transparent 30%), radial-gradient(circle at 82% 8%, " + profile.palette.accent + "33, transparent 28%)",
+              "radial-gradient(circle at 12% 8%, " +
+              profile.palette.soft +
+              ", transparent 28%), radial-gradient(circle at 86% 10%, " +
+              profile.palette.accent +
+              "33, transparent 24%), linear-gradient(135deg, transparent, " +
+              profile.palette.border +
+              "55)",
           }}
         />
 
-        <nav className="relative z-10 mx-auto flex max-w-7xl items-center justify-between rounded-[2rem] border px-5 py-4 backdrop-blur-xl" style={{ borderColor: profile.palette.border, background: profile.palette.bg + "d9" }}>
-          <div className="text-lg font-black tracking-[-0.04em] sm:text-xl">{businessName}</div>
-          <a href="#contact" className="rounded-full px-5 py-2.5 text-sm font-black shadow-sm" style={{ background: profile.palette.primary, color: profile.palette.primaryText }}>
-            {profile.primary}
+        <nav
+          className="relative z-10 mx-auto flex max-w-7xl items-center justify-between rounded-[1.7rem] border px-4 py-3 shadow-sm backdrop-blur-xl sm:px-5"
+          style={{ borderColor: profile.palette.border, background: profile.palette.bg + "e6" }}
+        >
+          <a href="#top" className="text-lg font-black tracking-[-0.04em] sm:text-xl">
+            {content.businessName}
+          </a>
+          <div className="hidden items-center gap-1 md:flex">
+            {content.nav.map(([label, href]) => (
+              <a
+                key={href}
+                href={href}
+                className="rounded-full px-4 py-2 text-sm font-bold transition hover:bg-white/55"
+                style={{ color: profile.palette.muted }}
+              >
+                {label}
+              </a>
+            ))}
+          </div>
+          <a
+            href="#contact"
+            className="rounded-full px-5 py-2.5 text-sm font-black shadow-[0_14px_34px_rgba(0,0,0,0.14)]"
+            style={{ background: profile.palette.primary, color: profile.palette.primaryText }}
+          >
+            {content.labels.primaryCta}
           </a>
         </nav>
 
-        <div className={profile.layout === "magazine" ? "relative z-10 mx-auto grid max-w-7xl gap-8 py-16 lg:grid-cols-[0.8fr_1.2fr] lg:py-24" : "relative z-10 mx-auto grid max-w-7xl gap-10 py-16 lg:grid-cols-[1.05fr_0.95fr] lg:items-center lg:py-24"}>
-          <div className={profile.layout === "editorial" ? "lg:col-span-2" : ""}>
-            <p className="mb-6 inline-flex rounded-full border px-4 py-2 text-sm font-black" style={{ borderColor: profile.palette.border, background: "#ffffff99", color: profile.palette.accent }}>
+        <div id="top" className="relative z-10 mx-auto grid max-w-7xl gap-10 py-16 lg:grid-cols-[0.95fr_1.05fr] lg:items-center lg:py-24">
+          <div>
+            <p
+              className="mb-6 inline-flex rounded-full border bg-white/65 px-4 py-2 text-xs font-black uppercase tracking-[0.22em]"
+              style={{ borderColor: profile.palette.border, color: profile.palette.accent }}
+            >
               {profile.badge}
             </p>
-            <h1 className={profile.layout === "editorial" ? "max-w-6xl text-5xl font-black leading-[0.88] tracking-[-0.08em] sm:text-7xl lg:text-8xl" : "max-w-4xl text-5xl font-black leading-[0.9] tracking-[-0.075em] sm:text-7xl lg:text-8xl"}>
+            <h1 className="max-w-4xl text-[clamp(3.2rem,8vw,6.8rem)] font-black leading-[0.86] tracking-[-0.085em]">
               {profile.headline}
             </h1>
-            <p className="mt-7 max-w-2xl text-lg leading-8" style={{ color: profile.palette.muted }}>
+            <p className="mt-7 max-w-2xl text-lg leading-8 sm:text-xl" style={{ color: profile.palette.muted }}>
               {profile.intro}
             </p>
             <div className="mt-9 flex flex-col gap-3 sm:flex-row">
-              <a href="#contact" className="rounded-full px-7 py-4 text-center font-black shadow-[0_18px_42px_rgba(0,0,0,0.14)]" style={{ background: profile.palette.primary, color: profile.palette.primaryText }}>
-                {profile.primary}
+              <a
+                href="#contact"
+                className="rounded-full px-7 py-4 text-center font-black shadow-[0_18px_42px_rgba(0,0,0,0.14)]"
+                style={{ background: profile.palette.primary, color: profile.palette.primaryText }}
+              >
+                {content.labels.primaryCta}
               </a>
-              <a href="#services" className="rounded-full border bg-white/70 px-7 py-4 text-center font-black" style={{ borderColor: profile.palette.border }}>
-                {profile.secondary}
+              <a
+                href="#solution"
+                className="rounded-full border bg-white/70 px-7 py-4 text-center font-black"
+                style={{ borderColor: profile.palette.border }}
+              >
+                {content.labels.secondaryCta}
               </a>
+            </div>
+            <div className="mt-10 grid max-w-2xl grid-cols-3 gap-3">
+              {content.stats.map(([value, label]) => (
+                <div key={label} className="rounded-3xl border bg-white/60 p-4" style={{ borderColor: profile.palette.border }}>
+                  <p className="text-3xl font-black tracking-[-0.06em]">{value}</p>
+                  <p className="mt-1 text-xs font-bold leading-5" style={{ color: profile.palette.muted }}>
+                    {label}
+                  </p>
+                </div>
+              ))}
             </div>
           </div>
 
-          <aside className="rounded-[2.5rem] border p-4 shadow-[0_28px_90px_rgba(0,0,0,0.18)]" style={{ background: profile.palette.panel, borderColor: profile.palette.border, color: profile.palette.panelText }}>
-            <div className="rounded-[2rem] p-6" style={{ background: "rgba(255,255,255,0.08)" }}>
-              <p className="text-xs font-black uppercase tracking-[0.34em]" style={{ color: profile.palette.primary }}>{profile.servicesTitle}</p>
-              <div className="mt-7 grid gap-4">
-                {profile.services.map(([name, text]) => (
-                  <div key={name} className="rounded-3xl p-5" style={{ background: "rgba(255,255,255,0.1)" }}>
-                    <h3 className="text-xl font-black tracking-[-0.03em]">{name}</h3>
-                    <p className="mt-2 text-sm leading-6 opacity-75">{text}</p>
+          <aside
+            className="relative overflow-hidden rounded-[2.6rem] border p-4 shadow-[0_34px_100px_rgba(0,0,0,0.2)]"
+            style={{ background: profile.palette.panel, borderColor: profile.palette.border, color: profile.palette.panelText }}
+          >
+            <div className="absolute right-[-10%] top-[-10%] h-56 w-56 rounded-full opacity-30 blur-3xl" style={{ background: profile.palette.primary }} />
+            <div className="relative rounded-[2.1rem] bg-white/10 p-5 sm:p-6">
+              <div className="mb-7 flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-black uppercase tracking-[0.3em]" style={{ color: profile.palette.primary }}>
+                    {content.labels.heroMeta}
+                  </p>
+                  <h2 className="mt-3 text-2xl font-black tracking-[-0.04em]">{content.labels.dashboardTitle}</h2>
+                  <p className="mt-1 text-sm opacity-70">{content.labels.dashboardSubtitle}</p>
+                </div>
+                <div className="flex gap-1.5">
+                  {["", "", ""].map((_, index) => (
+                    <span key={index} className="h-3 w-3 rounded-full bg-white/30" />
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-3">
+                {content.stats.map(([value, label]) => (
+                  <div key={label} className="rounded-3xl bg-white/10 p-4">
+                    <p className="text-2xl font-black">{value}</p>
+                    <p className="mt-1 text-xs leading-5 opacity-70">{label}</p>
                   </div>
                 ))}
+              </div>
+
+              <div className="mt-5 rounded-[1.8rem] bg-black/12 p-4">
+                <div className="flex h-40 items-end gap-2">
+                  {[46, 72, 54, 88, 68, 94, 82].map((height, index) => (
+                    <div key={index} className="flex flex-1 items-end rounded-full bg-white/10 p-1">
+                      <span
+                        className="block w-full rounded-full"
+                        style={{ height: height + "%", background: profile.palette.primary }}
+                      />
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
           </aside>
         </div>
       </section>
 
-      <section className="border-y px-5 py-5 sm:px-8 lg:px-14" style={{ borderColor: profile.palette.border, background: "rgba(255,255,255,0.48)" }}>
-        <div className="mx-auto grid max-w-7xl gap-3 text-center text-sm font-black sm:grid-cols-3" style={{ color: profile.palette.muted }}>
-          {profile.trust.map((item) => <span key={item}>{item}</span>)}
+      <section id="solution" className="mx-auto max-w-7xl px-4 py-20 sm:px-6 lg:px-10">
+        <div className="mb-10 grid gap-6 lg:grid-cols-[0.8fr_1.2fr] lg:items-end">
+          <div>
+            <p className="text-sm font-black uppercase tracking-[0.28em]" style={{ color: profile.palette.primary }}>
+              {profile.servicesTitle}
+            </p>
+            <h2 className="mt-4 text-4xl font-black tracking-[-0.06em] sm:text-6xl">
+              {content.labels.signalTitle}
+            </h2>
+          </div>
+          <p className="max-w-2xl text-lg leading-8 lg:justify-self-end" style={{ color: profile.palette.muted }}>
+            {profile.intro}
+          </p>
         </div>
-      </section>
 
-      <section id="services" className="mx-auto max-w-7xl px-5 py-20 sm:px-8 lg:px-14">
-        <div className="mb-10 flex flex-col justify-between gap-4 md:flex-row md:items-end">
-          <h2 className="max-w-2xl text-4xl font-black tracking-[-0.055em] sm:text-6xl">{profile.servicesTitle}</h2>
-          <p className="max-w-md leading-7" style={{ color: profile.palette.muted }}>{profile.intro}</p>
-        </div>
-        <div className="grid gap-5 md:grid-cols-3">
-          {profile.services.map(([name, text], index) => (
-            <article key={name} className="rounded-[2rem] border bg-white/72 p-7 shadow-sm" style={{ borderColor: profile.palette.border }}>
-              <span className="text-sm font-black" style={{ color: profile.palette.primary }}>0{index + 1}</span>
-              <h3 className="mt-6 text-2xl font-black tracking-[-0.035em]">{name}</h3>
-              <p className="mt-4 leading-7" style={{ color: profile.palette.muted }}>{text}</p>
+        <div className="grid gap-4 md:grid-cols-3">
+          {content.signals.map((item) => (
+            <article
+              key={item.title}
+              className="group rounded-[2rem] border bg-white/68 p-6 shadow-sm transition hover:-translate-y-1 hover:shadow-xl"
+              style={{ borderColor: profile.palette.border }}
+            >
+              <p className="text-xs font-black uppercase tracking-[0.24em]" style={{ color: profile.palette.primary }}>
+                {item.eyebrow}
+              </p>
+              <h3 className="mt-8 text-2xl font-black tracking-[-0.04em]">{item.title}</h3>
+              <p className="mt-4 leading-7" style={{ color: profile.palette.muted }}>{item.text}</p>
             </article>
           ))}
         </div>
       </section>
 
-      <section className="mx-auto max-w-7xl px-5 pb-20 sm:px-8 lg:px-14">
+      <section id="workflow" className="mx-auto max-w-7xl px-4 pb-20 sm:px-6 lg:px-10">
         <div className="grid gap-5 lg:grid-cols-[0.9fr_1.1fr]">
-          <div className="rounded-[2.5rem] p-8 text-white sm:p-12" style={{ background: profile.palette.panel }}>
-            <h2 className="text-4xl font-black tracking-[-0.05em]">{profile.processTitle}</h2>
-            <div className="mt-8 grid gap-4">
-              {profile.steps.map((step, index) => (
-                <div key={step} className="rounded-3xl bg-white/10 p-5">
-                  <span style={{ color: profile.palette.primary }}>0{index + 1}</span>
-                  <p className="mt-2 text-xl font-black">{step}</p>
-                </div>
-              ))}
-            </div>
+          <div className="rounded-[2.6rem] p-8 text-white sm:p-12" style={{ background: profile.palette.panel }}>
+            <p className="text-sm font-black uppercase tracking-[0.28em]" style={{ color: profile.palette.primary }}>
+              {content.labels.workflowTitle}
+            </p>
+            <h2 className="mt-5 text-4xl font-black tracking-[-0.06em] sm:text-6xl">
+              {content.labels.outcomesTitle}
+            </h2>
+            <p className="mt-5 max-w-xl leading-8 opacity-72">{content.labels.workflowIntro}</p>
           </div>
-          <div className="rounded-[2.5rem] border bg-white/70 p-8 sm:p-12" style={{ borderColor: profile.palette.border }}>
-            <p className="text-2xl font-black leading-tight tracking-[-0.04em]">“{profile.testimonial}”</p>
-            <div className="mt-8 space-y-4">
-              {profile.faq.map(([q, a]) => (
-                <div key={q} className="rounded-3xl border p-5" style={{ borderColor: profile.palette.border }}>
-                  <h3 className="font-black">{q}</h3>
-                  <p className="mt-2 text-sm leading-6" style={{ color: profile.palette.muted }}>{a}</p>
+          <div className="grid gap-4">
+            {content.workflow.map((item, index) => (
+              <article key={item.step} className="rounded-[2rem] border bg-white/72 p-6" style={{ borderColor: profile.palette.border }}>
+                <div className="flex gap-5">
+                  <span className="text-3xl font-black tracking-[-0.06em]" style={{ color: profile.palette.primary }}>
+                    0{index + 1}
+                  </span>
+                  <div>
+                    <h3 className="text-2xl font-black tracking-[-0.04em]">{item.step}</h3>
+                    <p className="mt-2 leading-7" style={{ color: profile.palette.muted }}>{item.text}</p>
+                  </div>
                 </div>
-              ))}
-            </div>
+              </article>
+            ))}
           </div>
         </div>
       </section>
 
-      <section id="contact" className="px-5 pb-24 sm:px-8 lg:px-14">
-        <div className="mx-auto max-w-5xl rounded-[2.5rem] p-10 text-center sm:p-16" style={{ background: profile.palette.panel, color: profile.palette.panelText }}>
-          <h2 className="text-4xl font-black tracking-[-0.06em] sm:text-6xl">{profile.ctaTitle}</h2>
-          <p className="mx-auto mt-5 max-w-2xl opacity-75">{profile.ctaText}</p>
-          <a href="mailto:hello@example.com" className="mt-9 inline-flex rounded-full px-8 py-4 font-black" style={{ background: profile.palette.primary, color: profile.palette.primaryText }}>
-            {profile.primary}
+      <section id="proof" className="mx-auto max-w-7xl px-4 pb-20 sm:px-6 lg:px-10">
+        <div className="grid gap-5 lg:grid-cols-3">
+          {content.outcomes.map(([title, text]) => (
+            <article key={title} className="rounded-[2rem] border bg-white/72 p-7" style={{ borderColor: profile.palette.border }}>
+              <h3 className="text-2xl font-black tracking-[-0.04em]">{title}</h3>
+              <p className="mt-4 leading-7" style={{ color: profile.palette.muted }}>{text}</p>
+            </article>
+          ))}
+        </div>
+
+        <div className="mt-5 grid gap-5 lg:grid-cols-[1.1fr_0.9fr]">
+          <article className="rounded-[2.6rem] border bg-white/72 p-8 sm:p-12" style={{ borderColor: profile.palette.border }}>
+            <p className="text-sm font-black uppercase tracking-[0.28em]" style={{ color: profile.palette.primary }}>
+              {content.caseStudy.label}
+            </p>
+            <h2 className="mt-5 text-4xl font-black tracking-[-0.06em] sm:text-6xl">
+              {content.caseStudy.title}
+            </h2>
+            <p className="mt-5 max-w-2xl text-lg leading-8" style={{ color: profile.palette.muted }}>
+              {content.caseStudy.text}
+            </p>
+          </article>
+          <article className="rounded-[2.6rem] p-8 text-white sm:p-10" style={{ background: profile.palette.panel }}>
+            <p className="text-sm font-black uppercase tracking-[0.28em]" style={{ color: profile.palette.primary }}>
+              {content.labels.proofTitle}
+            </p>
+            <p className="mt-8 text-3xl font-black leading-tight tracking-[-0.05em]">“{profile.testimonial}”</p>
+            <div className="mt-8 space-y-3">
+              {profile.trust.map((item) => (
+                <div key={item} className="rounded-2xl bg-white/10 px-4 py-3 text-sm font-bold">
+                  {item}
+                </div>
+              ))}
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section id="faq" className="mx-auto max-w-7xl px-4 pb-20 sm:px-6 lg:px-10">
+        <div className="mb-8 flex items-end justify-between gap-6">
+          <h2 className="text-4xl font-black tracking-[-0.06em] sm:text-6xl">{content.labels.faqTitle}</h2>
+          <p className="hidden max-w-sm leading-7 md:block" style={{ color: profile.palette.muted }}>
+            {content.labels.finalText}
+          </p>
+        </div>
+        <div className="grid gap-4 md:grid-cols-2">
+          {profile.faq.map(([question, answer]) => (
+            <article key={question} className="rounded-[2rem] border bg-white/72 p-6" style={{ borderColor: profile.palette.border }}>
+              <h3 className="text-xl font-black tracking-[-0.03em]">{question}</h3>
+              <p className="mt-3 leading-7" style={{ color: profile.palette.muted }}>{answer}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section id="contact" className="px-4 pb-24 sm:px-6 lg:px-10">
+        <div className="mx-auto max-w-6xl overflow-hidden rounded-[2.8rem] p-8 text-center text-white sm:p-14" style={{ background: profile.palette.panel }}>
+          <p className="text-xs font-black uppercase tracking-[0.3em]" style={{ color: profile.palette.primary }}>
+            {content.labels.builtBy}
+          </p>
+          <h2 className="mx-auto mt-5 max-w-4xl text-4xl font-black tracking-[-0.07em] sm:text-7xl">
+            {content.labels.finalTitle}
+          </h2>
+          <p className="mx-auto mt-5 max-w-2xl leading-8 opacity-75">{content.labels.finalText}</p>
+          <a
+            href="mailto:hello@example.com"
+            className="mt-9 inline-flex rounded-full px-8 py-4 font-black"
+            style={{ background: profile.palette.primary, color: profile.palette.primaryText }}
+          >
+            {content.labels.primaryCta}
           </a>
         </div>
       </section>
@@ -1403,8 +1781,38 @@ export default function Home() {
 `;
 }
 
+function buildFallbackLandingPage(_userMessage: string): string {
+  return `import type { Metadata } from "next";
+import { GeneratedLandingPage } from "../components/klawpen-generated-site";
+import { siteContent } from "../lib/klawpen-generated-content";
+
+export const metadata: Metadata = {
+  title: siteContent.businessName + " | Klawpen Built Website",
+  description: siteContent.profile.intro,
+};
+
+export default function Home() {
+  return <GeneratedLandingPage />;
+}
+`;
+}
+
 function buildFallbackOperations(userMessage: string): CodeOperation[] {
+  const content = buildFallbackSiteContent(userMessage);
+
   return [
+    {
+      type: "write",
+      index: Number.MAX_SAFE_INTEGER - 2,
+      path: "src/lib/klawpen-generated-content.ts",
+      content: buildFallbackContentFile(content),
+    },
+    {
+      type: "write",
+      index: Number.MAX_SAFE_INTEGER - 1,
+      path: "src/components/klawpen-generated-site.tsx",
+      content: buildFallbackGeneratedSiteComponent(),
+    },
     {
       type: "write",
       index: Number.MAX_SAFE_INTEGER,
@@ -1412,6 +1820,25 @@ function buildFallbackOperations(userMessage: string): CodeOperation[] {
       content: buildFallbackLandingPage(userMessage),
     },
   ];
+}
+
+function buildFallbackAssistantContent(userMessage: string, reason: string): string {
+  const writes = buildFallbackOperations(userMessage).map(
+    (operation) =>
+      `<dec-write path="${operation.path}">${operation.content || ""}</dec-write>`
+  );
+
+  return [
+    "<dec-code>",
+    "Plan:",
+    "- " + reason,
+    "- Apply a structured Klawpen fallback with content, component, and page files.",
+    ...writes,
+    "</dec-code>",
+    isLikelyTurkish(userMessage)
+      ? "Klawpen Core güvenli ama çok bölümlü bir ilk sürüm uyguladı."
+      : "Klawpen Core applied a safe but multi-section first version.",
+  ].join("\n");
 }
 
 function getOperationFilePaths(assistantContent: string): string[] {
@@ -1629,6 +2056,8 @@ async function createBuilderResponse(
         "Return exactly one <dec-code> block.",
         "Use executable edit tags only.",
         "Rewrite src/app/page.tsx completely.",
+        "For broad website or app requests, also create at least one focused component file and one content/config file when it improves structure.",
+        "Do not name the generated customer-facing brand Klawpen unless the user asks for Klawpen itself.",
         "The result must be specific to this prompt, not a reused generic template.",
         options.planMode
           ? "Plan mode is enabled and the clarification gate has already passed: include a concise implementation plan inside the <dec-code> block, then implement decisively."
@@ -1722,7 +2151,16 @@ ASSISTANT_OUTPUT_TO_REVIEW:
 ${currentDraft}
 `;
 
-    const critic = await createCriticReview(criticInput, params.provider);
+    let critic: CriticResult;
+    try {
+      critic = await createCriticReview(criticInput, params.provider);
+    } catch (error) {
+      console.warn(
+        "AI critic review failed; keeping the current executable draft:",
+        error instanceof Error ? error.message : error
+      );
+      return currentDraft;
+    }
 
     const passes =
       critic.verdict === "PASS" && critic.score >= aiMinQualityScore;
@@ -1756,12 +2194,36 @@ CURRENT_CODEBASE_SNAPSHOT:
 ${params.codeContext}
 `;
 
-    currentDraft = await createBuilderResponse(
-      revisionInput,
-      params.provider,
-      params.userMessage,
-      params.options
+    let revised: string;
+    try {
+      revised = await createBuilderResponse(
+        revisionInput,
+        params.provider,
+        params.userMessage,
+        params.options
+      );
+    } catch (error) {
+      console.warn(
+        "AI critic revision failed; keeping the current executable draft:",
+        error instanceof Error ? error.message : error
+      );
+      return currentDraft;
+    }
+
+    if (hasExecutableCodeOperations(revised)) {
+      currentDraft = revised;
+      continue;
+    }
+
+    if (!hasExecutableCodeOperations(currentDraft)) {
+      currentDraft = revised;
+      continue;
+    }
+
+    console.warn(
+      "AI critic revision had no executable edit tags; keeping previous executable draft."
     );
+    return currentDraft;
   }
 
   return currentDraft;
@@ -1775,13 +2237,39 @@ async function repairMissingExecutableEdits(params: {
   provider: AiProviderConfig;
   options?: BuildOptions;
 }): Promise<string> {
-  if (!shouldForceFallbackPage(params.userMessage, params.draft, params.options)) {
+  const missingExecutableEdits = shouldForceFallbackPage(
+    params.userMessage,
+    params.draft,
+    params.options
+  );
+  const shallowBroadBuild = shouldRepairBuildDepth(
+    params.userMessage,
+    params.draft,
+    params.options
+  );
+  const reusedBuilderBrand = shouldRepairGeneratedBrandReuse(
+    params.userMessage,
+    params.draft
+  );
+
+  if (!missingExecutableEdits && !shallowBroadBuild && !reusedBuilderBrand) {
     return params.draft;
   }
 
   console.warn(
-    "AI build response had no executable edit tags; requesting one repair pass before fallback."
+    "AI build response needs repair before apply:",
+    {
+      missingExecutableEdits,
+      shallowBroadBuild,
+      reusedBuilderBrand,
+    }
   );
+
+  const repairReason = missingExecutableEdits
+    ? "The previous assistant output is invalid because it did not contain executable edit operations."
+    : shallowBroadBuild
+      ? "The previous assistant output was too shallow for a broad build: it only produced a small single-page implementation."
+      : "The previous assistant output reused Klawpen as the customer-facing generated brand without user intent.";
 
   const repairInput = `
 SYSTEM:
@@ -1789,9 +2277,11 @@ ${prompt}
 
 ${BUILDER_SYSTEM_PROMPT}
 
-The previous assistant output is invalid because it did not contain executable edit operations.
+${repairReason}
 Return exactly one <dec-code> block with executable edit tags.
-For this build request, rewrite at least src/app/page.tsx using a full <dec-write path="src/app/page.tsx">...</dec-write> operation.
+For this build request, rewrite src/app/page.tsx and add focused supporting files where useful, such as src/components/generated-site.tsx and src/lib/generated-content.ts.
+The implementation must feel prompt-specific, visually polished, responsive, and complete enough to preview as a real first version.
+Do not use Klawpen, Klawpen Cloud, or Klawpen Studio as the customer-facing site name unless the user explicitly asks for Klawpen.
 Do not use markdown code fences. Do not only explain. Do not repeat the previous invalid response.
 
 USER_REQUEST:
@@ -1815,19 +2305,34 @@ ${clipText(params.codeContext, 80_000)}
       params.options
     );
     if (hasExecutableCodeOperations(repaired)) {
-      return repaired;
+      if (
+        !shouldRepairBuildDepth(params.userMessage, repaired, params.options) &&
+        !shouldRepairGeneratedBrandReuse(params.userMessage, repaired)
+      ) {
+        return repaired;
+      }
+
+      console.warn(
+        "AI repair response was executable but still too shallow or reused builder branding; falling back to structured local build."
+      );
     }
 
     console.warn(
-      "AI repair response still had no executable edit tags; falling back to generated landing page."
+      "AI repair response still did not meet executable/depth/branding requirements; falling back to generated landing page."
     );
-    return repaired;
+    return buildFallbackAssistantContent(
+      params.userMessage,
+      "AI repair response still had no executable edit tags."
+    );
   } catch (error) {
     console.warn(
       "AI repair pass failed; falling back to generated landing page:",
       error instanceof Error ? error.message : error
     );
-    return params.draft;
+    return buildFallbackAssistantContent(
+      params.userMessage,
+      "AI repair pass failed before returning executable edit tags."
+    );
   }
 }
 
@@ -1956,17 +2461,10 @@ async function buildAssistantMessageFromSession(
     console.warn(
       "Runtime repair request detected; applying deterministic fallback page without waiting for AI."
     );
-    assistantContent = [
-      "<dec-code>",
-      "Plan:",
-      "- Replace the broken page with a known-good landing page.",
-      "- Keep the project running so preview can recover immediately.",
-      `<dec-write path="src/app/page.tsx">${buildFallbackLandingPage(userMessage)}</dec-write>`,
-      "</dec-code>",
-      isLikelyTurkish(userMessage)
-        ? "Runtime hatasını temizlemek için sayfayı güvenli ve çalışır bir başlangıç sayfasıyla yeniden yazdım."
-        : "I replaced the broken page with a safe working starter page.",
-    ].join("\n");
+    assistantContent = buildFallbackAssistantContent(
+      userMessage,
+      "Replace the broken runtime page with a known-good structured Klawpen build."
+    );
   } else {
     const provider = selectAiProvider(workloadEstimate);
 
@@ -2054,15 +2552,10 @@ ${codeContext}`;
         "AI builder generation failed; applying local fallback landing page:",
         error instanceof Error ? error.message : error
       );
-      assistantContent = [
-        "<dec-code>",
-        "Plan:",
-        "- AI provider did not return in time.",
-        "- Apply a generated landing page fallback so the preview updates.",
-        `<dec-write path="src/app/page.tsx">${buildFallbackLandingPage(userMessage)}</dec-write>`,
-        "</dec-code>",
-        "AI provider timed out, so I applied a safe generated starting page that you can continue editing.",
-      ].join("\n");
+      assistantContent = buildFallbackAssistantContent(
+        userMessage,
+        "AI provider failed or timed out before returning a valid executable build."
+      );
     }
   }
 
