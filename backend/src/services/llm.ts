@@ -132,11 +132,11 @@ const VISUAL_ARCHETYPES: VisualArchetype[] = [
     key: "editorial-luxury",
     name: "Editorial Luxury",
     composition:
-      "asymmetric editorial grid, oversized serif-like display headings, story-led sections, magazine pull quotes, layered imagery panels",
+      "asymmetric editorial grid, expressive but controlled display headings, story-led sections, magazine pull quotes, layered imagery panels",
     palette:
       "warm ivory, espresso, muted gold, charcoal, one restrained accent color",
     typography:
-      "large expressive headlines paired with compact uppercase labels and calm readable body copy",
+      "refined expressive headlines paired with compact uppercase labels and calm readable body copy",
     motion:
       "slow reveal, image parallax feel, subtle mask/clip transitions, refined hover states",
     forbidden: ["centered SaaS hero", "three identical feature cards", "blue gradient dashboard mockup"],
@@ -673,6 +673,11 @@ Deliver production-minded quality:
 - if the prompt is Turkish, use natural Turkish with Turkish characters; do not leave English labels such as Home, Services, About, Contact, Get Started, Learn More, Features, Pricing, or FAQ in the preview
 - code identifiers, component names, filenames, and comments may stay in English; only visible UI copy must follow the prompt language
 - Klawpen is the builder brand, not the default brand for the generated customer website; do not name the generated project "Klawpen", "Klawpen Cloud", or "Klawpen Studio" unless the user explicitly asks for it
+- client-facing copy rule: visible preview text must speak as the generated business, product, publication, or service itself; never as Klawpen, an AI, a freelancer, an agency proposal, or a site builder describing the work
+- never put implementation/meta words in visible UI copy: prompt, generated, AI, yapay zeka, Klawpen, Core, Builder, template, şablon, fallback, component, design direction, tasarım yönü, first version, ilk sürüm, launch-ready, yayına hazır, freelancer, proposal, tasarım süreci, gelişmiş studio
+- do not append "Studio", "Works", "Labs", "Agency", or "Ajans" as a lazy fallback brand unless the user's sector clearly makes that name natural
+- design scale rule: avoid crude oversized typography and giant empty cards; prefer refined clamp ranges, compact navigation/buttons, realistic content density, balanced whitespace, and smaller mobile-first cards
+- every page must feel like a finished public-facing website for a real client: no internal planning labels, no "we are building this", no "design direction", no "first version", no placeholder/fallback wording
 `;
 
 const CRITIC_SYSTEM_PROMPT = `
@@ -713,6 +718,9 @@ Rules:
 - FAIL outputs where visible UI copy uses a different language than the user's prompt.
 - FAIL Turkish-prompt outputs that leave common English UI labels visible, such as Home, Services, About, Contact, Get Started, Learn More, Features, Pricing, or FAQ.
 - FAIL outputs that use Klawpen, Klawpen Cloud, or Klawpen Studio as the generated customer brand unless the user explicitly requested Klawpen itself.
+- FAIL outputs with visible builder/meta language such as prompt, generated, AI, yapay zeka, Klawpen, Core, Builder, template, şablon, fallback, component, design direction, tasarım yönü, first version, ilk sürüm, launch-ready, yayına hazır, freelancer, proposal, or "gelişmiş studio".
+- FAIL outputs that sound like a freelancer/agency explaining a draft instead of a real business speaking to its customers.
+- FAIL outputs with crude oversized headings, oversized CTA buttons, huge empty cards, decorative panels without useful content, or low-density sections that look AI-generated.
 - Keep feedback specific and actionable.
 `;
 
@@ -1456,6 +1464,127 @@ function getCombinedWrittenContent(assistantContent: string): string {
     .join("\n");
 }
 
+const BUILDER_META_VISIBLE_COPY_PATTERNS = [
+  /\bprompt\b/i,
+  /\bgenerated\b/i,
+  /\bAI\b/i,
+  /\byapay\s+zeka\b/i,
+  /\bKlawpen\s*(?:Core|Builder|Studio|Cloud|Dashboard|AI)?\b/i,
+  /\bBuilder\b/i,
+  /\btemplate\b/i,
+  /\bşablon\b/i,
+  /\bfallback\b/i,
+  /\bcomponent\b/i,
+  /\bdesign\s+direction\b/i,
+  /\btasarım\s+yönü\b/i,
+  /\bfirst\s+version\b/i,
+  /\bilk\s+sürüm\b/i,
+  /\blaunch-ready\b/i,
+  /\byayına\s+hazır\b/i,
+  /\bfreelancer\b/i,
+  /\bproposal\b/i,
+  /\bgelişmiş\s+studio\b/i,
+  /\badvanced\s+studio\b/i,
+];
+
+function decodeStringLiteral(value: string) {
+  return value
+    .replace(/\\n/g, " ")
+    .replace(/\\t/g, " ")
+    .replace(/\\"/g, '"')
+    .replace(/\\'/g, "'")
+    .replace(/\\`/g, "`")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function looksLikeCodeOnlyString(value: string) {
+  const text = value.trim();
+  if (!text) return true;
+  if (/[\\/]/.test(text)) return true;
+  if (/\.(tsx?|jsx?|css|json|mdx?)\b/i.test(text)) return true;
+  if (/^#(?:[0-9a-f]{3,8})$/i.test(text)) return true;
+  if (/\b(?:flex|grid|rounded|text-|bg-|px-|py-|mx-|my-|mt-|mb-|gap-|shadow|border|transition|duration|hover:|focus:|items-|justify-|max-w-|min-h-)\b/.test(text)) {
+    return true;
+  }
+  if (/^(?:true|false|null|undefined|use client|use server)$/i.test(text)) {
+    return true;
+  }
+  if (BUILDER_META_VISIBLE_COPY_PATTERNS.some((pattern) => pattern.test(text))) {
+    return false;
+  }
+  return false;
+}
+
+function getLikelyVisibleUiCopy(assistantContent: string) {
+  const combined = getCombinedWrittenContent(assistantContent)
+    .replace(/\/\/.*$/gm, "")
+    .replace(/\/\*[\s\S]*?\*\//g, "");
+  const chunks: string[] = [];
+  const stringPattern = /(["'`])((?:\\.|(?!\1)[\s\S])*?)\1/g;
+  const jsxTextPattern = />\s*([^<>{}\n][^<>{}]*)\s*</g;
+  let match: RegExpExecArray | null;
+
+  while ((match = stringPattern.exec(combined)) !== null) {
+    const value = decodeStringLiteral(match[2] || "");
+    if (!value) continue;
+    const hasNaturalLanguage =
+      /\s/.test(value) ||
+      /[çğıİöşü]/i.test(value) ||
+      BUILDER_META_VISIBLE_COPY_PATTERNS.some((pattern) => pattern.test(value));
+    if (!hasNaturalLanguage || looksLikeCodeOnlyString(value)) continue;
+    chunks.push(value);
+  }
+
+  while ((match = jsxTextPattern.exec(combined)) !== null) {
+    const value = decodeStringLiteral(match[1] || "");
+    if (!value || looksLikeCodeOnlyString(value)) continue;
+    chunks.push(value);
+  }
+
+  return chunks.join("\n");
+}
+
+function hasBuilderMetaVisibleCopy(
+  userMessage: string,
+  assistantContent: string
+) {
+  const visibleCopy = getLikelyVisibleUiCopy(assistantContent);
+  if (!visibleCopy) return false;
+  const allowKlawpen = /\bklawpen\b/i.test(userMessage);
+  const allowAi = /\b(ai|artificial intelligence|yapay zeka)\b/i.test(userMessage);
+
+  return BUILDER_META_VISIBLE_COPY_PATTERNS.some((pattern) => {
+    if (allowKlawpen && pattern.source.includes("Klawpen")) return false;
+    if (allowAi && (pattern.source.includes("\\bAI") || pattern.source.includes("yapay"))) {
+      return false;
+    }
+    return pattern.test(visibleCopy);
+  });
+}
+
+function hasOversizedCrudeVisualSystem(assistantContent: string) {
+  const combined = getCombinedWrittenContent(assistantContent);
+  const oversizedTypeSignals = [
+    /clamp\([^)]*(?:7|8|9|10)rem/gi,
+    /\btext-(?:7xl|8xl|9xl)\b/g,
+  ].reduce((count, pattern) => count + (combined.match(pattern) || []).length, 0);
+  const oversizedSpacingSignals = [
+    /\b(?:px|p)-(?:10|12|14|16)\b/g,
+    /\b(?:py)-(?:6|8|10|12)\b/g,
+  ].reduce((count, pattern) => count + (combined.match(pattern) || []).length, 0);
+  const sparseDecorativePanels = (
+    combined.match(/aspect-\[[^\]]+\][^>]*(?:\/>|>\s*<\/div>)/g) || []
+  ).length;
+
+  return (
+    oversizedTypeSignals >= 2 ||
+    (oversizedTypeSignals >= 1 &&
+      oversizedSpacingSignals >= 2 &&
+      sparseDecorativePanels >= 2)
+  );
+}
+
 function hasGenericLandingSkeleton(assistantContent: string): boolean {
   const combined = getCombinedWrittenContent(assistantContent);
   if (!combined) return false;
@@ -1500,6 +1629,12 @@ function getVisualDiversityIssues(
   if (hasGenericLandingSkeleton(assistantContent)) {
     issues.push(
       "The implementation appears to reuse a generic centered hero/stats/cards/FAQ skeleton; create a distinct page silhouette and section rhythm."
+    );
+  }
+
+  if (hasOversizedCrudeVisualSystem(assistantContent)) {
+    issues.push(
+      "The visual system looks oversized or low-density; reduce headline/button/card scale and add useful content density with refined spacing."
     );
   }
 
@@ -1747,10 +1882,27 @@ function inferBusinessTitle(userMessage: string) {
   if (/tesisat|plumb|su kacagi|komb|petek/.test(plain)) return "Vurkany Tesisat";
   if (/avukat|hukuk|law|legal/.test(plain)) return "Lexora Hukuk";
   if (/restoran|restaurant|cafe|kahve|menu/.test(plain)) return "Mira Table";
-  if (/fitness|gym|spor|pilates/.test(plain)) return "Pulse Studio";
+  if (/fitness|gym|spor|pilates/.test(plain)) return isLikelyTurkish(userMessage) ? "Pulse Hareket" : "Pulse Athletics";
   if (/saas|software|dashboard|crm|app/.test(plain)) return "OrbitOps";
 
-  const stopWords = new Set(["bana", "bir", "icin", "ile", "modern", "site", "website", "landing", "page", "yap", "olustur", "tasarla"]);
+  const stopWords = new Set([
+    "bana",
+    "bir",
+    "icin",
+    "ile",
+    "modern",
+    "site",
+    "website",
+    "landing",
+    "page",
+    "yap",
+    "olustur",
+    "tasarla",
+    "gelismis",
+    "gelişmiş",
+    "profesyonel",
+    "premium",
+  ]);
   const firstWords = normalizePromptText(normalized)
     .split(/\s+/)
     .filter((word) => word.length > 2 && !stopWords.has(word))
@@ -1758,7 +1910,8 @@ function inferBusinessTitle(userMessage: string) {
     .map((word) => word.charAt(0).toLocaleUpperCase("tr-TR") + word.slice(1))
     .join(" ");
 
-  return firstWords ? `${firstWords} Studio` : "Nova Studio";
+  if (firstWords) return isLikelyTurkish(userMessage) ? `${firstWords} Kolektif` : `${firstWords} Works`;
+  return isLikelyTurkish(userMessage) ? "Yeni Marka" : "Northline";
 }
 
 type FallbackProfile = {
@@ -1867,7 +2020,7 @@ function chooseFallbackProfile(userMessage: string): FallbackProfile {
       sector: "dental", layout, palette: palettes.dental,
       badge: isTurkish ? "Dijital randevu ve güvenli klinik deneyimi" : "Digital booking and trusted clinic experience",
       headline: isTurkish ? "Gülüş tasarımını daha sakin, şeffaf ve premium hale getirin" : "Make dental care feel calm, transparent, and premium",
-      intro: isTurkish ? "Modern diş kliniği için randevu odaklı, güven veren ve tedavi süreçlerini anlaşılır gösteren profesyonel bir landing page." : "A professional appointment-focused landing page for a modern dental clinic, built to make treatments clear and reassuring.",
+      intro: isTurkish ? "Modern diş kliniği için randevu odaklı, güven veren ve tedavi süreçlerini anlaşılır gösteren dijital deneyim." : "A polished appointment-focused web experience for a modern dental clinic, shaped to make treatments clear and reassuring.",
       primary: isTurkish ? "Randevu al" : "Book appointment",
       secondary: isTurkish ? "Tedavileri incele" : "Explore treatments",
       trust: isTurkish ? ["Aynı gün ön görüşme", "Şeffaf tedavi planı", "Steril ve premium klinik"] : ["Same-day consult", "Transparent treatment plan", "Sterile premium clinic"],
@@ -1887,7 +2040,7 @@ function chooseFallbackProfile(userMessage: string): FallbackProfile {
       sector: "legal", layout, palette: palettes.legal,
       badge: isTurkish ? "Kurumsal hukuki danışmanlık" : "Corporate legal advisory",
       headline: isTurkish ? "Karmaşık hukuki süreçleri sakin ve stratejik şekilde yönetin" : "Navigate complex legal matters with calm strategy",
-      intro: isTurkish ? "Şirketler ve bireyler için güven veren, uzmanlık alanlarını net anlatan premium hukuk ofisi sitesi." : "A premium law office landing page that communicates expertise and trust for companies and individuals.",
+      intro: isTurkish ? "Şirketler ve bireyler için güven veren, uzmanlık alanlarını net anlatan premium hukuk ofisi deneyimi." : "A premium law office experience that communicates expertise and trust for companies and individuals.",
       primary: isTurkish ? "Ön görüşme talep et" : "Request consultation",
       secondary: isTurkish ? "Uzmanlıkları gör" : "View expertise",
       trust: isTurkish ? ["Gizli ön değerlendirme", "Stratejik dosya analizi", "Kurumsal raporlama"] : ["Confidential review", "Strategic case analysis", "Corporate reporting"],
@@ -1917,7 +2070,7 @@ function chooseFallbackProfile(userMessage: string): FallbackProfile {
     plumbing: {
       badge: isTurkish ? "7/24 güvenilir servis" : "Reliable service, 24/7",
       headline: isTurkish ? "Tesisat sorunlarını hızlı, temiz ve garantili şekilde çözün" : "Solve plumbing issues quickly, cleanly, and reliably",
-      intro: isTurkish ? "Acil servis, bakım ve yenileme hizmetlerini güven veren modern bir akışla sunan landing page." : "A modern landing page for emergency repair, maintenance, and renovation services.",
+      intro: isTurkish ? "Acil servis, bakım ve yenileme hizmetlerini güven veren modern bir akışla sunan dijital deneyim." : "A modern web experience for emergency repair, maintenance, and renovation services.",
       primary: isTurkish ? "Hemen teklif al" : "Get a quote",
       secondary: isTurkish ? "Hizmetleri incele" : "Explore services",
       servicesTitle: isTurkish ? "Öne çıkan hizmetler" : "Featured services",
@@ -1935,7 +2088,7 @@ function chooseFallbackProfile(userMessage: string): FallbackProfile {
     fitness: {
       badge: isTurkish ? "Kişisel hedefe göre antrenman" : "Goal-led training",
       headline: isTurkish ? "Enerjisi yüksek, ölçülebilir ve motive eden bir stüdyo deneyimi" : "A high-energy studio experience that keeps progress visible",
-      intro: isTurkish ? "Üyelik, ders programı ve eğitmen güvenini öne çıkaran dinamik fitness landing page." : "A dynamic fitness landing page built around membership, classes, and coach trust.",
+      intro: isTurkish ? "Üyelik, ders programı ve eğitmen güvenini öne çıkaran dinamik fitness deneyimi." : "A dynamic fitness experience shaped around membership, classes, and coach trust.",
       primary: isTurkish ? "Deneme dersi al" : "Book a trial",
       secondary: isTurkish ? "Programları gör" : "View programs",
       servicesTitle: isTurkish ? "Programlar" : "Programs",
@@ -1944,7 +2097,7 @@ function chooseFallbackProfile(userMessage: string): FallbackProfile {
     saas: {
       badge: isTurkish ? "Ekipler için akıllı operasyon" : "Smarter operations for teams",
       headline: isTurkish ? "Dağınık iş akışlarını tek, net ve ölçeklenebilir panele taşıyın" : "Move scattered workflows into one clear scalable platform",
-      intro: isTurkish ? "Ürün değerini, entegrasyonları ve dönüşümü net anlatan premium SaaS landing page." : "A premium SaaS landing page that explains value, integrations, and conversion clearly.",
+      intro: isTurkish ? "Ürün değerini, entegrasyonları ve dönüşümü net anlatan premium SaaS deneyimi." : "A premium SaaS experience that explains value, integrations, and conversion clearly.",
       primary: isTurkish ? "Demo iste" : "Request demo",
       secondary: isTurkish ? "Özellikleri gör" : "See features",
       servicesTitle: isTurkish ? "Temel özellikler" : "Core features",
@@ -1953,11 +2106,11 @@ function chooseFallbackProfile(userMessage: string): FallbackProfile {
     studio: {
       badge: isTurkish ? "Marka odaklı dijital deneyim" : "Brand-led digital experience",
       headline: isTurkish ? "Fikrinizi güçlü bir ilk izlenime dönüştüren modern web deneyimi" : "Turn your idea into a strong first digital impression",
-      intro: isTurkish ? "Hedef kitleye güven veren, mesajı net ve görsel dili tutarlı bir landing page." : "A landing page with clear messaging, trust, and cohesive visual direction.",
+      intro: isTurkish ? "Hedef kitleye güven veren, mesajı net ve görsel dili tutarlı bir dijital deneyim." : "A digital experience with clear messaging, trust, and cohesive visual language.",
       primary: isTurkish ? "Projeyi başlat" : "Start project",
       secondary: isTurkish ? "Detayları gör" : "See details",
       servicesTitle: isTurkish ? "Neler sunuyoruz" : "What we deliver",
-      services: isTurkish ? [["Stratejik anlatı", "Ürünün değerini hızlı anlatan sayfa akışı."], ["Görsel sistem", "Renk, tipografi ve component ritmi."], ["Dönüşüm odaklı CTA", "Kullanıcıyı doğru aksiyona taşıyan yapı."]] : [["Strategic story", "A page flow that explains value quickly."], ["Visual system", "Color, type, and component rhythm."], ["Conversion CTA", "Structure that moves users to action."]],
+      services: isTurkish ? [["Stratejik anlatı", "Ürünün değerini hızlı anlatan sayfa akışı."], ["Görsel sistem", "Renk, tipografi ve bölüm ritmi."], ["Dönüşüm odaklı CTA", "Kullanıcıyı doğru aksiyona taşıyan yapı."]] : [["Strategic story", "A page flow that explains value quickly."], ["Visual system", "Color, type, and section rhythm."], ["Conversion CTA", "Structure that moves users to action."]],
     },
   };
   const copyBySector = sectorCopies[sector];
@@ -1971,15 +2124,15 @@ function chooseFallbackProfile(userMessage: string): FallbackProfile {
     intro: copyBySector.intro,
     primary: copyBySector.primary,
     secondary: copyBySector.secondary,
-    trust: isTurkish ? ["Hızlı başlangıç", "Mobil uyumlu", "Güven veren akış"] : ["Fast launch", "Mobile responsive", "Trust-first flow"],
+    trust: isTurkish ? ["Net anlatım", "Mobil uyumlu", "Güven veren deneyim"] : ["Clear message", "Mobile ready", "Trust-first experience"],
     servicesTitle: copyBySector.servicesTitle,
     services: copyBySector.services,
-    processTitle: isTurkish ? "Nasıl ilerler" : "How it works",
-    steps: isTurkish ? ["İhtiyacı netleştir", "Deneyimi tasarla", "Yayına hazırla"] : ["Clarify need", "Design experience", "Prepare launch"],
-    testimonial: isTurkish ? "Sayfa hem güven verdi hem de hizmetleri çok daha anlaşılır anlattı." : "The page built trust and made the offer much easier to understand.",
+    processTitle: isTurkish ? "Yol haritası" : "Journey",
+    steps: isTurkish ? ["İhtiyacı seç", "Seçenekleri karşılaştır", "Doğru adımı at"] : ["Choose a need", "Compare options", "Take the right step"],
+    testimonial: isTurkish ? "Aradığım bilgiyi hızlı buldum; sonraki adım çok netti." : "I found the right information quickly and knew exactly what to do next.",
     faq: isTurkish ? [["Mobil uyumlu mu?", "Evet, sayfa mobil, tablet ve masaüstü için responsive hazırlanır."], ["Metinler değiştirilebilir mi?", "Evet, marka tonuna göre kolayca düzenlenebilir."]] : [["Is it responsive?", "Yes, the page is built for mobile, tablet, and desktop."], ["Can copy be changed?", "Yes, copy can be adjusted to your brand tone."]],
-    ctaTitle: isTurkish ? "İlk izlenimi bugün güçlendirin" : "Strengthen the first impression today",
-    ctaText: isTurkish ? "Ziyaretçiyi kararsız bırakmayan net, hızlı ve güven veren bir akışla başlayın." : "Start with a clear, fast, trust-building flow that helps visitors take action.",
+    ctaTitle: isTurkish ? "Sizin için en doğru adımı birlikte netleştirelim" : "Find the right next step with confidence",
+    ctaText: isTurkish ? "Kısa bir bilgi bırakın; ekibimiz ihtiyacınıza göre en uygun yolu önersin." : "Share a few details and the team will recommend the right path for your needs.",
   };
 }
 
@@ -2063,10 +2216,10 @@ function buildFallbackSiteContent(userMessage: string) {
             "Bülten, yazar profili ve konu filtreleriyle okuyucu tekrar ziyarete yönlendirilir.",
           ][index] || "Yayın deneyimi ölçümlenebilir ve büyütülebilir hale getirilir."
         : [
-            "İhtiyaç ve hedef netleştirilir; kullanıcıyı durduran belirsizlikler çıkarılır.",
-            "Sayfa akışı, güven unsurları ve aksiyon noktaları birlikte tasarlanır.",
-            "Mobil ve masaüstü deneyim yayına hazır, net bir ilk sürüm haline getirilir.",
-          ][index] || "Deneyim ölçümlenebilir ve geliştirilebilir hale getirilir."
+            "Ziyaretçi ihtiyacına en yakın seçeneği hızlıca bulur.",
+            "Güven unsurları, detaylar ve karşılaştırmalar doğal bir sırayla sunulur.",
+            "Sonraki adım; form, randevu, teklif veya iletişim akışıyla netleşir.",
+          ][index] || "Deneyim sade, anlaşılır ve aksiyona yakın kalır."
       : profile.sector === "blog"
         ? [
             "Editorial agenda, topic clusters, and publishing cadence are shaped into a clear rhythm.",
@@ -2074,10 +2227,10 @@ function buildFallbackSiteContent(userMessage: string) {
             "Newsletter, author profile, and topic filters guide readers back into the publication.",
           ][index] || "The editorial experience becomes measurable and scalable."
         : [
-            "Need and objective are clarified; user doubts are surfaced early.",
-            "Page flow, trust proof, and action points are designed together.",
-            "Mobile and desktop experience becomes a launch-ready first version.",
-          ][index] || "The experience becomes measurable and easy to iterate.",
+            "Visitors quickly find the option closest to their need.",
+            "Trust signals, details, and comparisons appear in a natural order.",
+            "The next step becomes clear through form, booking, quote, or contact flow.",
+          ][index] || "The experience stays clear, calm, and action-oriented.",
   }));
 
   const outcomes = isTurkish
@@ -2088,9 +2241,9 @@ function buildFallbackSiteContent(userMessage: string) {
           ["Bülten dönüşümü", "Sadık okuyucu kazanmak için bülten ve editör notu net bir alanda birleşir."],
         ]
       : [
-          ["Daha net ilk izlenim", "Ziyaretçi ilk ekranda ne sunduğunuzu, neden güveneceğini ve sonraki adımı anlar."],
-          ["Sektöre özel anlatım", "Metinler genel ajans kalıbı yerine hedef kitleye, itiraza ve satın alma motivasyonuna göre yazılır."],
-          ["Yayına hazır yapı", "Responsive düzen, okunabilir hiyerarşi ve düzenlenebilir component yapısı birlikte gelir."],
+          ["Daha net ilk izlenim", "Ziyaretçi ilk ekranda ne sunduğunuzu, neden güveneceğini ve nereye ilerleyeceğini anlar."],
+          ["Sektöre özel anlatım", "Metinler hedef kitleye, karar motivasyonuna ve sık itirazlara göre şekillenir."],
+          ["Akıcı kullanım", "Mobil ve masaüstünde okunabilir, sade ve aksiyona yakın bir deneyim sunulur."],
         ]
     : profile.sector === "blog"
       ? [
@@ -2100,8 +2253,8 @@ function buildFallbackSiteContent(userMessage: string) {
         ]
       : [
           ["Sharper first impression", "Visitors understand the offer, trust reason, and next step from the first screen."],
-          ["Sector-specific story", "Copy is shaped around audience, objections, and motivation instead of generic agency text."],
-          ["Launch-ready structure", "Responsive layout, readable hierarchy, and editable component structure ship together."],
+          ["Sector-specific story", "Copy is shaped around audience, decision motivation, and common objections."],
+          ["Fluid usage", "Mobile and desktop visitors get a readable, calm, action-oriented experience."],
         ];
 
   const caseStudy = isTurkish
@@ -2114,7 +2267,7 @@ function buildFallbackSiteContent(userMessage: string) {
       : {
           label: "Örnek kullanım senaryosu",
           title: "Kararsız ziyaretçiyi yönlendiren net bir akış",
-          text: "Sayfa, önce değeri anlatır; sonra güven unsurlarını, hizmet mimarisini ve karar vermeyi kolaylaştıran SSS alanını sırayla gösterir.",
+          text: "Ziyaretçi önce temel değeri görür; ardından güven unsurları, seçenekler ve sık sorular karar vermeyi kolaylaştırır.",
         }
     : profile.sector === "blog"
       ? {
@@ -2125,15 +2278,15 @@ function buildFallbackSiteContent(userMessage: string) {
       : {
           label: "Example use case",
           title: "A clear flow that guides unsure visitors",
-          text: "The page explains value first, then reveals trust proof, service architecture, and FAQ content that makes decisions easier.",
+          text: "Visitors see the core value first, then trust signals, options, and FAQ content make the decision easier.",
         };
 
   const labels = isTurkish
     ? {
         primaryCta: profile.primary,
         secondaryCta: profile.secondary,
-        heroMeta: profile.sector === "blog" ? "Haftanın kapak yazısı" : "Profesyonel ilk sürüm",
-        dashboardTitle: profile.sector === "blog" ? "Editörün seçimi" : "Canlı deneyim haritası",
+        heroMeta: profile.sector === "blog" ? "Haftanın kapak yazısı" : "Öne çıkan değer",
+        dashboardTitle: profile.sector === "blog" ? "Editörün seçimi" : "Size uygun seçenekler",
         dashboardSubtitle: profile.sector === "blog" ? "Yeni yazılar, yazar notları ve kategori akışı tek yerde." : "Mesaj, kanıt ve aksiyon noktaları tek akışta.",
         signalTitle: profile.sector === "blog" ? "Okuma ritmini güçlendiren yayın bölümleri" : "Ziyaretçinin karar vermesini kolaylaştıran yapı",
         workflowTitle: profile.processTitle,
@@ -2143,13 +2296,13 @@ function buildFallbackSiteContent(userMessage: string) {
         faqTitle: "Sık sorulan sorular",
         finalTitle: profile.ctaTitle,
         finalText: profile.ctaText,
-        builtBy: profile.sector === "blog" ? "Yayın ritmi hazır" : "Yayına hazır ilk sürüm",
+        builtBy: profile.sector === "blog" ? "Yayın ritmi" : "Birlikte netleştirelim",
       }
     : {
         primaryCta: profile.primary,
         secondaryCta: profile.secondary,
-        heroMeta: profile.sector === "blog" ? "This week's cover story" : "Professional first version",
-        dashboardTitle: profile.sector === "blog" ? "Editor's pick" : "Live experience map",
+        heroMeta: profile.sector === "blog" ? "This week's cover story" : "Featured value",
+        dashboardTitle: profile.sector === "blog" ? "Editor's pick" : "Options for your needs",
         dashboardSubtitle: profile.sector === "blog" ? "New stories, author notes, and topic streams in one place." : "Message, proof, and action points in one flow.",
         signalTitle: profile.sector === "blog" ? "Editorial sections that strengthen reading rhythm" : "A structure that makes decisions easier",
         workflowTitle: profile.processTitle,
@@ -2159,7 +2312,7 @@ function buildFallbackSiteContent(userMessage: string) {
         faqTitle: "Frequently asked questions",
         finalTitle: profile.ctaTitle,
         finalText: profile.ctaText,
-        builtBy: profile.sector === "blog" ? "Publication rhythm ready" : "Launch-ready first version",
+        builtBy: profile.sector === "blog" ? "Publication rhythm" : "Let's clarify the next step",
       };
 
   return {
@@ -2237,7 +2390,7 @@ function EditorialLayout() {
             <p className="mb-8 inline-flex border-b pb-2 text-xs font-black uppercase tracking-[0.32em]" style={{ borderColor: profile.palette.primary, color: profile.palette.primary }}>
               {profile.badge}
             </p>
-            <h1 className="max-w-5xl text-[clamp(4rem,10vw,9rem)] font-black leading-[0.78] tracking-[-0.1em]">
+            <h1 className="max-w-5xl text-[clamp(2.8rem,6vw,5.7rem)] font-black leading-[0.78] tracking-[-0.1em]">
               {profile.headline}
             </h1>
           </div>
@@ -2258,7 +2411,7 @@ function EditorialLayout() {
         <div className="mx-auto grid max-w-7xl gap-px overflow-hidden rounded-[2rem] border" style={{ borderColor: profile.palette.border, background: profile.palette.border }}>
           {content.signals.map((item, index) => (
             <article key={item.title} className="grid gap-5 bg-white/70 p-7 md:grid-cols-[0.22fr_0.78fr] md:p-10" style={{ backgroundColor: index % 2 ? profile.palette.bg : profile.palette.soft }}>
-              <p className="text-5xl font-black tracking-[-0.09em]" style={{ color: profile.palette.primary }}>0{index + 1}</p>
+              <p className="text-4xl font-black tracking-[-0.09em]" style={{ color: profile.palette.primary }}>0{index + 1}</p>
               <div>
                 <p className="text-xs font-black uppercase tracking-[0.28em]" style={{ color: profile.palette.accent }}>{item.eyebrow}</p>
                 <h2 className="mt-4 text-4xl font-black tracking-[-0.06em]">{item.title}</h2>
@@ -2273,7 +2426,7 @@ function EditorialLayout() {
         <div className="mx-auto grid max-w-7xl gap-6 lg:grid-cols-[0.8fr_1.2fr]">
           <div className="sticky top-6 h-fit">
             <p className="text-sm font-black uppercase tracking-[0.3em]" style={{ color: profile.palette.primary }}>{content.labels.workflowTitle}</p>
-            <h2 className="mt-5 text-5xl font-black leading-none tracking-[-0.08em]">{content.labels.outcomesTitle}</h2>
+            <h2 className="mt-5 text-4xl font-black leading-none tracking-[-0.08em]">{content.labels.outcomesTitle}</h2>
           </div>
           <div className="grid gap-5">
             {content.workflow.map((item) => (
@@ -2314,7 +2467,7 @@ function DashboardLayout() {
           <div className="rounded-[2.4rem] border bg-white/8 p-5 sm:p-8" style={{ borderColor: profile.palette.primary + "55" }}>
             <div className="grid gap-5 lg:grid-cols-[1fr_360px]">
               <div>
-                <h1 className="text-[clamp(3rem,8vw,7.4rem)] font-black leading-[0.84] tracking-[-0.09em]">{profile.headline}</h1>
+                <h1 className="text-[clamp(2.5rem,5vw,5.1rem)] font-black leading-[0.84] tracking-[-0.09em]">{profile.headline}</h1>
                 <p className="mt-6 max-w-3xl text-lg leading-8 opacity-75">{profile.intro}</p>
               </div>
               <div className="grid gap-3">
@@ -2363,7 +2516,7 @@ function CommerceLayout() {
         <div className="mx-auto grid max-w-7xl gap-8 lg:grid-cols-[0.85fr_1.15fr] lg:items-center">
           <div>
             <p className="rounded-full border px-4 py-2 text-xs font-black uppercase tracking-[0.28em]" style={{ borderColor: profile.palette.border, color: profile.palette.primary }}>{profile.badge}</p>
-            <h1 className="mt-7 text-[clamp(3.4rem,8vw,7rem)] font-black leading-[0.85] tracking-[-0.09em]">{profile.headline}</h1>
+            <h1 className="mt-7 text-[clamp(2.6rem,5.6vw,5.4rem)] font-black leading-[0.85] tracking-[-0.09em]">{profile.headline}</h1>
             <p className="mt-6 text-lg leading-8" style={{ color: profile.palette.muted }}>{profile.intro}</p>
           </div>
           <div className="grid gap-4 sm:grid-cols-2">
@@ -2414,7 +2567,7 @@ function BlogEditorialLayout() {
             <p className="inline-flex rounded-full border px-4 py-2 text-xs font-black uppercase tracking-[0.28em]" style={{ borderColor: profile.palette.border, color: profile.palette.primary }}>
               {profile.badge}
             </p>
-            <h1 className="mt-8 max-w-5xl text-[clamp(3.6rem,8vw,8rem)] font-black leading-[0.82] tracking-[-0.09em]">
+            <h1 className="mt-8 max-w-5xl text-[clamp(2.7rem,5.8vw,5.8rem)] font-black leading-[0.82] tracking-[-0.09em]">
               {profile.headline}
             </h1>
             <p className="mt-7 max-w-2xl text-xl leading-9" style={{ color: profile.palette.muted }}>{profile.intro}</p>
@@ -2458,7 +2611,7 @@ function BlogEditorialLayout() {
           <div className="mb-8 flex flex-col justify-between gap-4 border-b pb-6 md:flex-row md:items-end" style={{ borderColor: profile.palette.border }}>
             <div>
               <p className="text-sm font-black uppercase tracking-[0.28em]" style={{ color: profile.palette.primary }}>{profile.servicesTitle}</p>
-              <h2 className="mt-4 text-5xl font-black tracking-[-0.07em]">{content.labels.signalTitle}</h2>
+              <h2 className="mt-4 text-4xl font-black tracking-[-0.07em]">{content.labels.signalTitle}</h2>
             </div>
             <p className="max-w-md leading-7" style={{ color: profile.palette.muted }}>{content.labels.workflowIntro}</p>
           </div>
@@ -2481,7 +2634,7 @@ function BlogEditorialLayout() {
         <div className="mx-auto grid max-w-7xl gap-5 lg:grid-cols-[0.8fr_1.2fr]">
           <aside className="rounded-[2.4rem] p-8 text-white" style={{ background: profile.palette.panel }}>
             <p className="text-xs font-black uppercase tracking-[0.28em]" style={{ color: profile.palette.primary }}>{content.labels.workflowTitle}</p>
-            <h2 className="mt-5 text-5xl font-black leading-none tracking-[-0.08em]">{content.labels.outcomesTitle}</h2>
+            <h2 className="mt-5 text-4xl font-black leading-none tracking-[-0.08em]">{content.labels.outcomesTitle}</h2>
             <p className="mt-5 leading-8 text-white/65">{profile.testimonial}</p>
           </aside>
           <div className="grid gap-4 md:grid-cols-3">
@@ -2538,7 +2691,7 @@ function ClinicLayout() {
           </aside>
           <div className="order-1 lg:order-2">
             <p className="inline-flex rounded-full border border-white/12 px-4 py-2 text-xs font-black uppercase tracking-[0.26em]" style={{ color: profile.palette.accent }}>{profile.badge}</p>
-            <h1 className="mt-8 max-w-5xl text-[clamp(3.4rem,9vw,8.5rem)] font-black leading-[0.8] tracking-[-0.1em]">{profile.headline}</h1>
+            <h1 className="mt-8 max-w-5xl text-[clamp(2.7rem,6vw,5.9rem)] font-black leading-[0.8] tracking-[-0.1em]">{profile.headline}</h1>
             <p className="mt-8 max-w-3xl text-xl leading-9 text-white/68">{profile.intro}</p>
             <div className="mt-10 grid gap-3 sm:grid-cols-3">
               {content.stats.map(([value, label]) => (
@@ -2556,7 +2709,7 @@ function ClinicLayout() {
           <div className="grid gap-5 lg:grid-cols-[0.8fr_1.2fr]">
             <div>
               <p className="text-sm font-black uppercase tracking-[0.3em]" style={{ color: profile.palette.primary }}>{profile.servicesTitle}</p>
-              <h2 className="mt-5 text-5xl font-black leading-none tracking-[-0.08em]">{content.labels.signalTitle}</h2>
+              <h2 className="mt-5 text-4xl font-black leading-none tracking-[-0.08em]">{content.labels.signalTitle}</h2>
             </div>
             <div className="grid gap-4 md:grid-cols-3">
               {content.signals.map((item) => (
@@ -2572,11 +2725,11 @@ function ClinicLayout() {
       </section>
       <section id="workflow" className={sectionPad + " py-16"} style={{ background: profile.palette.bg, color: profile.palette.text }}>
         <div className="mx-auto max-w-7xl rounded-[2.5rem] border p-6 md:p-10" style={{ borderColor: profile.palette.border, background: profile.palette.soft }}>
-          <h2 className="text-5xl font-black tracking-[-0.08em]">{content.labels.workflowTitle}</h2>
+          <h2 className="text-4xl font-black tracking-[-0.08em]">{content.labels.workflowTitle}</h2>
           <div className="mt-8 grid gap-4 md:grid-cols-3">
             {content.workflow.map((item, index) => (
               <article key={item.step} className="rounded-[1.7rem] bg-white/80 p-5">
-                <span className="text-5xl font-black tracking-[-0.1em]" style={{ color: profile.palette.primary }}>0{index + 1}</span>
+                <span className="text-4xl font-black tracking-[-0.1em]" style={{ color: profile.palette.primary }}>0{index + 1}</span>
                 <h3 className="mt-5 text-2xl font-black">{item.step}</h3>
                 <p className="mt-3 leading-7" style={{ color: profile.palette.muted }}>{item.text}</p>
               </article>
@@ -2602,11 +2755,11 @@ function ServiceLayout() {
         <div className="relative mx-auto mt-12 grid max-w-7xl gap-8 lg:grid-cols-[0.9fr_1.1fr] lg:items-center">
           <div>
             <p className="mb-6 inline-flex rounded-full border bg-white/60 px-4 py-2 text-xs font-black uppercase tracking-[0.24em]" style={{ borderColor: profile.palette.border, color: profile.palette.accent }}>{profile.badge}</p>
-            <h1 className="max-w-4xl text-[clamp(3.2rem,8vw,7rem)] font-black leading-[0.84] tracking-[-0.09em]">{profile.headline}</h1>
+            <h1 className="max-w-4xl text-[clamp(2.6rem,5.5vw,5.4rem)] font-black leading-[0.84] tracking-[-0.09em]">{profile.headline}</h1>
             <p className="mt-7 max-w-2xl text-lg leading-8" style={{ color: profile.palette.muted }}>{profile.intro}</p>
             <div className="mt-8 flex flex-wrap gap-3">
-              <a href="#contact" className="rounded-full px-7 py-4 font-black" style={{ background: profile.palette.primary, color: profile.palette.primaryText }}>{content.labels.primaryCta}</a>
-              <a href="#solution" className="rounded-full border bg-white/70 px-7 py-4 font-black" style={{ borderColor: profile.palette.border }}>{content.labels.secondaryCta}</a>
+              <a href="#contact" className="rounded-full px-5 py-3 text-sm font-black" style={{ background: profile.palette.primary, color: profile.palette.primaryText }}>{content.labels.primaryCta}</a>
+              <a href="#solution" className="rounded-full border bg-white/70 px-5 py-3 text-sm font-black" style={{ borderColor: profile.palette.border }}>{content.labels.secondaryCta}</a>
             </div>
           </div>
           <div className="rounded-[2.4rem] border bg-white/70 p-5 shadow-2xl" style={{ borderColor: profile.palette.border }}>
@@ -2634,7 +2787,7 @@ function ServiceSections() {
     <section id="solution" className={sectionPad + " py-20"}>
       <div className="mx-auto max-w-7xl">
         <div className="mb-10 flex flex-col justify-between gap-4 md:flex-row md:items-end">
-          <h2 className="max-w-3xl text-5xl font-black tracking-[-0.07em]">{content.labels.signalTitle}</h2>
+          <h2 className="max-w-3xl text-4xl font-black tracking-[-0.07em]">{content.labels.signalTitle}</h2>
           <p className="max-w-md leading-7" style={{ color: profile.palette.muted }}>{content.labels.workflowIntro}</p>
         </div>
         <div className="grid gap-4 md:grid-cols-3">
@@ -2678,7 +2831,7 @@ function ProofAndFaq() {
         <div className="mx-auto grid max-w-7xl gap-5 lg:grid-cols-[1.15fr_0.85fr]">
           <article className="rounded-[2.4rem] border p-8 sm:p-12" style={{ borderColor: profile.palette.border, background: profile.palette.soft }}>
             <p className="text-xs font-black uppercase tracking-[0.28em]" style={{ color: profile.palette.primary }}>{content.caseStudy.label}</p>
-            <h2 className="mt-5 text-4xl font-black tracking-[-0.06em] sm:text-6xl">{content.caseStudy.title}</h2>
+            <h2 className="mt-5 text-3xl font-black tracking-[-0.05em] sm:text-5xl">{content.caseStudy.title}</h2>
             <p className="mt-5 max-w-2xl text-lg leading-8" style={{ color: profile.palette.muted }}>{content.caseStudy.text}</p>
           </article>
           <article className="rounded-[2.4rem] p-8 text-white" style={{ background: profile.palette.panel }}>
@@ -2689,7 +2842,7 @@ function ProofAndFaq() {
       </section>
       <section id="faq" className={sectionPad + " py-16"}>
         <div className="mx-auto max-w-7xl">
-          <h2 className="text-5xl font-black tracking-[-0.07em]">{content.labels.faqTitle}</h2>
+          <h2 className="text-4xl font-black tracking-[-0.07em]">{content.labels.faqTitle}</h2>
           <div className="mt-8 grid gap-4 md:grid-cols-2">
             {profile.faq.map(([question, answer]) => (
               <article key={question} className="rounded-[1.6rem] border p-6" style={{ borderColor: profile.palette.border }}>
@@ -2711,9 +2864,9 @@ function FinalCta({ dark = false }: { dark?: boolean }) {
     <section id="contact" className={sectionPad + " pb-24 pt-10"}>
       <div className="mx-auto max-w-6xl rounded-[2.6rem] p-8 text-center sm:p-14" style={{ background: profile.palette.panel, color: profile.palette.panelText }}>
         <p className="text-xs font-black uppercase tracking-[0.3em]" style={{ color: profile.palette.primary }}>{content.labels.builtBy}</p>
-        <h2 className="mx-auto mt-5 max-w-4xl text-4xl font-black tracking-[-0.07em] sm:text-7xl">{content.labels.finalTitle}</h2>
+        <h2 className="mx-auto mt-5 max-w-4xl text-3xl font-black tracking-[-0.05em] sm:text-5xl">{content.labels.finalTitle}</h2>
         <p className="mx-auto mt-5 max-w-2xl leading-8 opacity-75">{content.labels.finalText}</p>
-        <a href="mailto:hello@example.com" className="mt-9 inline-flex rounded-full px-8 py-4 font-black" style={{ background: profile.palette.primary, color: profile.palette.primaryText }}>
+        <a href="mailto:hello@example.com" className="mt-9 inline-flex rounded-full px-6 py-3 text-sm font-black" style={{ background: profile.palette.primary, color: profile.palette.primaryText }}>
           {content.labels.primaryCta}
         </a>
       </div>
@@ -2832,12 +2985,12 @@ function buildFallbackAssistantContent(userMessage: string, reason: string): str
     "<dec-code>",
     "Plan:",
     "- " + reason,
-    "- Build a structured multi-page version with content, component, and page files.",
+    "- Build a structured multi-page version with content, shared UI, and page files.",
     ...writes,
     "</dec-code>",
     isLikelyTurkish(userMessage)
-      ? "Çok sayfalı ilk sürüm hazırlandı; tasarım yönünü promptuna göre daha da keskinleştirebilirsin."
-      : "A multi-page first version is ready; you can refine the design direction further from your prompt.",
+      ? "Çok sayfalı yapı hazırlandı; istersen marka tonunu ve bölüm detaylarını daha da keskinleştirebilirsin."
+      : "A multi-page structure is ready; you can refine the brand tone and section details further.",
   ].join("\n");
 }
 
@@ -3409,6 +3562,12 @@ function validateBuildAgainstSpec(params: {
     issues.push("The generated customer-facing brand reuses Klawpen without user intent.");
   }
 
+  if (hasBuilderMetaVisibleCopy(userMessage, assistantContent)) {
+    issues.push(
+      "Visible UI copy contains builder/meta language; rewrite it as customer-facing business copy."
+    );
+  }
+
   if (shouldRepairVisibleLanguageMismatch(userMessage, assistantContent)) {
     issues.push(
       isLikelyTurkish(userMessage)
@@ -3606,6 +3765,9 @@ async function createBuilderResponse(
         isLikelyTurkish(userMessage)
           ? "VISIBLE UI LANGUAGE: Turkish. Every preview-visible label, heading, CTA, form label, FAQ, route title, metadata title/description, empty state, and error/status text must be Turkish with correct Turkish characters. Do not leave English UI labels like Home, Services, Contact, Get Started, Learn More, Features, Pricing, or FAQ."
           : "VISIBLE UI LANGUAGE: English. Every preview-visible label, heading, CTA, form label, FAQ, route title, metadata title/description, empty state, and error/status text must be English.",
+        "CLIENT-FACING COPY CONTRACT: The generated preview must read like the real business/product/publication speaking to its customers. Never write visible copy as Klawpen, an AI, a builder, a freelancer, or an agency explaining a draft.",
+        "FORBIDDEN VISIBLE META WORDS: prompt, generated, AI, yapay zeka, Klawpen, Core, Builder, template, şablon, fallback, component, design direction, tasarım yönü, first version, ilk sürüm, launch-ready, yayına hazır, freelancer, proposal, gelişmiş studio.",
+        "REFINED SCALE CONTRACT: no huge crude headings/buttons/cards. Use tasteful clamp ranges, compact nav, normal-sized CTAs, useful card content, balanced whitespace, and realistic density.",
         isBroadBuildRequest(userMessage, options) &&
         !isExplicitSinglePageRequest(userMessage)
           ? [
@@ -3619,11 +3781,11 @@ async function createBuilderResponse(
           : "If the user explicitly requested a single-page result, keep it one route but still make it polished and componentized.",
         "Do not name the generated customer-facing brand Klawpen unless the user asks for Klawpen itself.",
         "The result must be specific to this prompt, not a reused generic template.",
-        "Hard design fail conditions: giant headline with empty cards, generic stats unrelated to the prompt, blank panels, nav + hero + three cards template, or generated-site fallback-style layout.",
+        "Hard design fail conditions: giant headline with empty cards, generic stats unrelated to the prompt, blank panels, nav + hero + three cards template, fallback-style layout, freelancer/proposal copy, or any UI text that describes the build process.",
         options.planMode
           ? "Plan mode is enabled and the clarification gate has already passed: include a concise implementation plan inside the <dec-code> block, then implement decisively."
           : "Plan mode is disabled: infer professional defaults for missing minor details and implement directly.",
-        "Raise the UI quality bar: build polished navigation, rich routes, responsive behavior, strong typography, deliberate color, animations, states, and product-specific copy. Avoid simple toy layouts.",
+        "Raise the UI quality bar: build polished navigation, rich routes, responsive behavior, refined typography, deliberate color, animations, states, and product-specific copy. Avoid simple toy layouts and AI-looking oversized blocks.",
       ].join("\n"),
       temperature: Math.max(aiTemperature, 0.22),
       timeoutMs: AI_BUILDER_TIMEOUT_MS,
@@ -3668,6 +3830,9 @@ QUALITY BAR:
 - Create real App Router pages, shared components, and a content/config file.
 - The visual concept must be distinct and complete: no empty panels, no unrelated generic stats, no oversized headline-only hero, no nav + hero + three cards skeleton.
 - Use real customer-visible copy in ${turkish ? "Turkish with correct Turkish characters" : "English"}.
+- Visible UI copy must sound like the real customer website, not a freelancer proposal, builder status, Klawpen output, or AI-generated draft.
+- Never show these words in preview copy unless the user explicitly requested that exact subject: prompt, generated, AI, yapay zeka, Klawpen, Core, Builder, template, şablon, fallback, component, design direction, tasarım yönü, first version, ilk sürüm, launch-ready, yayına hazır, freelancer, proposal, gelişmiş studio.
+- Use refined proportions: smaller CTAs, compact nav, controlled display type, useful card density, and no huge empty panels.
 - Keep code maintainable and imports valid.
 
 ${isBlogLike ? `
@@ -3790,6 +3955,64 @@ ${userMessage}
   });
 }
 
+async function reviseBuildAfterLocalQualityGate(params: {
+  userMessage: string;
+  plannerBrief: string;
+  architectSpec?: ArchitectSpec | null;
+  codeContext: string;
+  draft: string;
+  provider: AiProviderConfig;
+  options?: BuildOptions;
+  reason: string;
+}) {
+  const revisionInput = `
+SYSTEM:
+${prompt}
+
+${BUILDER_SYSTEM_PROMPT}
+
+The previous build failed a local Klawpen quality gate:
+${params.reason}
+
+Return exactly one <dec-code> block with executable edit tags only.
+Preserve the user's intent, but rewrite the implementation so the preview feels like a finished public-facing website for a real business.
+
+USER_REQUEST:
+${params.userMessage}
+
+PLANNER_BRIEF:
+${params.plannerBrief}
+
+ARCHITECT_SPEC:
+${formatArchitectSpec(params.architectSpec || null)}
+
+VISUAL_ARCHETYPE_CONTRACT:
+${formatVisualArchetype(selectVisualArchetype(params.userMessage))}
+
+PREVIOUS_DRAFT:
+${params.draft}
+
+CURRENT_CODEBASE_SNAPSHOT:
+${clipText(params.codeContext, 80_000)}
+`;
+
+  try {
+    const revised = await createBuilderResponse(
+      revisionInput,
+      params.provider,
+      params.userMessage,
+      params.options
+    );
+    return hasExecutableCodeOperations(revised) ? revised : params.draft;
+  } catch (error) {
+    console.warn(
+      "Local quality gate revision failed; keeping current draft:",
+      error instanceof Error ? error.message : error
+    );
+    return params.draft;
+  }
+}
+
 async function improveWithCriticLoop(params: {
   userMessage: string;
   plannerBrief: string;
@@ -3832,6 +4055,36 @@ ${params.recentMessages || "No recent conversation."}
 ASSISTANT_OUTPUT_TO_REVIEW:
 ${currentDraft}
 `;
+
+    if (hasBuilderMetaVisibleCopy(params.userMessage, currentDraft)) {
+      currentDraft = await reviseBuildAfterLocalQualityGate({
+        userMessage: params.userMessage,
+        plannerBrief: params.plannerBrief,
+        architectSpec: params.architectSpec || null,
+        codeContext: params.codeContext,
+        draft: currentDraft,
+        provider: params.provider,
+        options: params.options,
+        reason:
+          "Visible UI copy contains builder/meta language. Rewrite it as finished customer-facing website copy with no Klawpen/AI/prompt/template/first-version language.",
+      });
+      continue;
+    }
+
+    if (hasOversizedCrudeVisualSystem(currentDraft)) {
+      currentDraft = await reviseBuildAfterLocalQualityGate({
+        userMessage: params.userMessage,
+        plannerBrief: params.plannerBrief,
+        architectSpec: params.architectSpec || null,
+        codeContext: params.codeContext,
+        draft: currentDraft,
+        provider: params.provider,
+        options: params.options,
+        reason:
+          "The visual system is oversized and low-density. Reduce heading/button/card scale, add useful content density, and make the UI feel refined instead of AI-generated.",
+      });
+      continue;
+    }
 
     let critic: CriticResult;
     try {
@@ -3940,16 +4193,25 @@ async function repairMissingExecutableEdits(params: {
     params.userMessage,
     params.draft
   );
+  const builderMetaCopy = hasBuilderMetaVisibleCopy(
+    params.userMessage,
+    params.draft
+  );
   const languageMismatch = shouldRepairVisibleLanguageMismatch(
     params.userMessage,
     params.draft
   );
+  const oversizedVisualSystem =
+    isBroadBuildRequest(params.userMessage, params.options) &&
+    hasOversizedCrudeVisualSystem(params.draft);
 
   if (
     !missingExecutableEdits &&
     !shallowBroadBuild &&
     !reusedBuilderBrand &&
-    !languageMismatch
+    !builderMetaCopy &&
+    !languageMismatch &&
+    !oversizedVisualSystem
   ) {
     return params.draft;
   }
@@ -3960,7 +4222,9 @@ async function repairMissingExecutableEdits(params: {
       missingExecutableEdits,
       shallowBroadBuild,
       reusedBuilderBrand,
+      builderMetaCopy,
       languageMismatch,
+      oversizedVisualSystem,
     }
   );
 
@@ -3970,7 +4234,11 @@ async function repairMissingExecutableEdits(params: {
       ? "The previous assistant output was too shallow for a broad build: it did not create enough real routes, shared structure, motion, or implementation depth."
       : reusedBuilderBrand
         ? "The previous assistant output reused Klawpen as the customer-facing generated brand without user intent."
-        : "The previous assistant output used visible UI copy in a different language than the user's prompt.";
+        : builderMetaCopy
+          ? "The previous assistant output used builder/meta language in customer-visible UI copy."
+          : oversizedVisualSystem
+            ? "The previous assistant output used oversized, low-density typography/cards/buttons that made the preview look crude and AI-generated."
+            : "The previous assistant output used visible UI copy in a different language than the user's prompt.";
 
   const repairInput = `
 SYSTEM:
@@ -3989,7 +4257,13 @@ For this build request, rewrite src/app/page.tsx and create a real multi-page Ap
 Visual archetype contract:
 ${formatVisualArchetype(selectVisualArchetype(params.userMessage))}
 Do not reuse the generic centered hero + stat cards + three cards + FAQ skeleton. Change the silhouette, section order, geometry, and domain-specific modules.
-The implementation must feel prompt-specific, visually polished, responsive, and complete enough to preview as a professional first version.
+The implementation must feel prompt-specific, visually polished, responsive, and complete enough to preview as a finished public website.
+Customer-facing copy rule:
+- Visible text must speak as the business/product/publication itself, not as Klawpen, an AI, a builder, a freelancer, or an agency explaining work.
+- Never show builder/meta wording in the preview: prompt, generated, AI, yapay zeka, Klawpen, Core, Builder, template, şablon, fallback, component, design direction, tasarım yönü, first version, ilk sürüm, launch-ready, yayına hazır, freelancer, proposal, gelişmiş studio.
+Refined design rule:
+- Avoid giant headings, huge CTA buttons, empty decorative cards, and oversized rounded boxes.
+- Use compact navigation/buttons, balanced card sizes, realistic content density, refined typography scale, and purposeful animation.
 Visible UI language requirement:
 - The user's prompt language is ${isLikelyTurkish(params.userMessage) ? "Turkish" : "English"}.
 - All customer-visible UI copy must be ${isLikelyTurkish(params.userMessage) ? "Turkish with correct Turkish characters" : "English"}: navigation, page titles, headings, CTA buttons, cards, forms, FAQ, empty/error states, and metadata.
@@ -4024,13 +4298,15 @@ ${clipText(params.codeContext, 80_000)}
       if (
         !shouldRepairBuildDepth(params.userMessage, repaired, params.options) &&
         !shouldRepairGeneratedBrandReuse(params.userMessage, repaired) &&
-        !shouldRepairVisibleLanguageMismatch(params.userMessage, repaired)
+        !hasBuilderMetaVisibleCopy(params.userMessage, repaired) &&
+        !shouldRepairVisibleLanguageMismatch(params.userMessage, repaired) &&
+        !hasOversizedCrudeVisualSystem(repaired)
       ) {
         return repaired;
       }
 
       console.warn(
-        "AI repair response was executable but still shallow, reused builder branding, or mixed visible UI language; keeping executable AI output instead of replacing it with fallback."
+        "AI repair response was executable but still shallow, meta-copy, oversized, reused builder branding, or mixed visible UI language; keeping executable AI output instead of replacing it with fallback."
       );
       return repaired;
     }
