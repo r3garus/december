@@ -9,6 +9,7 @@ import {
 } from "./aiProvider";
 import * as dockerService from "./docker";
 import * as fileService from "./file";
+import * as packageService from "./package";
 
 const clientCache = new Map<string, OpenAI>();
 
@@ -649,6 +650,147 @@ function appendChangeSummaryTag(
   )}</dec-change-summary>`;
 }
 
+function decodeHtmlEntities(value: string): string {
+  return value
+    .replace(/&quot;/g, "\"")
+    .replace(/&#34;/g, "\"")
+    .replace(/&apos;/g, "'")
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
+function extractAttribute(tag: string, name: string): string | null {
+  const pattern = new RegExp(`${name}=(["'])([\\s\\S]*?)\\1`, "i");
+  const match = tag.match(pattern);
+  return match?.[2] ? decodeHtmlEntities(match[2]) : null;
+}
+
+function extractCodeOperations(assistantContent: string): Array<{
+  type: "write" | "rename" | "delete" | "dependency";
+  index: number;
+  path?: string;
+  content?: string;
+  from?: string;
+  to?: string;
+  packageName?: string;
+  version?: string;
+}> {
+  const operations: Array<{
+    type: "write" | "rename" | "delete" | "dependency";
+    index: number;
+    path?: string;
+    content?: string;
+    from?: string;
+    to?: string;
+    packageName?: string;
+    version?: string;
+  }> = [];
+
+  const writePattern = /<dec-write\b([^>]*)>([\s\S]*?)<\/dec-write>/gi;
+  const renamePattern = /<dec-rename\b([^>]*?)\/>/gi;
+  const deletePattern = /<dec-delete\b([^>]*?)\/>/gi;
+  const dependencyPattern = /<dec-add-dependency\b([^>]*)>([\s\S]*?)<\/dec-add-dependency>/gi;
+
+  let match: RegExpExecArray | null;
+
+  while ((match = writePattern.exec(assistantContent)) !== null) {
+    const path = extractAttribute(match[1] || "", "path") ||
+      extractAttribute(match[1] || "", "file_path");
+    const content = match[2];
+
+    if (path && content !== undefined) {
+      operations.push({
+        type: "write",
+        index: match.index,
+        path,
+        content: content.trim(),
+      });
+    }
+  }
+
+  while ((match = renamePattern.exec(assistantContent)) !== null) {
+    const from = extractAttribute(match[1] || "", "from");
+    const to = extractAttribute(match[1] || "", "to");
+
+    if (from && to) {
+      operations.push({ type: "rename", index: match.index, from, to });
+    }
+  }
+
+  while ((match = deletePattern.exec(assistantContent)) !== null) {
+    const path = extractAttribute(match[1] || "", "path") ||
+      extractAttribute(match[1] || "", "file_path");
+
+    if (path) {
+      operations.push({ type: "delete", index: match.index, path });
+    }
+  }
+
+  while ((match = dependencyPattern.exec(assistantContent)) !== null) {
+    const nameAttr = extractAttribute(match[1] || "", "name");
+    const version = extractAttribute(match[1] || "", "version") || undefined;
+    const packageName = (nameAttr || match[2] || "").trim();
+
+    if (packageName) {
+      operations.push({
+        type: "dependency",
+        index: match.index,
+        packageName,
+        version,
+      });
+    }
+  }
+
+  return operations.sort((left, right) => left.index - right.index);
+}
+
+async function applyCodeOperations(
+  containerId: string,
+  assistantContent: string
+): Promise<void> {
+  const operations = extractCodeOperations(assistantContent);
+  if (!operations.length) return;
+
+  console.log(
+    `Applying ${operations.length} AI code operation(s) to ${containerId}`
+  );
+
+  for (const operation of operations) {
+    if (operation.type === "write" && operation.path !== undefined) {
+      await fileService.writeFile(
+        containerId,
+        operation.path,
+        operation.content || ""
+      );
+      continue;
+    }
+
+    if (
+      operation.type === "rename" &&
+      operation.from !== undefined &&
+      operation.to !== undefined
+    ) {
+      await fileService.renameFile(containerId, operation.from, operation.to);
+      continue;
+    }
+
+    if (operation.type === "delete" && operation.path !== undefined) {
+      await fileService.removeFile(containerId, operation.path);
+      continue;
+    }
+
+    if (operation.type === "dependency" && operation.packageName) {
+      const packageSpec = operation.version
+        ? `${operation.packageName}@${operation.version}`
+        : operation.packageName;
+
+      await packageService.addDependency(containerId, packageSpec, false);
+    }
+  }
+}
+
 async function createPlannerBrief(
   userMessage: string,
   recentConversation: string,
@@ -957,6 +1099,7 @@ ${codeContext}`;
     provider,
   });
   assistantContent = appendChangeSummaryTag(assistantContent, fileContentTree);
+  await applyCodeOperations(containerId, assistantContent);
 
   const assistantMsg: Message = {
     id: `assistant-${Date.now()}`,

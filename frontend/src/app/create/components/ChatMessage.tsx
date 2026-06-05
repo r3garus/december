@@ -378,11 +378,7 @@ const parseSpecialTags = (
   };
 
   const operationPromises: Promise<void>[] = [];
-  const shouldExecuteOperations =
-    executeOperations &&
-    !!containerId &&
-    !!messageId &&
-    !isMessageExecuted(containerId, messageId);
+  const shouldExecuteOperations = false;
 
   const executeFileOperation = async (type: string, match: RegExpExecArray) => {
     if (!containerId || !messageId || !shouldExecuteOperations) return;
