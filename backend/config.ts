@@ -8,8 +8,8 @@ export const config = {
       "",
     model: process.env.AI_MODEL || "gpt-5.3-codex",
     temperature: Number(process.env.AI_TEMPERATURE || "0.15"),
-    maxRetries: Number(process.env.AI_MAX_RETRIES || "2"),
+    maxRetries: Number(process.env.AI_MAX_RETRIES || "0"),
     minQualityScore: Number(process.env.AI_MIN_QUALITY_SCORE || "80"),
-    maxCriticRounds: Number(process.env.AI_MAX_CRITIC_ROUNDS || "1"),
+    maxCriticRounds: Number(process.env.AI_MAX_CRITIC_ROUNDS || "0"),
   },
 } as const;

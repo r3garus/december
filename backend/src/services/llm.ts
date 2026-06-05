@@ -23,6 +23,7 @@ const aiTemperature = aiSdkConfig.temperature ?? 0.15;
 const aiMaxRetries = aiSdkConfig.maxRetries ?? 2;
 const aiMinQualityScore = aiSdkConfig.minQualityScore ?? 80;
 const aiMaxCriticRounds = aiSdkConfig.maxCriticRounds ?? 2;
+const AI_REQUEST_TIMEOUT_MS = Number(process.env.AI_REQUEST_TIMEOUT_MS || "20000");
 
 function getAiClient(provider: AiProviderConfig) {
   const cacheKey = `${provider.key}:${provider.baseUrl}`;
@@ -284,6 +285,34 @@ async function withRetries<T>(fn: () => Promise<T>, retries: number): Promise<T>
   throw lastError;
 }
 
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  label: string
+): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+
+  const timeoutPromise = new Promise<T>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+function supportsResponsesApi(provider: AiProviderConfig): boolean {
+  const baseUrl = provider.baseUrl.toLowerCase();
+  return (
+    baseUrl.includes("api.openai.com") ||
+    process.env.AI_FORCE_RESPONSES_API === "true"
+  );
+}
+
 function clipText(input: string, maxLength: number): string {
   if (input.length <= maxLength) return input;
   return `${input.slice(0, maxLength)}\n\n[TRUNCATED_FOR_CONTEXT]`;
@@ -347,15 +376,43 @@ async function createAiText(params: {
   const temperature = params.temperature ?? aiTemperature;
   const retries = params.retries ?? aiMaxRetries;
 
+  const createChatCompletion = async () => {
+    const response = await withRetries(
+      () =>
+        withTimeout(
+          client.chat.completions.create({
+            model: params.provider.model,
+            messages: [{ role: "user", content: params.input }],
+            // @ts-ignore
+            temperature,
+          }),
+          AI_REQUEST_TIMEOUT_MS,
+          `${params.provider.key} chat completion`
+        ),
+      retries
+    );
+
+    recordProviderRequest(params.provider.key);
+    return extractChatCompletionText(response);
+  };
+
+  if (!supportsResponsesApi(params.provider)) {
+    return createChatCompletion();
+  }
+
   try {
     const response = await withRetries(
       () =>
-        client.responses.create({
-          model: params.provider.model,
-          input: params.input,
-          // @ts-ignore
-          temperature,
-        }),
+        withTimeout(
+          client.responses.create({
+            model: params.provider.model,
+            input: params.input,
+            // @ts-ignore
+            temperature,
+          }),
+          AI_REQUEST_TIMEOUT_MS,
+          `${params.provider.key} responses request`
+        ),
       retries
     );
 
@@ -367,19 +424,7 @@ async function createAiText(params: {
       responsesError instanceof Error ? responsesError.message : responsesError
     );
 
-    const response = await withRetries(
-      () =>
-        client.chat.completions.create({
-          model: params.provider.model,
-          messages: [{ role: "user", content: params.input }],
-          // @ts-ignore
-          temperature,
-        }),
-      retries
-    );
-
-    recordProviderRequest(params.provider.key);
-    return extractChatCompletionText(response);
+    return createChatCompletion();
   }
 }
 
@@ -1098,6 +1143,30 @@ ${userMessage}
   });
 }
 
+function createLocalPlannerBrief(userMessage: string): string {
+  const turkish = isLikelyTurkish(userMessage);
+
+  if (turkish) {
+    return [
+      "Goal: Kullanıcı isteğine göre üretime hazır, modern ve mobil uyumlu bir web sayfası oluştur.",
+      "Audience: Hizmet veya ürün arayan son kullanıcılar.",
+      "UI/UX Direction: Güven veren, net hiyerarşili, premium ve dönüşüm odaklı bir landing page.",
+      "Required Pages/Sections: Hero, güven unsurları, hizmetler/özellikler, süreç, sosyal kanıt, SSS ve iletişim CTA.",
+      "Technical Plan: Next.js App Router içinde src/app/page.tsx dosyasını tam ve çalışır şekilde yeniden yaz.",
+      "Acceptance Checklist: Responsive tasarım, anlamlı metinler, erişilebilir HTML, bozuk import yok, placeholder hissi yok.",
+    ].join("\n");
+  }
+
+  return [
+    "Goal: Build a production-ready, modern, mobile-responsive web page from the user request.",
+    "Audience: End users evaluating the service or product.",
+    "UI/UX Direction: Trustworthy, premium, conversion-focused landing page with clear hierarchy.",
+    "Required Pages/Sections: Hero, trust strip, services/features, process, social proof, FAQ, and contact CTA.",
+    "Technical Plan: Rewrite src/app/page.tsx completely using the Next.js App Router structure.",
+    "Acceptance Checklist: Responsive layout, meaningful copy, accessible HTML, no broken imports, no placeholder feel.",
+  ].join("\n");
+}
+
 async function createBuilderResponse(
   input: string,
   provider: AiProviderConfig
@@ -1391,11 +1460,19 @@ async function buildAssistantMessageFromSession(
     .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
     .join("\n");
 
-  const plannerBrief = await createPlannerBrief(
-    userMessage,
-    recentMessages,
-    provider
-  );
+  let plannerBrief = createLocalPlannerBrief(userMessage);
+  try {
+    plannerBrief = await createPlannerBrief(
+      userMessage,
+      recentMessages,
+      provider
+    );
+  } catch (error) {
+    console.warn(
+      "AI planner failed; continuing with local planner brief:",
+      error instanceof Error ? error.message : error
+    );
+  }
 
   const systemPrompt = `${prompt}
 
@@ -1419,23 +1496,42 @@ ${codeContext}`;
   ];
 
   const flattenedInput = buildFlattenedInput(openaiMessages);
-  let assistantContent = await createBuilderResponse(flattenedInput, provider);
+  let assistantContent: string;
 
-  assistantContent = await improveWithCriticLoop({
-    userMessage,
-    plannerBrief,
-    codeContext: clipText(codeContext, 80_000),
-    recentMessages: clipText(recentMessages, 10_000),
-    draft: assistantContent,
-    provider,
-  });
-  assistantContent = await repairMissingExecutableEdits({
-    userMessage,
-    plannerBrief,
-    codeContext,
-    draft: assistantContent,
-    provider,
-  });
+  try {
+    assistantContent = await createBuilderResponse(flattenedInput, provider);
+
+    assistantContent = await improveWithCriticLoop({
+      userMessage,
+      plannerBrief,
+      codeContext: clipText(codeContext, 80_000),
+      recentMessages: clipText(recentMessages, 10_000),
+      draft: assistantContent,
+      provider,
+    });
+    assistantContent = await repairMissingExecutableEdits({
+      userMessage,
+      plannerBrief,
+      codeContext,
+      draft: assistantContent,
+      provider,
+    });
+  } catch (error) {
+    console.error(
+      "AI builder generation failed; applying local fallback landing page:",
+      error instanceof Error ? error.message : error
+    );
+    assistantContent = [
+      "<dec-code>",
+      "Plan:",
+      "- AI provider did not return in time.",
+      "- Apply a generated landing page fallback so the preview updates.",
+      `<dec-write path="src/app/page.tsx">${buildFallbackLandingPage(userMessage)}</dec-write>`,
+      "</dec-code>",
+      "AI provider timed out, so I applied a safe generated starting page that you can continue editing.",
+    ].join("\n");
+  }
+
   assistantContent = appendChangeSummaryTag(assistantContent, fileContentTree);
   const applyResult = await applyCodeOperations(
     containerId,
