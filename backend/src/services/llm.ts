@@ -749,46 +749,80 @@ function extractCodeOperations(assistantContent: string): Array<{
 async function applyCodeOperations(
   containerId: string,
   assistantContent: string
-): Promise<void> {
+): Promise<{ applied: number; failed: Array<{ label: string; error: string }> }> {
   const operations = extractCodeOperations(assistantContent);
-  if (!operations.length) return;
+  const result: {
+    applied: number;
+    failed: Array<{ label: string; error: string }>;
+  } = { applied: 0, failed: [] };
+
+  if (!operations.length) return result;
 
   console.log(
     `Applying ${operations.length} AI code operation(s) to ${containerId}`
   );
 
   for (const operation of operations) {
-    if (operation.type === "write" && operation.path !== undefined) {
-      await fileService.writeFile(
-        containerId,
-        operation.path,
-        operation.content || ""
+    const operationLabel =
+      operation.path ||
+      operation.to ||
+      operation.from ||
+      operation.packageName ||
+      operation.type;
+
+    try {
+      if (operation.type === "write" && operation.path !== undefined) {
+        await fileService.writeFile(
+          containerId,
+          operation.path,
+          operation.content || ""
+        );
+        result.applied += 1;
+        continue;
+      }
+
+      if (
+        operation.type === "rename" &&
+        operation.from !== undefined &&
+        operation.to !== undefined
+      ) {
+        await fileService.renameFile(containerId, operation.from, operation.to);
+        result.applied += 1;
+        continue;
+      }
+
+      if (operation.type === "delete" && operation.path !== undefined) {
+        await fileService.removeFile(containerId, operation.path);
+        result.applied += 1;
+        continue;
+      }
+
+      if (operation.type === "dependency" && operation.packageName) {
+        const packageSpec = operation.version
+          ? `${operation.packageName}@${operation.version}`
+          : operation.packageName;
+
+        await packageService.addDependency(containerId, packageSpec, false);
+        result.applied += 1;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      console.error(
+        `AI code operation failed (${operation.type}: ${operationLabel}):`,
+        message
       );
-      continue;
-    }
-
-    if (
-      operation.type === "rename" &&
-      operation.from !== undefined &&
-      operation.to !== undefined
-    ) {
-      await fileService.renameFile(containerId, operation.from, operation.to);
-      continue;
-    }
-
-    if (operation.type === "delete" && operation.path !== undefined) {
-      await fileService.removeFile(containerId, operation.path);
-      continue;
-    }
-
-    if (operation.type === "dependency" && operation.packageName) {
-      const packageSpec = operation.version
-        ? `${operation.packageName}@${operation.version}`
-        : operation.packageName;
-
-      await packageService.addDependency(containerId, packageSpec, false);
+      result.failed.push({
+        label: `${operation.type}: ${operationLabel}`,
+        error: message,
+      });
     }
   }
+
+  console.log(
+    `AI code operations finished for ${containerId}: ${result.applied} applied, ${result.failed.length} failed`
+  );
+
+  return result;
 }
 
 async function createPlannerBrief(
@@ -1099,7 +1133,16 @@ ${codeContext}`;
     provider,
   });
   assistantContent = appendChangeSummaryTag(assistantContent, fileContentTree);
-  await applyCodeOperations(containerId, assistantContent);
+  const applyResult = await applyCodeOperations(containerId, assistantContent);
+
+  if (applyResult.failed.length > 0) {
+    const failedItems = applyResult.failed
+      .slice(0, 4)
+      .map((item) => `- ${item.label}: ${item.error}`)
+      .join("\n");
+
+    assistantContent += `\n<dec-error>Some generated edits could not be applied automatically. The backend logged the details:\n${failedItems}</dec-error>`;
+  }
 
   const assistantMsg: Message = {
     id: `assistant-${Date.now()}`,

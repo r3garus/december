@@ -222,6 +222,14 @@ export function sendChatMessageStream(
               if (data) {
                 try {
                   const parsed = JSON.parse(data);
+                  if (parsed?.type === "error") {
+                    const errorMessage =
+                      parsed?.data?.error ||
+                      parsed?.error ||
+                      "Connection error";
+                    onError?.(errorMessage);
+                    return;
+                  }
                   onMessage(parsed);
                 } catch (e) {
                   console.error("Failed to parse SSE data:", data, e);
