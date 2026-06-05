@@ -20,7 +20,7 @@ export interface AiWorkloadEstimate {
 }
 
 const DEFAULT_BASE_URL = "https://api.gptclubapi.xyz/openai/v1";
-const DEFAULT_CR_MODEL = "gpt-5.4-codex";
+const DEFAULT_CR_MODEL = "gpt-5.3-codex";
 const DEFAULT_SK_MODEL = "claude-sonnet-4.5";
 
 function readInt(value: string | undefined, fallback: number) {
