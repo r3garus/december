@@ -97,6 +97,8 @@ const QUESTION_PATTERN =
   /[?？]|^(ne|nasil|nas[ıi]l|neden|niye|hangi|kim|nerede|nereyi|sence|bana anlat|aciklar|a[çc][ıi]klar|what|why|how|which|who|where|can|could|should|would|is|are|do|does|did)\b/i;
 const VERY_VAGUE_BUILD_PATTERN =
   /^(bir\s+)?(site|website|web sitesi|landing|landing page|sayfa|dashboard|panel|app|uygulama)\s*(yap|olu[sş]tur|tasarla|build|create|make|design)?$/i;
+const RUNTIME_REPAIR_PATTERN =
+  /\b(runtime|referenceerror|server-side exception|application error|hata|hatasi|hatası|bozuk|calismiyor|çalışmıyor|duzelt|düzelt|onar|repair|fix|çalışır hale getir|calisir hale getir)\b/i;
 
 function isLikelyTurkish(message: string): boolean {
   return TURKISH_HINT_PATTERN.test(message) || TURKISH_WORD_PATTERN.test(message);
@@ -104,6 +106,10 @@ function isLikelyTurkish(message: string): boolean {
 
 function isBuildRequest(message: string): boolean {
   return BUILD_INTENT_PATTERN.test(message);
+}
+
+function isRuntimeRepairRequest(message: string): boolean {
+  return RUNTIME_REPAIR_PATTERN.test(message);
 }
 
 function isQuestion(message: string): boolean {
@@ -1459,8 +1465,6 @@ async function buildAssistantMessageFromSession(
   userMessage: string,
   workloadEstimate?: AiWorkloadEstimate
 ): Promise<{ assistantMessage: Message }> {
-  const provider = selectAiProvider(workloadEstimate);
-
   const fileContentTree = await fileService.getFileContentTree(
     dockerService.docker,
     containerId
@@ -1468,27 +1472,46 @@ async function buildAssistantMessageFromSession(
 
   const rawContext = JSON.stringify(fileContentTree, null, 2);
   const codeContext = clipText(rawContext, 120_000);
+  let assistantContent: string;
 
-  const recentMessages = session.messages
-    .slice(-8)
-    .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
-    .join("\n");
-
-  let plannerBrief = createLocalPlannerBrief(userMessage);
-  try {
-    plannerBrief = await createPlannerBrief(
-      userMessage,
-      recentMessages,
-      provider
-    );
-  } catch (error) {
+  if (isRuntimeRepairRequest(userMessage)) {
     console.warn(
-      "AI planner failed; continuing with local planner brief:",
-      error instanceof Error ? error.message : error
+      "Runtime repair request detected; applying deterministic fallback page without waiting for AI."
     );
-  }
+    assistantContent = [
+      "<dec-code>",
+      "Plan:",
+      "- Replace the broken page with a known-good landing page.",
+      "- Keep the project running so preview can recover immediately.",
+      `<dec-write path="src/app/page.tsx">${buildFallbackLandingPage(userMessage)}</dec-write>`,
+      "</dec-code>",
+      isLikelyTurkish(userMessage)
+        ? "Runtime hatasını temizlemek için sayfayı güvenli ve çalışır bir başlangıç sayfasıyla yeniden yazdım."
+        : "I replaced the broken page with a safe working starter page.",
+    ].join("\n");
+  } else {
+    const provider = selectAiProvider(workloadEstimate);
 
-  const systemPrompt = `${prompt}
+    const recentMessages = session.messages
+      .slice(-8)
+      .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
+      .join("\n");
+
+    let plannerBrief = createLocalPlannerBrief(userMessage);
+    try {
+      plannerBrief = await createPlannerBrief(
+        userMessage,
+        recentMessages,
+        provider
+      );
+    } catch (error) {
+      console.warn(
+        "AI planner failed; continuing with local planner brief:",
+        error instanceof Error ? error.message : error
+      );
+    }
+
+    const systemPrompt = `${prompt}
 
 ${BUILDER_SYSTEM_PROMPT}
 
@@ -1498,52 +1521,52 @@ ${plannerBrief}
 CURRENT CODEBASE SNAPSHOT:
 ${codeContext}`;
 
-  const openaiMessages = [
-    { role: "system" as const, content: systemPrompt },
-    ...session.messages.map((msg) => ({
-      role: msg.role as "user" | "assistant",
-      content:
-        msg.role === "user" && msg.attachments
-          ? buildMessageContent(msg.content, msg.attachments)
-          : msg.content,
-    })),
-  ];
+    const openaiMessages = [
+      { role: "system" as const, content: systemPrompt },
+      ...session.messages.map((msg) => ({
+        role: msg.role as "user" | "assistant",
+        content:
+          msg.role === "user" && msg.attachments
+            ? buildMessageContent(msg.content, msg.attachments)
+            : msg.content,
+      })),
+    ];
 
-  const flattenedInput = buildFlattenedInput(openaiMessages);
-  let assistantContent: string;
+    const flattenedInput = buildFlattenedInput(openaiMessages);
 
-  try {
-    assistantContent = await createBuilderResponse(flattenedInput, provider);
+    try {
+      assistantContent = await createBuilderResponse(flattenedInput, provider);
 
-    assistantContent = await improveWithCriticLoop({
-      userMessage,
-      plannerBrief,
-      codeContext: clipText(codeContext, 80_000),
-      recentMessages: clipText(recentMessages, 10_000),
-      draft: assistantContent,
-      provider,
-    });
-    assistantContent = await repairMissingExecutableEdits({
-      userMessage,
-      plannerBrief,
-      codeContext,
-      draft: assistantContent,
-      provider,
-    });
-  } catch (error) {
-    console.error(
-      "AI builder generation failed; applying local fallback landing page:",
-      error instanceof Error ? error.message : error
-    );
-    assistantContent = [
-      "<dec-code>",
-      "Plan:",
-      "- AI provider did not return in time.",
-      "- Apply a generated landing page fallback so the preview updates.",
-      `<dec-write path="src/app/page.tsx">${buildFallbackLandingPage(userMessage)}</dec-write>`,
-      "</dec-code>",
-      "AI provider timed out, so I applied a safe generated starting page that you can continue editing.",
-    ].join("\n");
+      assistantContent = await improveWithCriticLoop({
+        userMessage,
+        plannerBrief,
+        codeContext: clipText(codeContext, 80_000),
+        recentMessages: clipText(recentMessages, 10_000),
+        draft: assistantContent,
+        provider,
+      });
+      assistantContent = await repairMissingExecutableEdits({
+        userMessage,
+        plannerBrief,
+        codeContext,
+        draft: assistantContent,
+        provider,
+      });
+    } catch (error) {
+      console.error(
+        "AI builder generation failed; applying local fallback landing page:",
+        error instanceof Error ? error.message : error
+      );
+      assistantContent = [
+        "<dec-code>",
+        "Plan:",
+        "- AI provider did not return in time.",
+        "- Apply a generated landing page fallback so the preview updates.",
+        `<dec-write path="src/app/page.tsx">${buildFallbackLandingPage(userMessage)}</dec-write>`,
+        "</dec-code>",
+        "AI provider timed out, so I applied a safe generated starting page that you can continue editing.",
+      ].join("\n");
+    }
   }
 
   assistantContent = appendChangeSummaryTag(assistantContent, fileContentTree);
