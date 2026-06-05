@@ -130,10 +130,7 @@ const resolveInitialTheme = (): UiTheme => {
 
 const resolveInitialLanguage = (): UiLanguage => {
   if (typeof window === "undefined") return "en";
-  const storedLanguage = window.localStorage.getItem(UI_LANGUAGE_STORAGE_KEY);
-  return isUiLanguage(storedLanguage)
-    ? storedLanguage
-    : detectBrowserLanguage();
+  return detectBrowserLanguage();
 };
 
 const resolveStoredBoolean = (key: string, fallback: boolean) => {
