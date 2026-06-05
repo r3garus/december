@@ -1,11 +1,8 @@
-import { execFile } from "child_process";
 import Docker from "dockerode";
-import fs from "fs/promises";
 import path from "path";
-import { promisify } from "util";
-import { v4 as uuidv4 } from "uuid";
+import { Writable } from "stream";
 
-const execFileAsync = promisify(execFile);
+const dockerClient = new Docker({ socketPath: "/var/run/docker.sock" });
 const BASE_PATH = "/app/my-nextjs-app";
 const MAX_FILE_WRITE_BYTES = 10_000_000;
 
@@ -49,6 +46,105 @@ function toSafeMutablePath(filePath: string): string {
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function writeOctalHeader(
+  header: Buffer,
+  value: number,
+  offset: number,
+  length: number
+) {
+  const octal = value.toString(8).padStart(length - 1, "0");
+  header.write(`${octal}\0`, offset, length, "ascii");
+}
+
+function createTarArchive(fileName: string, content: string): Buffer {
+  if (!fileName || fileName.includes("/") || fileName.length > 100) {
+    throw new Error("Generated file name is too long for archive copy");
+  }
+
+  const contentBuffer = Buffer.from(content, "utf8");
+  const header = Buffer.alloc(512, 0);
+
+  header.write(fileName, 0, 100, "utf8");
+  writeOctalHeader(header, 0o644, 100, 8);
+  writeOctalHeader(header, 0, 108, 8);
+  writeOctalHeader(header, 0, 116, 8);
+  writeOctalHeader(header, contentBuffer.length, 124, 12);
+  writeOctalHeader(header, Math.floor(Date.now() / 1000), 136, 12);
+  header.fill(" ", 148, 156);
+  header.write("0", 156, 1, "ascii");
+  header.write("ustar", 257, 6, "ascii");
+  header.write("00", 263, 2, "ascii");
+
+  let checksum = 0;
+  for (const byte of header) checksum += byte;
+  header.write(checksum.toString(8).padStart(6, "0"), 148, 6, "ascii");
+  header[154] = 0;
+  header[155] = 0x20;
+
+  const paddingSize = (512 - (contentBuffer.length % 512)) % 512;
+  const endBlocks = Buffer.alloc(1024, 0);
+
+  return Buffer.concat([
+    header,
+    contentBuffer,
+    Buffer.alloc(paddingSize, 0),
+    endBlocks,
+  ]);
+}
+
+async function runContainerCommand(
+  containerId: string,
+  command: string[],
+  workingDir: string = BASE_PATH
+): Promise<string> {
+  assertSafeContainerId(containerId);
+
+  const container = dockerClient.getContainer(containerId);
+  const exec = await container.exec({
+    Cmd: command,
+    WorkingDir: workingDir,
+    AttachStdout: true,
+    AttachStderr: true,
+  });
+
+  const stream = await exec.start({ Detach: false, Tty: false });
+  const stdoutChunks: Buffer[] = [];
+  const stderrChunks: Buffer[] = [];
+  const stdout = new Writable({
+    write(chunk, _encoding, callback) {
+      stdoutChunks.push(Buffer.from(chunk));
+      callback();
+    },
+  });
+  const stderr = new Writable({
+    write(chunk, _encoding, callback) {
+      stderrChunks.push(Buffer.from(chunk));
+      callback();
+    },
+  });
+
+  dockerClient.modem.demuxStream(stream, stdout, stderr);
+
+  await new Promise<void>((resolve, reject) => {
+    stream.on("end", resolve);
+    stream.on("error", reject);
+  });
+
+  const result = await exec.inspect();
+  const output = Buffer.concat(stdoutChunks).toString("utf8");
+  const errorOutput = Buffer.concat(stderrChunks).toString("utf8");
+
+  if (result.ExitCode !== 0) {
+    throw new Error(
+      errorOutput.trim() ||
+        output.trim() ||
+        `Container command failed with exit code ${result.ExitCode}`
+    );
+  }
+
+  return output || errorOutput;
 }
 
 export interface FileItem {
@@ -407,76 +503,25 @@ export async function writeFile(
   }
   console.log(`Writing file: ${filePath} (${content.length} characters)`);
 
-  const tempFile = `/tmp/file-${uuidv4()}`;
+  const absolutePath = toSafeMutablePath(filePath);
+  const dirPath = absolutePath.substring(0, absolutePath.lastIndexOf("/"));
+  const fileName = absolutePath.substring(absolutePath.lastIndexOf("/") + 1);
+  const container = dockerClient.getContainer(containerId);
 
   try {
-    await fs.writeFile(tempFile, content, "utf8");
-    console.log(`Temporary file created: ${tempFile}`);
+    await runContainerCommand(containerId, ["mkdir", "-p", dirPath], BASE_PATH);
+    await container.putArchive(createTarArchive(fileName, content), {
+      path: dirPath,
+    });
 
-    const absolutePath = toSafeMutablePath(filePath);
-    console.log(`Target path: ${absolutePath}`);
-
-    try {
-      const { stdout, stderr } = await execFileAsync("docker", [
-        "cp",
-        tempFile,
-        `${containerId}:${absolutePath}`,
-      ]);
-
-      if (stderr) {
-        console.log(`Copy stderr: ${stderr}`);
-      }
-      if (stdout) {
-        console.log(`Copy stdout: ${stdout}`);
-      }
-
-      console.log("File copied successfully");
-    } catch (copyError) {
-      console.log("Copy failed, trying to create directory first:", copyError);
-
-      const dirPath = absolutePath.substring(0, absolutePath.lastIndexOf("/"));
-
-      await execFileAsync("docker", ["exec", containerId, "mkdir", "-p", dirPath]);
-      console.log("Directory created");
-
-      const { stdout, stderr } = await execFileAsync("docker", [
-        "cp",
-        tempFile,
-        `${containerId}:${absolutePath}`,
-      ]);
-      if (stderr) {
-        console.log(`Retry stderr: ${stderr}`);
-      }
-      if (stdout) {
-        console.log(`Retry stdout: ${stdout}`);
-      }
-
-      console.log("File copied successfully on retry");
-    }
-
-    try {
-      const { stdout: verifyOutput } = await execFileAsync("docker", [
-        "exec",
-        containerId,
-        "head",
-        "-n",
-        "5",
-        absolutePath,
-      ]);
-      console.log(`File verification (first 5 lines):\n${verifyOutput}`);
-    } catch (verifyError) {
-      console.log("Could not verify file content:", verifyError);
-    }
-
-    await fs.unlink(tempFile);
-    console.log("Temporary file cleaned up");
+    const verifyOutput = await runContainerCommand(
+      containerId,
+      ["head", "-n", "5", absolutePath],
+      BASE_PATH
+    );
+    console.log(`File verification (first 5 lines):\n${verifyOutput}`);
   } catch (error) {
     console.error("Write file error:", error);
-    try {
-      await fs.unlink(tempFile);
-    } catch (unlinkError) {
-      console.error("Failed to clean up temp file:", unlinkError);
-    }
     throw error;
   }
 }
@@ -491,15 +536,12 @@ export async function renameFile(
   const absoluteNewPath = toSafeMutablePath(newPath);
 
   const newDir = absoluteNewPath.substring(0, absoluteNewPath.lastIndexOf("/"));
-  await execFileAsync("docker", ["exec", containerId, "mkdir", "-p", newDir]);
-
-  await execFileAsync("docker", [
-    "exec",
+  await runContainerCommand(containerId, ["mkdir", "-p", newDir], BASE_PATH);
+  await runContainerCommand(
     containerId,
-    "mv",
-    absoluteOldPath,
-    absoluteNewPath,
-  ]);
+    ["mv", absoluteOldPath, absoluteNewPath],
+    BASE_PATH
+  );
 }
 
 export async function removeFile(
@@ -508,5 +550,5 @@ export async function removeFile(
 ): Promise<void> {
   assertSafeContainerId(containerId);
   const absolutePath = toSafeMutablePath(filePath);
-  await execFileAsync("docker", ["exec", containerId, "rm", "-rf", absolutePath]);
+  await runContainerCommand(containerId, ["rm", "-rf", absolutePath], BASE_PATH);
 }
