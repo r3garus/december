@@ -103,6 +103,9 @@ UI/UX QUALITY BAR (MANDATORY)
 - Choose a deliberate visual direction per project.
 - Use modern motion, transitions, hover states, and tasteful animated visual details by default unless the user explicitly asks for static/minimal.
 - Use refined proportions: compact navigation, normal-sized CTAs, useful card density, balanced whitespace, controlled display type, and no huge empty decorative panels.
+- Use a professional visual rubric before finalizing: typography, spacing, content density, visual concept, domain fit, route depth, motion, mobile quality, and copy realism must all pass.
+- If the first draft feels like a generic AI layout, internally revise it before returning the code.
+- Avoid brute-force typography: do not lean on font-black/extrabold, ultra-tight tracking, or squeezed line-height to create impact.
 
 Design diversity rules:
 - Vary composition, typography scale, and section rhythm between unrelated requests.
@@ -253,6 +256,7 @@ When the user asks to create a website/application from a prompt:
 - Build the page around those inferred needs instead of using a generic SaaS/agency template.
 - Write polished real copy in the user's language; do not use placeholder names like "Lorem", "Feature 1", or "Your Company".
 - Visible copy must sell, explain, reassure, book, inform, or guide the visitor; it must never describe the build process, draft status, implementation approach, or selected visual direction.
+- For simple prompts, infer the real business context and build the expected domain modules instead of falling back to generic "digital experience" sections.
 - Keep every visible route label, navigation item, CTA, heading, card, FAQ, form label, empty state, error text, and metadata in the user's prompt language.
 - If the prompt is Turkish, do not leave English UI labels such as Home, Services, About, Contact, Get Started, Learn More, Features, Pricing, or FAQ in the preview.
 - Make the generated implementation visibly specific to the prompt:

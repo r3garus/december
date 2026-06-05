@@ -1,4 +1,4 @@
-import OpenAI from "openai";
+﻿import OpenAI from "openai";
 import { config } from "../../config";
 import prompt from "../utils/prompt.txt";
 import {
@@ -22,11 +22,11 @@ const aiSdkConfig = config.aiSdk as typeof config.aiSdk & {
 };
 const aiTemperature = aiSdkConfig.temperature ?? 0.15;
 const aiMaxRetries = aiSdkConfig.maxRetries ?? 2;
-const aiMinQualityScore = aiSdkConfig.minQualityScore ?? 88;
-const aiMaxCriticRounds = aiSdkConfig.maxCriticRounds ?? 3;
+const aiMinQualityScore = aiSdkConfig.minQualityScore ?? 92;
+const aiMaxCriticRounds = aiSdkConfig.maxCriticRounds ?? 4;
 const AI_REQUEST_TIMEOUT_MS = Number(process.env.AI_REQUEST_TIMEOUT_MS || "150000");
 const AI_BUILDER_TIMEOUT_MS = Number(
-  process.env.AI_BUILDER_TIMEOUT_MS || "300000"
+  process.env.AI_BUILDER_TIMEOUT_MS || "420000"
 );
 
 function getAiClient(provider: AiProviderConfig) {
@@ -677,6 +677,10 @@ Deliver production-minded quality:
 - never put implementation/meta words in visible UI copy: prompt, generated, AI, yapay zeka, Klawpen, Core, Builder, template, şablon, fallback, component, design direction, tasarım yönü, first version, ilk sürüm, launch-ready, yayına hazır, freelancer, proposal, tasarım süreci, gelişmiş studio
 - do not append "Studio", "Works", "Labs", "Agency", or "Ajans" as a lazy fallback brand unless the user's sector clearly makes that name natural
 - design scale rule: avoid crude oversized typography and giant empty cards; prefer refined clamp ranges, compact navigation/buttons, realistic content density, balanced whitespace, and smaller mobile-first cards
+- typography craft rule: do not use font-black/extrabold or heavy display weight as the default. Prefer font-semibold/font-bold, relaxed tracking, readable line-height, and expressive contrast through layout, color, spacing, and imagery rather than brute weight.
+- never stack huge words with leading below 0.9 for normal business sites; hero headings should usually stay around clamp(2.4rem, 5vw, 4.8rem) with max-width that keeps Turkish copy readable.
+- build visually useful sections, not generic "01 / signal / strategic story" rails. If the domain is commerce, restaurant, clinic, legal, local service, fitness, event, or blog, create modules that users expect in that domain.
+- before writing code, internally run a design critique: "Would a real premium agency ship this screenshot?" If the answer is no, revise the layout before returning.
 - every page must feel like a finished public-facing website for a real client: no internal planning labels, no "we are building this", no "design direction", no "first version", no placeholder/fallback wording
 `;
 
@@ -721,6 +725,10 @@ Rules:
 - FAIL outputs with visible builder/meta language such as prompt, generated, AI, yapay zeka, Klawpen, Core, Builder, template, şablon, fallback, component, design direction, tasarım yönü, first version, ilk sürüm, launch-ready, yayına hazır, freelancer, proposal, or "gelişmiş studio".
 - FAIL outputs that sound like a freelancer/agency explaining a draft instead of a real business speaking to its customers.
 - FAIL outputs with crude oversized headings, oversized CTA buttons, huge empty cards, decorative panels without useful content, or low-density sections that look AI-generated.
+- FAIL outputs that use font-black/font-extrabold as the dominant default across nav, hero, cards, FAQ, and CTA.
+- FAIL outputs with ultra-tight tracking/line-height that makes Turkish headings look squeezed, amateur, or hard to read.
+- FAIL outputs that show generic fallback labels like "Sinyal 01", "Signal 01", "Stratejik anlatı", "Visual system", or "Conversion CTA" for ordinary customer websites.
+- FAIL outputs where the screenshot would still look bad after swapping only the brand name and hero headline.
 - Keep feedback specific and actionable.
 `;
 
@@ -1566,7 +1574,7 @@ function hasBuilderMetaVisibleCopy(
 function hasOversizedCrudeVisualSystem(assistantContent: string) {
   const combined = getCombinedWrittenContent(assistantContent);
   const oversizedTypeSignals = [
-    /clamp\([^)]*(?:7|8|9|10)rem/gi,
+    /clamp\([^)]*(?:6|7|8|9|10)rem/gi,
     /\btext-(?:7xl|8xl|9xl)\b/g,
   ].reduce((count, pattern) => count + (combined.match(pattern) || []).length, 0);
   const oversizedSpacingSignals = [
@@ -1582,6 +1590,33 @@ function hasOversizedCrudeVisualSystem(assistantContent: string) {
     (oversizedTypeSignals >= 1 &&
       oversizedSpacingSignals >= 2 &&
       sparseDecorativePanels >= 2)
+  );
+}
+
+function hasHeavyFontSpam(assistantContent: string) {
+  const combined = getCombinedWrittenContent(assistantContent);
+  const heavyWeightCount = (
+    combined.match(/\bfont-(?:black|extrabold)\b/g) || []
+  ).length;
+  const tightTrackingCount = (
+    combined.match(/tracking-\[-0\.(?:0[6-9]|1)\w*\]/g) || []
+  ).length;
+  const ultraTightLeadingCount = (
+    combined.match(/leading-\[(?:0\.[0-8][0-9]?|\.8[0-9]?)\]/g) || []
+  ).length;
+
+  return (
+    heavyWeightCount >= 8 ||
+    (heavyWeightCount >= 5 && tightTrackingCount >= 3) ||
+    (heavyWeightCount >= 4 && ultraTightLeadingCount >= 2)
+  );
+}
+
+function hasGenericFallbackCopy(assistantContent: string) {
+  const visibleCopy = getLikelyVisibleUiCopy(assistantContent);
+
+  return /\b(Sinyal\s*0?\d|Signal\s*0?\d|Stratejik anlatı|Strategic story|Görsel sistem|Visual system|Dönüşüm odaklı CTA|Conversion CTA|Marka odaklı dijital deneyim|Brand-led digital experience)\b/i.test(
+    visibleCopy
   );
 }
 
@@ -1638,6 +1673,18 @@ function getVisualDiversityIssues(
     );
   }
 
+  if (hasHeavyFontSpam(assistantContent)) {
+    issues.push(
+      "The typography relies too heavily on font-bold/extrabold and tight tracking; use more refined weights, readable line-height, and calmer hierarchy."
+    );
+  }
+
+  if (hasGenericFallbackCopy(assistantContent)) {
+    issues.push(
+      "The UI contains generic fallback-style labels such as Signal/Strategic story; replace them with domain-specific customer-facing content."
+    );
+  }
+
   if (
     /\b(blog|magazin|magazine|haber|news|article|makale|yazar|icerik|içerik|publishing|yayin|yayın)\b/.test(
       normalizedPrompt
@@ -1683,12 +1730,12 @@ function getVisualDiversityIssues(
   }
 
   const domainSpecificSignals = [
-    /\b(menu|reservation|booking|randevu|tedavi|implant|clinic|klinik|case|dava|contract|s[öo]zle[sş]me|ticket|bilet|schedule|speaker|catalog|cart|checkout|sepet|api|sdk|terminal|metric|analytics|dashboard|article|post|story|author|editor|newsletter|topic|category)\b/i,
-    /\b(service area|practice area|treatment|product catalog|appointment|availability|location|integration|workflow|timeline|pricing table|reading time|editor picks|featured story)\b/i,
+    /\b(menu|reservation|booking|randevu|tedavi|implant|clinic|klinik|case|dava|contract|s[öo]zle[sş]me|ticket|bilet|schedule|speaker|catalog|cart|checkout|sepet|api|sdk|terminal|metric|analytics|dashboard|article|post|story|author|editor|newsletter|topic|category|store|shop|mall|campaign|alisveris|avm|magaza|kampanya|etkinlik|kat|food court|yeme icme)\b/i,
+    /\b(service area|practice area|treatment|product catalog|appointment|availability|location|integration|workflow|timeline|pricing table|reading time|editor picks|featured story|store directory|campaign cards|floor map|visit plan|magaza rehberi|ziyaret plani)\b/i,
   ];
 
   if (
-    /\b(restoran|restaurant|cafe|klinik|clinic|dental|hukuk|law|legal|event|ecommerce|dashboard|api|developer|hotel|otel|fitness|gym|blog|magazin|magazine|haber|news|article|makale)\b/.test(
+    /\b(restoran|restaurant|cafe|klinik|clinic|dental|hukuk|law|legal|event|ecommerce|dashboard|api|developer|hotel|otel|fitness|gym|blog|magazin|magazine|haber|news|article|makale|alisveris|avm|magaza|mall|shopping|store|shop)\b/.test(
       normalizedPrompt
     ) &&
     !domainSpecificSignals.some((pattern) => pattern.test(combined))
@@ -1834,7 +1881,7 @@ function selectVisualArchetype(userMessage: string): VisualArchetype {
     return VISUAL_ARCHETYPES.find((item) => item.key === "operational-dashboard")!;
   }
 
-  if (/\b(ecommerce|e commerce|store|shop|marketplace|pazar|urun katalog|catalog|cart|checkout|sepet)\b/.test(normalized)) {
+  if (/\b(ecommerce|e commerce|store|shop|shopping|mall|marketplace|pazar|alisveris|avm|magaza|magazalar|urun katalog|catalog|cart|checkout|sepet)\b/.test(normalized)) {
     return VISUAL_ARCHETYPES.find((item) => item.key === "commerce-catalog")!;
   }
 
@@ -1883,6 +1930,7 @@ function inferBusinessTitle(userMessage: string) {
   if (/avukat|hukuk|law|legal/.test(plain)) return "Lexora Hukuk";
   if (/restoran|restaurant|cafe|kahve|menu/.test(plain)) return "Mira Table";
   if (/fitness|gym|spor|pilates/.test(plain)) return isLikelyTurkish(userMessage) ? "Pulse Hareket" : "Pulse Athletics";
+  if (/alisveris|avm|magaza|mall|shopping|store|shop|ecommerce|e commerce/.test(plain)) return isLikelyTurkish(userMessage) ? "Meydan AVM" : "Meydan Mall";
   if (/saas|software|dashboard|crm|app/.test(plain)) return "OrbitOps";
 
   const stopWords = new Set([
@@ -1910,12 +1958,12 @@ function inferBusinessTitle(userMessage: string) {
     .map((word) => word.charAt(0).toLocaleUpperCase("tr-TR") + word.slice(1))
     .join(" ");
 
-  if (firstWords) return isLikelyTurkish(userMessage) ? `${firstWords} Kolektif` : `${firstWords} Works`;
-  return isLikelyTurkish(userMessage) ? "Yeni Marka" : "Northline";
+  if (firstWords) return firstWords;
+  return isLikelyTurkish(userMessage) ? "Liora" : "Northline";
 }
 
 type FallbackProfile = {
-  sector: "blog" | "dental" | "plumbing" | "legal" | "restaurant" | "fitness" | "saas" | "studio";
+  sector: "blog" | "dental" | "plumbing" | "legal" | "restaurant" | "fitness" | "saas" | "commerce" | "studio";
   layout: "split" | "editorial" | "cards" | "magazine";
   palette: {
     bg: string;
@@ -1956,6 +2004,7 @@ function chooseFallbackProfile(userMessage: string): FallbackProfile {
     blog: { bg: "#fbf4ea", text: "#1c1712", muted: "#75675c", primary: "#c94f32", primaryText: "#fffaf2", panel: "#241611", panelText: "#fff9ef", accent: "#2e6f62", soft: "#efe2d0", border: "#decdb8" },
     fitness: { bg: "#f2f4ef", text: "#10140f", muted: "#616b5c", primary: "#b8ff4d", primaryText: "#11160d", panel: "#121812", panelText: "#f8ffe9", accent: "#4d70ff", soft: "#dde8d7", border: "#ccd9c4" },
     saas: { bg: "#f3f7ff", text: "#0e1729", muted: "#61708a", primary: "#4d8bff", primaryText: "#ffffff", panel: "#111c33", panelText: "#f7fbff", accent: "#6ee7d8", soft: "#dce8ff", border: "#c8d7f3" },
+    commerce: { bg: "#f8f4ee", text: "#1f1711", muted: "#76685b", primary: "#d66b3d", primaryText: "#fffaf4", panel: "#2b1b13", panelText: "#fff8ef", accent: "#2f7d66", soft: "#efe2d2", border: "#dfceba" },
     studio: { bg: "#f7f1ff", text: "#1d1428", muted: "#75677f", primary: "#ff7a59", primaryText: "#1d1428", panel: "#241433", panelText: "#fff8ff", accent: "#7cc7ff", soft: "#eadcf8", border: "#dac8ee" },
   } as const;
 
@@ -2059,12 +2108,13 @@ function chooseFallbackProfile(userMessage: string): FallbackProfile {
   const isRestaurant = /restoran|restaurant|cafe|kahve|menu/.test(plain);
   const isFitness = /fitness|gym|spor|pilates/.test(plain);
   const isSaas = /saas|software|dashboard|crm|app/.test(plain);
-  type GenericFallbackSector = "plumbing" | "restaurant" | "fitness" | "saas" | "studio";
+  const isCommerce = /alisveris|avm|magaza|mall|shopping|store|shop|ecommerce|e commerce/.test(plain);
+  type GenericFallbackSector = "plumbing" | "restaurant" | "fitness" | "saas" | "commerce" | "studio";
   type GenericSectorCopy = Pick<
     FallbackProfile,
     "badge" | "headline" | "intro" | "primary" | "secondary" | "servicesTitle" | "services"
   >;
-  const sector: GenericFallbackSector = isPlumbing ? "plumbing" : isRestaurant ? "restaurant" : isFitness ? "fitness" : isSaas ? "saas" : "studio";
+  const sector: GenericFallbackSector = isPlumbing ? "plumbing" : isRestaurant ? "restaurant" : isFitness ? "fitness" : isSaas ? "saas" : isCommerce ? "commerce" : "studio";
   const palette = palettes[sector];
   const sectorCopies: Record<GenericFallbackSector, GenericSectorCopy> = {
     plumbing: {
@@ -2103,14 +2153,23 @@ function chooseFallbackProfile(userMessage: string): FallbackProfile {
       servicesTitle: isTurkish ? "Temel özellikler" : "Core features",
       services: isTurkish ? [["Canlı dashboard", "Metrikler ve iş akışları tek ekranda."], ["Otomasyon", "Tekrarlayan işleri güvenli şekilde hızlandırın."], ["Ekip yönetimi", "Rol, yetki ve bildirimleri merkezileştirin."]] : [["Live dashboard", "Metrics and workflows in one place."], ["Automation", "Speed up repeatable work safely."], ["Team control", "Centralize roles, permissions, and alerts."]],
     },
+    commerce: {
+      badge: isTurkish ? "Mağaza, kampanya ve ziyaret rehberi" : "Store, campaign, and visit guide",
+      headline: isTurkish ? "Alışverişi, yemeği ve etkinlikleri tek akıcı ziyaret planında birleştirin" : "Bring shopping, dining, and events into one smooth visit plan",
+      intro: isTurkish ? "Ziyaretçiler mağazaları keşfeder, kampanyaları görür, etkinlikleri takip eder ve merkeze gelmeden önce rotasını netleştirir." : "Visitors discover stores, browse campaigns, follow events, and plan their route before arriving.",
+      primary: isTurkish ? "Mağazaları keşfet" : "Explore stores",
+      secondary: isTurkish ? "Kampanyalara bak" : "View campaigns",
+      servicesTitle: isTurkish ? "Ziyaret deneyimi" : "Visit experience",
+      services: isTurkish ? [["Mağaza rehberi", "Kategori, kat ve marka bilgileriyle doğru mağazaya hızlı ulaşım."], ["Kampanya akışı", "Sezon fırsatları, restoran indirimleri ve kısa süreli duyurular tek yerde."], ["Etkinlik takvimi", "Aile etkinlikleri, lansmanlar ve hafta sonu programları için güncel akış."]] : [["Store directory", "Find the right store quickly with category, floor, and brand details."], ["Campaign feed", "Seasonal deals, dining offers, and short-term announcements in one place."], ["Event calendar", "A live flow for family events, launches, and weekend programs."]],
+    },
     studio: {
-      badge: isTurkish ? "Marka odaklı dijital deneyim" : "Brand-led digital experience",
-      headline: isTurkish ? "Fikrinizi güçlü bir ilk izlenime dönüştüren modern web deneyimi" : "Turn your idea into a strong first digital impression",
-      intro: isTurkish ? "Hedef kitleye güven veren, mesajı net ve görsel dili tutarlı bir dijital deneyim." : "A digital experience with clear messaging, trust, and cohesive visual language.",
-      primary: isTurkish ? "Projeyi başlat" : "Start project",
-      secondary: isTurkish ? "Detayları gör" : "See details",
-      servicesTitle: isTurkish ? "Neler sunuyoruz" : "What we deliver",
-      services: isTurkish ? [["Stratejik anlatı", "Ürünün değerini hızlı anlatan sayfa akışı."], ["Görsel sistem", "Renk, tipografi ve bölüm ritmi."], ["Dönüşüm odaklı CTA", "Kullanıcıyı doğru aksiyona taşıyan yapı."]] : [["Strategic story", "A page flow that explains value quickly."], ["Visual system", "Color, type, and section rhythm."], ["Conversion CTA", "Structure that moves users to action."]],
+      badge: isTurkish ? "Güven veren dijital vitrin" : "Trust-led digital presence",
+      headline: isTurkish ? "Ziyaretçinin aradığı cevabı hızlıca bulduğu net bir web deneyimi" : "A clear web experience that helps visitors find the right answer fast",
+      intro: isTurkish ? "Hizmeti, faydayı ve sonraki adımı sade bir akışta anlatan; mobilde de rahat okunan modern bir deneyim." : "A modern experience that explains the service, benefit, and next step in a calm, mobile-friendly flow.",
+      primary: isTurkish ? "İletişime geç" : "Get in touch",
+      secondary: isTurkish ? "Hizmetleri incele" : "Explore services",
+      servicesTitle: isTurkish ? "Öne çıkan başlıklar" : "Key highlights",
+      services: isTurkish ? [["Net hizmet anlatımı", "Ziyaretçi ne sunduğunuzu ve kimin için doğru olduğunu ilk dakikada anlar."], ["Güven noktaları", "Referans, süreç ve sık sorulan sorular karar vermeyi kolaylaştırır."], ["Kolay iletişim", "Form, çağrı ve yönlendirme alanları sonraki adımı görünür kılar."]] : [["Clear service story", "Visitors quickly understand what you offer and who it is for."], ["Trust points", "Proof, process, and answers reduce hesitation before contact."], ["Easy contact", "Forms, calls, and guidance make the next step visible."]],
     },
   };
   const copyBySector = sectorCopies[sector];
@@ -2199,11 +2258,11 @@ function buildFallbackSiteContent(userMessage: string) {
     text,
     eyebrow: profile.sector === "blog"
       ? isTurkish
-        ? `Dosya 0${index + 1}`
-        : `Issue 0${index + 1}`
+        ? `Dosya ${index + 1}`
+        : `Issue ${index + 1}`
       : isTurkish
-        ? `Sinyal 0${index + 1}`
-        : `Signal 0${index + 1}`,
+        ? ["Keşif", "Güven", "Aksiyon"][index] || `Adım ${index + 1}`
+        : ["Discovery", "Trust", "Action"][index] || `Step ${index + 1}`,
   }));
 
   const workflow = profile.steps.map((step, index) => ({
@@ -2347,7 +2406,7 @@ function ShellNav() {
       className="relative z-20 mx-auto flex max-w-7xl items-center justify-between gap-4 border-b py-5"
       style={{ borderColor: profile.palette.border }}
     >
-      <a href="#top" className="text-xl font-black tracking-[-0.06em]">
+      <a href="#top" className="text-xl font-bold tracking-[-0.025em]">
         {content.businessName}
       </a>
       <div className="hidden items-center gap-1 md:flex">
@@ -2364,7 +2423,7 @@ function ShellNav() {
       </div>
       <a
         href="#contact"
-        className="rounded-full px-5 py-2.5 text-sm font-black shadow-lg transition hover:-translate-y-0.5"
+        className="rounded-full px-5 py-2.5 text-sm font-bold shadow-lg transition hover:-translate-y-0.5"
         style={{ background: profile.palette.primary, color: profile.palette.primaryText }}
       >
         {content.labels.primaryCta}
@@ -2387,10 +2446,10 @@ function EditorialLayout() {
         <div className="absolute left-[8%] top-12 h-72 w-72 rounded-full opacity-40 blur-3xl" style={{ background: profile.palette.soft }} />
         <div className="relative mx-auto grid max-w-7xl gap-10 lg:grid-cols-[1.15fr_0.85fr] lg:items-end">
           <div>
-            <p className="mb-8 inline-flex border-b pb-2 text-xs font-black uppercase tracking-[0.32em]" style={{ borderColor: profile.palette.primary, color: profile.palette.primary }}>
+            <p className="mb-8 inline-flex border-b pb-2 text-xs font-bold uppercase tracking-[0.32em]" style={{ borderColor: profile.palette.primary, color: profile.palette.primary }}>
               {profile.badge}
             </p>
-            <h1 className="max-w-5xl text-[clamp(2.8rem,6vw,5.7rem)] font-black leading-[0.78] tracking-[-0.1em]">
+            <h1 className="max-w-5xl text-[clamp(2.35rem,4.8vw,4.7rem)] font-bold leading-[1.02] tracking-[-0.035em]">
               {profile.headline}
             </h1>
           </div>
@@ -2411,10 +2470,10 @@ function EditorialLayout() {
         <div className="mx-auto grid max-w-7xl gap-px overflow-hidden rounded-[2rem] border" style={{ borderColor: profile.palette.border, background: profile.palette.border }}>
           {content.signals.map((item, index) => (
             <article key={item.title} className="grid gap-5 bg-white/70 p-7 md:grid-cols-[0.22fr_0.78fr] md:p-10" style={{ backgroundColor: index % 2 ? profile.palette.bg : profile.palette.soft }}>
-              <p className="text-4xl font-black tracking-[-0.09em]" style={{ color: profile.palette.primary }}>0{index + 1}</p>
+              <p className="text-2xl font-bold tracking-[-0.035em]" style={{ color: profile.palette.primary }}>0{index + 1}</p>
               <div>
-                <p className="text-xs font-black uppercase tracking-[0.28em]" style={{ color: profile.palette.accent }}>{item.eyebrow}</p>
-                <h2 className="mt-4 text-4xl font-black tracking-[-0.06em]">{item.title}</h2>
+                <p className="text-xs font-bold uppercase tracking-[0.28em]" style={{ color: profile.palette.accent }}>{item.eyebrow}</p>
+                <h2 className="mt-4 text-2xl font-bold tracking-[-0.025em]">{item.title}</h2>
                 <p className="mt-4 max-w-3xl text-lg leading-8" style={{ color: profile.palette.muted }}>{item.text}</p>
               </div>
             </article>
@@ -2425,13 +2484,13 @@ function EditorialLayout() {
       <section id="workflow" className={sectionPad + " py-16"}>
         <div className="mx-auto grid max-w-7xl gap-6 lg:grid-cols-[0.8fr_1.2fr]">
           <div className="sticky top-6 h-fit">
-            <p className="text-sm font-black uppercase tracking-[0.3em]" style={{ color: profile.palette.primary }}>{content.labels.workflowTitle}</p>
-            <h2 className="mt-5 text-4xl font-black leading-none tracking-[-0.08em]">{content.labels.outcomesTitle}</h2>
+            <p className="text-sm font-bold uppercase tracking-[0.3em]" style={{ color: profile.palette.primary }}>{content.labels.workflowTitle}</p>
+            <h2 className="mt-5 text-2xl font-bold leading-snug tracking-[-0.03em]">{content.labels.outcomesTitle}</h2>
           </div>
           <div className="grid gap-5">
             {content.workflow.map((item) => (
               <article key={item.step} className="border-b pb-8" style={{ borderColor: profile.palette.border }}>
-                <h3 className="text-3xl font-black tracking-[-0.05em]">{item.step}</h3>
+                <h3 className="text-2xl font-bold tracking-[-0.02em]">{item.step}</h3>
                 <p className="mt-3 text-lg leading-8" style={{ color: profile.palette.muted }}>{item.text}</p>
               </article>
             ))}
@@ -2455,7 +2514,7 @@ function DashboardLayout() {
         <ShellNav />
         <div className="mx-auto mt-10 grid max-w-7xl gap-5 lg:grid-cols-[280px_1fr]">
           <aside className="rounded-[2rem] border bg-white/8 p-5" style={{ borderColor: profile.palette.primary + "55" }}>
-            <p className="text-xs font-black uppercase tracking-[0.32em]" style={{ color: profile.palette.primary }}>{profile.badge}</p>
+            <p className="text-xs font-bold uppercase tracking-[0.32em]" style={{ color: profile.palette.primary }}>{profile.badge}</p>
             <div className="mt-7 space-y-3">
               {content.nav.map(([label, href]) => (
                 <a key={href} href={href} className="block rounded-2xl bg-white/10 px-4 py-3 text-sm font-bold transition hover:bg-white/15">
@@ -2467,13 +2526,13 @@ function DashboardLayout() {
           <div className="rounded-[2.4rem] border bg-white/8 p-5 sm:p-8" style={{ borderColor: profile.palette.primary + "55" }}>
             <div className="grid gap-5 lg:grid-cols-[1fr_360px]">
               <div>
-                <h1 className="text-[clamp(2.5rem,5vw,5.1rem)] font-black leading-[0.84] tracking-[-0.09em]">{profile.headline}</h1>
+                <h1 className="text-[clamp(2.25rem,4.4vw,4.2rem)] font-bold leading-[1.04] tracking-[-0.035em]">{profile.headline}</h1>
                 <p className="mt-6 max-w-3xl text-lg leading-8 opacity-75">{profile.intro}</p>
               </div>
               <div className="grid gap-3">
                 {content.stats.map(([value, label]) => (
                   <div key={label} className="rounded-[1.5rem] bg-black/20 p-5">
-                    <p className="text-4xl font-black" style={{ color: profile.palette.primary }}>{value}</p>
+                    <p className="text-4xl font-bold" style={{ color: profile.palette.primary }}>{value}</p>
                     <p className="mt-1 text-sm opacity-70">{label}</p>
                   </div>
                 ))}
@@ -2481,14 +2540,14 @@ function DashboardLayout() {
             </div>
             <div className="mt-7 rounded-[2rem] bg-black/25 p-5">
               <div className="mb-4 flex items-center justify-between">
-                <p className="font-black">{content.labels.dashboardTitle}</p>
-                <span className="rounded-full px-3 py-1 text-xs font-black" style={{ background: profile.palette.primary, color: profile.palette.primaryText }}>LIVE</span>
+                <p className="font-bold">{content.labels.dashboardTitle}</p>
+                <span className="rounded-full px-3 py-1 text-xs font-bold" style={{ background: profile.palette.primary, color: profile.palette.primaryText }}>LIVE</span>
               </div>
               <div className="grid gap-3 md:grid-cols-3">
                 {content.signals.map((item) => (
                   <div key={item.title} className="rounded-2xl border border-white/10 bg-white/7 p-4">
                     <p className="text-xs uppercase tracking-[0.22em] opacity-50">{item.eyebrow}</p>
-                    <h3 className="mt-6 text-xl font-black">{item.title}</h3>
+                    <h3 className="mt-6 text-xl font-bold">{item.title}</h3>
                     <p className="mt-2 text-sm leading-6 opacity-65">{item.text}</p>
                   </div>
                 ))}
@@ -2515,16 +2574,16 @@ function CommerceLayout() {
       <section id="top" className={sectionPad + " py-12"}>
         <div className="mx-auto grid max-w-7xl gap-8 lg:grid-cols-[0.85fr_1.15fr] lg:items-center">
           <div>
-            <p className="rounded-full border px-4 py-2 text-xs font-black uppercase tracking-[0.28em]" style={{ borderColor: profile.palette.border, color: profile.palette.primary }}>{profile.badge}</p>
-            <h1 className="mt-7 text-[clamp(2.6rem,5.6vw,5.4rem)] font-black leading-[0.85] tracking-[-0.09em]">{profile.headline}</h1>
+            <p className="rounded-full border px-4 py-2 text-xs font-bold uppercase tracking-[0.28em]" style={{ borderColor: profile.palette.border, color: profile.palette.primary }}>{profile.badge}</p>
+            <h1 className="mt-7 text-[clamp(2.25rem,4.6vw,4.4rem)] font-bold leading-[1.04] tracking-[-0.035em]">{profile.headline}</h1>
             <p className="mt-6 text-lg leading-8" style={{ color: profile.palette.muted }}>{profile.intro}</p>
           </div>
           <div className="grid gap-4 sm:grid-cols-2">
             {content.signals.concat(content.outcomes.map(([title, text]) => ({ title, text, eyebrow: content.labels.proofTitle }))).slice(0, 4).map((item, index) => (
               <article key={item.title} className="group rounded-[2rem] border bg-white p-5 shadow-sm transition hover:-translate-y-1 hover:shadow-2xl" style={{ borderColor: profile.palette.border }}>
                 <div className="aspect-[4/3] rounded-[1.5rem]" style={{ background: index % 2 ? profile.palette.soft : profile.palette.panel }} />
-                <p className="mt-5 text-xs font-black uppercase tracking-[0.22em]" style={{ color: profile.palette.primary }}>{item.eyebrow}</p>
-                <h3 className="mt-3 text-2xl font-black tracking-[-0.04em]">{item.title}</h3>
+                <p className="mt-5 text-xs font-bold uppercase tracking-[0.22em]" style={{ color: profile.palette.primary }}>{item.eyebrow}</p>
+                <h3 className="mt-3 text-2xl font-bold tracking-[-0.015em]">{item.title}</h3>
                 <p className="mt-2 leading-7" style={{ color: profile.palette.muted }}>{item.text}</p>
               </article>
             ))}
@@ -2551,23 +2610,23 @@ function BlogEditorialLayout() {
       <section id="top" className={sectionPad + " relative py-5"}>
         <div className="pointer-events-none absolute inset-x-0 top-0 h-[34rem] opacity-80" style={{ background: "radial-gradient(circle at 18% 12%," + profile.palette.soft + ",transparent 34%), radial-gradient(circle at 78% 0%," + profile.palette.accent + "33,transparent 28%)" }} />
         <div className="relative mx-auto flex max-w-7xl items-center justify-between border-b py-5" style={{ borderColor: profile.palette.border }}>
-          <a href="#top" className="text-2xl font-black tracking-[-0.07em]">{content.businessName}</a>
+          <a href="#top" className="text-2xl font-bold tracking-[-0.03em]">{content.businessName}</a>
           <div className="hidden items-center gap-7 md:flex">
             {content.nav.map(([label, href]) => (
-              <a key={href} href={href} className="text-sm font-black transition hover:opacity-55" style={{ color: profile.palette.muted }}>{label}</a>
+              <a key={href} href={href} className="text-sm font-bold transition hover:opacity-55" style={{ color: profile.palette.muted }}>{label}</a>
             ))}
           </div>
-          <a href="#contact" className="rounded-full px-5 py-2.5 text-sm font-black shadow-sm transition hover:-translate-y-0.5" style={{ background: profile.palette.primary, color: profile.palette.primaryText }}>
+          <a href="#contact" className="rounded-full px-5 py-2.5 text-sm font-bold shadow-sm transition hover:-translate-y-0.5" style={{ background: profile.palette.primary, color: profile.palette.primaryText }}>
             {content.labels.primaryCta}
           </a>
         </div>
 
         <div className="relative mx-auto grid max-w-7xl gap-8 py-12 lg:grid-cols-[1.05fr_0.95fr] lg:py-20">
           <div>
-            <p className="inline-flex rounded-full border px-4 py-2 text-xs font-black uppercase tracking-[0.28em]" style={{ borderColor: profile.palette.border, color: profile.palette.primary }}>
+            <p className="inline-flex rounded-full border px-4 py-2 text-xs font-bold uppercase tracking-[0.28em]" style={{ borderColor: profile.palette.border, color: profile.palette.primary }}>
               {profile.badge}
             </p>
-            <h1 className="mt-8 max-w-5xl text-[clamp(2.7rem,5.8vw,5.8rem)] font-black leading-[0.82] tracking-[-0.09em]">
+            <h1 className="mt-8 max-w-5xl text-[clamp(2.35rem,4.7vw,4.6rem)] font-bold leading-[1.03] tracking-[-0.035em]">
               {profile.headline}
             </h1>
             <p className="mt-7 max-w-2xl text-xl leading-9" style={{ color: profile.palette.muted }}>{profile.intro}</p>
@@ -2584,8 +2643,8 @@ function BlogEditorialLayout() {
             <article className="overflow-hidden rounded-[2.4rem] border bg-white shadow-[0_26px_80px_rgba(60,38,20,0.14)]" style={{ borderColor: profile.palette.border }}>
               <div className="aspect-[16/9]" style={{ background: "linear-gradient(135deg," + profile.palette.panel + "," + profile.palette.accent + ")" }} />
               <div className="p-6">
-                <p className="text-xs font-black uppercase tracking-[0.26em]" style={{ color: profile.palette.primary }}>{content.labels.heroMeta}</p>
-                <h2 className="mt-4 text-3xl font-black leading-tight tracking-[-0.05em]">{articles[0]?.title}</h2>
+                <p className="text-xs font-bold uppercase tracking-[0.26em]" style={{ color: profile.palette.primary }}>{content.labels.heroMeta}</p>
+                <h2 className="mt-4 text-2xl font-bold leading-snug tracking-[-0.02em]">{articles[0]?.title}</h2>
                 <p className="mt-3 leading-7" style={{ color: profile.palette.muted }}>{articles[0]?.text}</p>
                 <div className="mt-5 flex items-center justify-between border-t pt-4 text-xs font-bold" style={{ borderColor: profile.palette.border, color: profile.palette.muted }}>
                   <span>{content.labels.dashboardTitle}</span>
@@ -2596,8 +2655,8 @@ function BlogEditorialLayout() {
             <div className="grid gap-3 sm:grid-cols-2">
               {articles.slice(1, 3).map((item) => (
                 <article key={item.title} className="rounded-[1.5rem] border bg-white/70 p-5" style={{ borderColor: profile.palette.border }}>
-                  <p className="text-xs font-black uppercase tracking-[0.22em]" style={{ color: profile.palette.accent }}>{item.eyebrow}</p>
-                  <h3 className="mt-5 text-xl font-black tracking-[-0.04em]">{item.title}</h3>
+                  <p className="text-xs font-bold uppercase tracking-[0.22em]" style={{ color: profile.palette.accent }}>{item.eyebrow}</p>
+                  <h3 className="mt-5 text-xl font-bold tracking-[-0.015em]">{item.title}</h3>
                   <p className="mt-3 text-sm leading-6" style={{ color: profile.palette.muted }}>{item.text}</p>
                 </article>
               ))}
@@ -2610,8 +2669,8 @@ function BlogEditorialLayout() {
         <div className="mx-auto max-w-7xl">
           <div className="mb-8 flex flex-col justify-between gap-4 border-b pb-6 md:flex-row md:items-end" style={{ borderColor: profile.palette.border }}>
             <div>
-              <p className="text-sm font-black uppercase tracking-[0.28em]" style={{ color: profile.palette.primary }}>{profile.servicesTitle}</p>
-              <h2 className="mt-4 text-4xl font-black tracking-[-0.07em]">{content.labels.signalTitle}</h2>
+              <p className="text-sm font-bold uppercase tracking-[0.28em]" style={{ color: profile.palette.primary }}>{profile.servicesTitle}</p>
+              <h2 className="mt-4 text-2xl font-bold tracking-[-0.03em]">{content.labels.signalTitle}</h2>
             </div>
             <p className="max-w-md leading-7" style={{ color: profile.palette.muted }}>{content.labels.workflowIntro}</p>
           </div>
@@ -2619,10 +2678,10 @@ function BlogEditorialLayout() {
             {content.signals.map((item, index) => (
               <article key={item.title} className="group rounded-[2rem] border bg-white/70 p-6 transition duration-300 hover:-translate-y-1 hover:bg-white" style={{ borderColor: profile.palette.border }}>
                 <div className="mb-10 flex items-center justify-between">
-                  <span className="rounded-full px-3 py-1 text-xs font-black" style={{ background: profile.palette.soft, color: profile.palette.primary }}>{item.eyebrow}</span>
+                  <span className="rounded-full px-3 py-1 text-xs font-bold" style={{ background: profile.palette.soft, color: profile.palette.primary }}>{item.eyebrow}</span>
                   <span className="text-xs font-bold" style={{ color: profile.palette.muted }}>{6 + index} dk</span>
                 </div>
-                <h3 className="text-3xl font-black leading-tight tracking-[-0.06em]">{item.title}</h3>
+                <h3 className="text-2xl font-bold leading-snug tracking-[-0.025em]">{item.title}</h3>
                 <p className="mt-4 leading-7" style={{ color: profile.palette.muted }}>{item.text}</p>
               </article>
             ))}
@@ -2633,15 +2692,15 @@ function BlogEditorialLayout() {
       <section id="workflow" className={sectionPad + " py-16"}>
         <div className="mx-auto grid max-w-7xl gap-5 lg:grid-cols-[0.8fr_1.2fr]">
           <aside className="rounded-[2.4rem] p-8 text-white" style={{ background: profile.palette.panel }}>
-            <p className="text-xs font-black uppercase tracking-[0.28em]" style={{ color: profile.palette.primary }}>{content.labels.workflowTitle}</p>
-            <h2 className="mt-5 text-4xl font-black leading-none tracking-[-0.08em]">{content.labels.outcomesTitle}</h2>
+            <p className="text-xs font-bold uppercase tracking-[0.28em]" style={{ color: profile.palette.primary }}>{content.labels.workflowTitle}</p>
+            <h2 className="mt-5 text-2xl font-bold leading-snug tracking-[-0.03em]">{content.labels.outcomesTitle}</h2>
             <p className="mt-5 leading-8 text-white/65">{profile.testimonial}</p>
           </aside>
           <div className="grid gap-4 md:grid-cols-3">
             {content.workflow.map((item, index) => (
               <article key={item.step} className="rounded-[1.8rem] border bg-white/75 p-6" style={{ borderColor: profile.palette.border }}>
-                <span className="text-4xl font-black tracking-[-0.08em]" style={{ color: profile.palette.primary }}>0{index + 1}</span>
-                <h3 className="mt-6 text-2xl font-black tracking-[-0.05em]">{item.step}</h3>
+                <span className="text-2xl font-bold tracking-[-0.03em]" style={{ color: profile.palette.primary }}>0{index + 1}</span>
+                <h3 className="mt-6 text-2xl font-bold tracking-[-0.02em]">{item.step}</h3>
                 <p className="mt-3 leading-7" style={{ color: profile.palette.muted }}>{item.text}</p>
               </article>
             ))}
@@ -2664,39 +2723,39 @@ function ClinicLayout() {
       <section id="top" className={sectionPad + " relative py-5"}>
         <div className="pointer-events-none absolute inset-0 opacity-70" style={{ background: "radial-gradient(circle at 18% 20%," + profile.palette.primary + "55,transparent 28%), radial-gradient(circle at 82% 12%," + profile.palette.accent + "33,transparent 24%), linear-gradient(160deg," + profile.palette.panel + " 0%," + profile.palette.text + " 120%)" }} />
         <div className="relative mx-auto flex max-w-7xl items-center justify-between border-b border-white/10 py-5">
-          <a href="#top" className="text-xl font-black tracking-[-0.06em]">{content.businessName}</a>
+          <a href="#top" className="text-xl font-bold tracking-[-0.025em]">{content.businessName}</a>
           <div className="hidden items-center gap-6 md:flex">
             {content.nav.map(([label, href]) => (
               <a key={href} href={href} className="text-sm font-bold text-white/58 transition hover:text-white">{label}</a>
             ))}
           </div>
-          <a href="#contact" className="rounded-full px-5 py-2.5 text-sm font-black" style={{ background: profile.palette.primary, color: profile.palette.primaryText }}>{content.labels.primaryCta}</a>
+          <a href="#contact" className="rounded-full px-5 py-2.5 text-sm font-bold" style={{ background: profile.palette.primary, color: profile.palette.primaryText }}>{content.labels.primaryCta}</a>
         </div>
         <div className="relative mx-auto grid max-w-7xl gap-6 py-14 lg:grid-cols-[360px_1fr] lg:py-20">
           <aside className="order-2 rounded-[2.2rem] border border-white/10 bg-white/[0.08] p-5 backdrop-blur lg:order-1">
-            <p className="text-xs font-black uppercase tracking-[0.3em]" style={{ color: profile.palette.primary }}>{content.labels.heroMeta}</p>
-            <h2 className="mt-5 text-3xl font-black tracking-[-0.05em]">{content.labels.dashboardTitle}</h2>
+            <p className="text-xs font-bold uppercase tracking-[0.3em]" style={{ color: profile.palette.primary }}>{content.labels.heroMeta}</p>
+            <h2 className="mt-5 text-2xl font-bold tracking-[-0.02em]">{content.labels.dashboardTitle}</h2>
             <div className="mt-7 space-y-3">
               {profile.trust.map((item, index) => (
                 <div key={item} className="flex items-center justify-between rounded-2xl bg-black/20 px-4 py-3">
                   <span className="text-sm font-bold text-white/78">{item}</span>
-                  <span className="text-xs font-black" style={{ color: profile.palette.primary }}>0{index + 1}</span>
+                  <span className="text-xs font-bold" style={{ color: profile.palette.primary }}>0{index + 1}</span>
                 </div>
               ))}
             </div>
             <div className="mt-6 rounded-[1.5rem] p-4" style={{ background: profile.palette.primary, color: profile.palette.primaryText }}>
-              <p className="text-sm font-black">{content.labels.primaryCta}</p>
+              <p className="text-sm font-bold">{content.labels.primaryCta}</p>
               <p className="mt-2 text-sm opacity-75">{content.labels.dashboardSubtitle}</p>
             </div>
           </aside>
           <div className="order-1 lg:order-2">
-            <p className="inline-flex rounded-full border border-white/12 px-4 py-2 text-xs font-black uppercase tracking-[0.26em]" style={{ color: profile.palette.accent }}>{profile.badge}</p>
-            <h1 className="mt-8 max-w-5xl text-[clamp(2.7rem,6vw,5.9rem)] font-black leading-[0.8] tracking-[-0.1em]">{profile.headline}</h1>
+            <p className="inline-flex rounded-full border border-white/12 px-4 py-2 text-xs font-bold uppercase tracking-[0.26em]" style={{ color: profile.palette.accent }}>{profile.badge}</p>
+            <h1 className="mt-8 max-w-5xl text-[clamp(2.35rem,4.8vw,4.7rem)] font-bold leading-[1.02] tracking-[-0.035em]">{profile.headline}</h1>
             <p className="mt-8 max-w-3xl text-xl leading-9 text-white/68">{profile.intro}</p>
             <div className="mt-10 grid gap-3 sm:grid-cols-3">
               {content.stats.map(([value, label]) => (
                 <div key={label} className="border-t border-white/14 pt-4">
-                  <p className="text-4xl font-black" style={{ color: profile.palette.primary }}>{value}</p>
+                  <p className="text-4xl font-bold" style={{ color: profile.palette.primary }}>{value}</p>
                   <p className="mt-2 text-sm text-white/58">{label}</p>
                 </div>
               ))}
@@ -2708,14 +2767,14 @@ function ClinicLayout() {
         <div className="mx-auto max-w-7xl">
           <div className="grid gap-5 lg:grid-cols-[0.8fr_1.2fr]">
             <div>
-              <p className="text-sm font-black uppercase tracking-[0.3em]" style={{ color: profile.palette.primary }}>{profile.servicesTitle}</p>
-              <h2 className="mt-5 text-4xl font-black leading-none tracking-[-0.08em]">{content.labels.signalTitle}</h2>
+              <p className="text-sm font-bold uppercase tracking-[0.3em]" style={{ color: profile.palette.primary }}>{profile.servicesTitle}</p>
+              <h2 className="mt-5 text-2xl font-bold leading-snug tracking-[-0.03em]">{content.labels.signalTitle}</h2>
             </div>
             <div className="grid gap-4 md:grid-cols-3">
               {content.signals.map((item) => (
                 <article key={item.title} className="rounded-[2rem] border bg-white p-6 shadow-sm transition hover:-translate-y-1" style={{ borderColor: profile.palette.border }}>
-                  <p className="text-xs font-black uppercase tracking-[0.22em]" style={{ color: profile.palette.accent }}>{item.eyebrow}</p>
-                  <h3 className="mt-8 text-2xl font-black tracking-[-0.04em]">{item.title}</h3>
+                  <p className="text-xs font-bold uppercase tracking-[0.22em]" style={{ color: profile.palette.accent }}>{item.eyebrow}</p>
+                  <h3 className="mt-8 text-2xl font-bold tracking-[-0.015em]">{item.title}</h3>
                   <p className="mt-4 leading-7" style={{ color: profile.palette.muted }}>{item.text}</p>
                 </article>
               ))}
@@ -2725,12 +2784,12 @@ function ClinicLayout() {
       </section>
       <section id="workflow" className={sectionPad + " py-16"} style={{ background: profile.palette.bg, color: profile.palette.text }}>
         <div className="mx-auto max-w-7xl rounded-[2.5rem] border p-6 md:p-10" style={{ borderColor: profile.palette.border, background: profile.palette.soft }}>
-          <h2 className="text-4xl font-black tracking-[-0.08em]">{content.labels.workflowTitle}</h2>
+          <h2 className="text-2xl font-bold tracking-[-0.03em]">{content.labels.workflowTitle}</h2>
           <div className="mt-8 grid gap-4 md:grid-cols-3">
             {content.workflow.map((item, index) => (
               <article key={item.step} className="rounded-[1.7rem] bg-white/80 p-5">
-                <span className="text-4xl font-black tracking-[-0.1em]" style={{ color: profile.palette.primary }}>0{index + 1}</span>
-                <h3 className="mt-5 text-2xl font-black">{item.step}</h3>
+                <span className="text-2xl font-bold tracking-[-0.035em]" style={{ color: profile.palette.primary }}>0{index + 1}</span>
+                <h3 className="mt-5 text-2xl font-bold">{item.step}</h3>
                 <p className="mt-3 leading-7" style={{ color: profile.palette.muted }}>{item.text}</p>
               </article>
             ))}
@@ -2752,22 +2811,32 @@ function ServiceLayout() {
       <section id="top" className={sectionPad + " relative py-5"}>
         <div className="absolute inset-0 opacity-80" style={{ background: "linear-gradient(135deg," + profile.palette.soft + ",transparent 55%), radial-gradient(circle at 88% 12%," + profile.palette.accent + "44,transparent 26%)" }} />
         <div className="relative"><ShellNav /></div>
-        <div className="relative mx-auto mt-12 grid max-w-7xl gap-8 lg:grid-cols-[0.9fr_1.1fr] lg:items-center">
+        <div className="relative mx-auto mt-12 grid max-w-7xl gap-10 lg:grid-cols-[1.05fr_0.95fr] lg:items-center">
           <div>
-            <p className="mb-6 inline-flex rounded-full border bg-white/60 px-4 py-2 text-xs font-black uppercase tracking-[0.24em]" style={{ borderColor: profile.palette.border, color: profile.palette.accent }}>{profile.badge}</p>
-            <h1 className="max-w-4xl text-[clamp(2.6rem,5.5vw,5.4rem)] font-black leading-[0.84] tracking-[-0.09em]">{profile.headline}</h1>
+            <p className="mb-6 inline-flex rounded-full border bg-white/60 px-4 py-2 text-xs font-bold uppercase tracking-[0.24em]" style={{ borderColor: profile.palette.border, color: profile.palette.accent }}>{profile.badge}</p>
+            <h1 className="max-w-4xl text-[clamp(2.25rem,4.4vw,4.25rem)] font-bold leading-[1.08] tracking-[-0.025em]">{profile.headline}</h1>
             <p className="mt-7 max-w-2xl text-lg leading-8" style={{ color: profile.palette.muted }}>{profile.intro}</p>
             <div className="mt-8 flex flex-wrap gap-3">
-              <a href="#contact" className="rounded-full px-5 py-3 text-sm font-black" style={{ background: profile.palette.primary, color: profile.palette.primaryText }}>{content.labels.primaryCta}</a>
-              <a href="#solution" className="rounded-full border bg-white/70 px-5 py-3 text-sm font-black" style={{ borderColor: profile.palette.border }}>{content.labels.secondaryCta}</a>
+              <a href="#contact" className="rounded-full px-5 py-3 text-sm font-bold" style={{ background: profile.palette.primary, color: profile.palette.primaryText }}>{content.labels.primaryCta}</a>
+              <a href="#solution" className="rounded-full border bg-white/70 px-5 py-3 text-sm font-bold" style={{ borderColor: profile.palette.border }}>{content.labels.secondaryCta}</a>
             </div>
           </div>
-          <div className="rounded-[2.4rem] border bg-white/70 p-5 shadow-2xl" style={{ borderColor: profile.palette.border }}>
-            <div className="rounded-[1.8rem] p-5" style={{ background: profile.palette.panel, color: profile.palette.panelText }}>
-              <p className="text-xs font-black uppercase tracking-[0.28em]" style={{ color: profile.palette.primary }}>{content.labels.heroMeta}</p>
-              <h2 className="mt-4 text-3xl font-black tracking-[-0.05em]">{content.labels.dashboardTitle}</h2>
-              <div className="mt-6 space-y-3">
-                {profile.trust.map((item) => <div key={item} className="rounded-2xl bg-white/10 px-4 py-3 text-sm font-bold">{item}</div>)}
+          <div className="rounded-[1.8rem] border bg-white/75 p-4 shadow-[0_24px_80px_rgba(25,18,35,0.10)]" style={{ borderColor: profile.palette.border }}>
+            <div className="rounded-[1.35rem] p-5" style={{ background: profile.palette.panel, color: profile.palette.panelText }}>
+              <p className="text-xs font-bold uppercase tracking-[0.2em]" style={{ color: profile.palette.primary }}>{content.labels.heroMeta}</p>
+              <h2 className="mt-3 text-2xl font-bold tracking-[-0.015em]">{content.labels.dashboardTitle}</h2>
+              <p className="mt-3 text-sm leading-6 opacity-70">{content.labels.dashboardSubtitle}</p>
+              <div className="mt-6 grid gap-3">
+                {content.signals.slice(0, 3).map((item, index) => (
+                  <div key={item.title} className="rounded-2xl bg-white/10 p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-xs font-semibold uppercase tracking-[0.16em] opacity-60">{item.eyebrow}</span>
+                      <span className="text-xs font-bold" style={{ color: profile.palette.primary }}>0{index + 1}</span>
+                    </div>
+                    <p className="mt-3 text-sm font-semibold">{item.title}</p>
+                    <p className="mt-1 text-sm leading-6 opacity-65">{item.text}</p>
+                  </div>
+                ))}
               </div>
             </div>
           </div>
@@ -2787,14 +2856,14 @@ function ServiceSections() {
     <section id="solution" className={sectionPad + " py-20"}>
       <div className="mx-auto max-w-7xl">
         <div className="mb-10 flex flex-col justify-between gap-4 md:flex-row md:items-end">
-          <h2 className="max-w-3xl text-4xl font-black tracking-[-0.07em]">{content.labels.signalTitle}</h2>
+          <h2 className="max-w-3xl text-2xl font-bold tracking-[-0.03em]">{content.labels.signalTitle}</h2>
           <p className="max-w-md leading-7" style={{ color: profile.palette.muted }}>{content.labels.workflowIntro}</p>
         </div>
         <div className="grid gap-4 md:grid-cols-3">
           {content.signals.map((item) => (
             <article key={item.title} className="rounded-[2rem] border bg-white/70 p-6 transition hover:-translate-y-1" style={{ borderColor: profile.palette.border }}>
-              <p className="text-xs font-black uppercase tracking-[0.22em]" style={{ color: profile.palette.primary }}>{item.eyebrow}</p>
-              <h3 className="mt-8 text-2xl font-black tracking-[-0.04em]">{item.title}</h3>
+              <p className="text-xs font-bold uppercase tracking-[0.22em]" style={{ color: profile.palette.primary }}>{item.eyebrow}</p>
+              <h3 className="mt-8 text-2xl font-bold tracking-[-0.015em]">{item.title}</h3>
               <p className="mt-4 leading-7" style={{ color: profile.palette.muted }}>{item.text}</p>
             </article>
           ))}
@@ -2812,8 +2881,8 @@ function DashboardSections() {
       <div className="mx-auto grid max-w-7xl gap-5 lg:grid-cols-3">
         {content.workflow.map((item, index) => (
           <article key={item.step} className="rounded-[2rem] border border-white/10 bg-white/7 p-6">
-            <span className="text-4xl font-black" style={{ color: profile.palette.primary }}>0{index + 1}</span>
-            <h3 className="mt-6 text-2xl font-black">{item.step}</h3>
+            <span className="text-4xl font-bold" style={{ color: profile.palette.primary }}>0{index + 1}</span>
+            <h3 className="mt-6 text-2xl font-bold">{item.step}</h3>
             <p className="mt-3 leading-7 opacity-70">{item.text}</p>
           </article>
         ))}
@@ -2830,23 +2899,23 @@ function ProofAndFaq() {
       <section id="proof" className={sectionPad + " py-16"}>
         <div className="mx-auto grid max-w-7xl gap-5 lg:grid-cols-[1.15fr_0.85fr]">
           <article className="rounded-[2.4rem] border p-8 sm:p-12" style={{ borderColor: profile.palette.border, background: profile.palette.soft }}>
-            <p className="text-xs font-black uppercase tracking-[0.28em]" style={{ color: profile.palette.primary }}>{content.caseStudy.label}</p>
-            <h2 className="mt-5 text-3xl font-black tracking-[-0.05em] sm:text-5xl">{content.caseStudy.title}</h2>
+            <p className="text-xs font-bold uppercase tracking-[0.28em]" style={{ color: profile.palette.primary }}>{content.caseStudy.label}</p>
+            <h2 className="mt-5 text-2xl font-bold tracking-[-0.02em] sm:text-5xl">{content.caseStudy.title}</h2>
             <p className="mt-5 max-w-2xl text-lg leading-8" style={{ color: profile.palette.muted }}>{content.caseStudy.text}</p>
           </article>
           <article className="rounded-[2.4rem] p-8 text-white" style={{ background: profile.palette.panel }}>
-            <p className="text-sm font-black uppercase tracking-[0.28em]" style={{ color: profile.palette.primary }}>{content.labels.proofTitle}</p>
-            <p className="mt-8 text-3xl font-black leading-tight tracking-[-0.05em]">“{profile.testimonial}”</p>
+            <p className="text-sm font-bold uppercase tracking-[0.28em]" style={{ color: profile.palette.primary }}>{content.labels.proofTitle}</p>
+            <p className="mt-8 text-2xl font-bold leading-snug tracking-[-0.02em]">“{profile.testimonial}”</p>
           </article>
         </div>
       </section>
       <section id="faq" className={sectionPad + " py-16"}>
         <div className="mx-auto max-w-7xl">
-          <h2 className="text-4xl font-black tracking-[-0.07em]">{content.labels.faqTitle}</h2>
+          <h2 className="text-2xl font-bold tracking-[-0.03em]">{content.labels.faqTitle}</h2>
           <div className="mt-8 grid gap-4 md:grid-cols-2">
             {profile.faq.map(([question, answer]) => (
               <article key={question} className="rounded-[1.6rem] border p-6" style={{ borderColor: profile.palette.border }}>
-                <h3 className="text-xl font-black">{question}</h3>
+                <h3 className="text-xl font-bold">{question}</h3>
                 <p className="mt-3 leading-7" style={{ color: profile.palette.muted }}>{answer}</p>
               </article>
             ))}
@@ -2863,10 +2932,10 @@ function FinalCta({ dark = false }: { dark?: boolean }) {
   return (
     <section id="contact" className={sectionPad + " pb-24 pt-10"}>
       <div className="mx-auto max-w-6xl rounded-[2.6rem] p-8 text-center sm:p-14" style={{ background: profile.palette.panel, color: profile.palette.panelText }}>
-        <p className="text-xs font-black uppercase tracking-[0.3em]" style={{ color: profile.palette.primary }}>{content.labels.builtBy}</p>
-        <h2 className="mx-auto mt-5 max-w-4xl text-3xl font-black tracking-[-0.05em] sm:text-5xl">{content.labels.finalTitle}</h2>
+        <p className="text-xs font-bold uppercase tracking-[0.3em]" style={{ color: profile.palette.primary }}>{content.labels.builtBy}</p>
+        <h2 className="mx-auto mt-5 max-w-4xl text-2xl font-bold tracking-[-0.02em] sm:text-5xl">{content.labels.finalTitle}</h2>
         <p className="mx-auto mt-5 max-w-2xl leading-8 opacity-75">{content.labels.finalText}</p>
-        <a href="mailto:hello@example.com" className="mt-9 inline-flex rounded-full px-6 py-3 text-sm font-black" style={{ background: profile.palette.primary, color: profile.palette.primaryText }}>
+        <a href="mailto:hello@example.com" className="mt-9 inline-flex rounded-full px-6 py-3 text-sm font-bold" style={{ background: profile.palette.primary, color: profile.palette.primaryText }}>
           {content.labels.primaryCta}
         </a>
       </div>
@@ -3262,6 +3331,7 @@ function createLocalArchitectSpec(userMessage: string): ArchitectSpec {
   const isSaas = /saas|software|dashboard|crm|app|platform|urun|product/.test(plain);
   const isLegal = /avukat|hukuk|law|legal/.test(plain);
   const isBlog = /blog|magazin|magazine|haber|news|article|makale|yazar|icerik|içerik|publishing|yayin|yayın/.test(plain);
+  const isCommerce = /alisveris|avm|magaza|mall|shopping|store|shop|ecommerce|e commerce|marketplace|pazar/.test(plain);
 
   const routeLabels = turkish
     ? {
@@ -3274,10 +3344,12 @@ function createLocalArchitectSpec(userMessage: string): ArchitectSpec {
               ? "Uzmanlıklar"
               : isBlog
                 ? "Yazılar"
-                : isSaas
-                  ? "Özellikler"
-                  : "Hizmetler",
-        proof: isBlog ? "Kategoriler" : isSaas ? "Fiyatlar" : "Süreç",
+                : isCommerce
+                  ? "Mağazalar"
+                  : isSaas
+                    ? "Özellikler"
+                    : "Hizmetler",
+        proof: isBlog ? "Kategoriler" : isCommerce ? "Kampanyalar" : isSaas ? "Fiyatlar" : "Süreç",
         contact: isBlog ? "Bülten" : "İletişim",
       }
     : {
@@ -3290,10 +3362,12 @@ function createLocalArchitectSpec(userMessage: string): ArchitectSpec {
               ? "Practice Areas"
               : isBlog
                 ? "Articles"
-                : isSaas
-                  ? "Features"
-                  : "Services",
-        proof: isBlog ? "Topics" : isSaas ? "Pricing" : "Process",
+                : isCommerce
+                  ? "Stores"
+                  : isSaas
+                    ? "Features"
+                    : "Services",
+        proof: isBlog ? "Topics" : isCommerce ? "Campaigns" : isSaas ? "Pricing" : "Process",
         contact: isBlog ? "Newsletter" : "Contact",
       };
 
@@ -3305,10 +3379,12 @@ function createLocalArchitectSpec(userMessage: string): ArchitectSpec {
         ? "/practice-areas"
         : isBlog
           ? "/articles"
-          : isSaas
-            ? "/features"
-            : "/services";
-  const proofPath = isBlog ? "/topics" : isSaas ? "/pricing" : "/process";
+          : isCommerce
+            ? "/stores"
+            : isSaas
+              ? "/features"
+              : "/services";
+  const proofPath = isBlog ? "/topics" : isCommerce ? "/campaigns" : isSaas ? "/pricing" : "/process";
   const contactPath = isBlog ? "/newsletter" : "/contact";
 
   return {
@@ -3321,9 +3397,13 @@ function createLocalArchitectSpec(userMessage: string): ArchitectSpec {
         purpose: turkish
           ? isBlog
             ? "Yayının editoryal vaadini, kapak yazısını ve okuma yollarını güçlü biçimde sunar."
+            : isCommerce
+              ? "Alışveriş merkezi vaadini, mağaza keşfini, kampanyaları ve ziyaret planını güçlü biçimde sunar."
             : "Marka vaadini, güven unsurlarını ve ana dönüşüm aksiyonunu anlatır."
           : isBlog
             ? "Present the publication promise, cover story, and reading paths with strong hierarchy."
+            : isCommerce
+              ? "Present the mall promise, store discovery, campaigns, and visit planning with strong hierarchy."
             : "Explain the brand promise, trust proof, and primary conversion action.",
         visibleTitle: routeLabels.home,
       },
@@ -3332,9 +3412,13 @@ function createLocalArchitectSpec(userMessage: string): ArchitectSpec {
         purpose: turkish
           ? isBlog
             ? "Yazı listesi, öne çıkan makaleler, okuma süresi ve yazar metadatalarını gösterir."
+            : isCommerce
+              ? "Mağaza rehberi, kategori filtreleri, kat bilgisi ve öne çıkan markaları gösterir."
             : "Ana hizmet/ürün mimarisini sektöre özel ve karar vermeyi kolaylaştıracak şekilde detaylandırır."
           : isBlog
             ? "Show article list, featured posts, reading time, and author metadata."
+            : isCommerce
+              ? "Show store directory, category filters, floor details, and featured brands."
             : "Detail the service/product architecture in a domain-specific decision-friendly way.",
         visibleTitle: routeLabels.services,
       },
@@ -3343,9 +3427,13 @@ function createLocalArchitectSpec(userMessage: string): ArchitectSpec {
         purpose: turkish
           ? isBlog
             ? "Kategori, konu filtreleri, editör seçkileri ve keşif akışını sunar."
+            : isCommerce
+              ? "Kampanya kartları, sezon duyuruları, restoran fırsatları ve etkinlik akışını sunar."
             : "Karar sürecini güçlendiren paket, süreç, kanıt veya karşılaştırma bilgilerini sunar."
           : isBlog
             ? "Show categories, topic filters, editor picks, and discovery flow."
+            : isCommerce
+              ? "Show campaign cards, seasonal announcements, dining offers, and event flow."
             : "Show package, process, proof, or comparison content that strengthens decision-making.",
         visibleTitle: routeLabels.proof,
       },
@@ -3568,6 +3656,18 @@ function validateBuildAgainstSpec(params: {
     );
   }
 
+  if (hasHeavyFontSpam(assistantContent)) {
+    issues.push(
+      "Typography is too heavy and compressed; reduce font-bold/extrabold usage and use refined hierarchy."
+    );
+  }
+
+  if (hasGenericFallbackCopy(assistantContent)) {
+    issues.push(
+      "Visible UI copy contains generic fallback labels; replace them with domain-specific content."
+    );
+  }
+
   if (shouldRepairVisibleLanguageMismatch(userMessage, assistantContent)) {
     issues.push(
       isLikelyTurkish(userMessage)
@@ -3768,6 +3868,8 @@ async function createBuilderResponse(
         "CLIENT-FACING COPY CONTRACT: The generated preview must read like the real business/product/publication speaking to its customers. Never write visible copy as Klawpen, an AI, a builder, a freelancer, or an agency explaining a draft.",
         "FORBIDDEN VISIBLE META WORDS: prompt, generated, AI, yapay zeka, Klawpen, Core, Builder, template, şablon, fallback, component, design direction, tasarım yönü, first version, ilk sürüm, launch-ready, yayına hazır, freelancer, proposal, gelişmiş studio.",
         "REFINED SCALE CONTRACT: no huge crude headings/buttons/cards. Use tasteful clamp ranges, compact nav, normal-sized CTAs, useful card content, balanced whitespace, and realistic density.",
+        "PROFESSIONAL DESIGN METHOD: before writing files, internally compare at least 3 layout directions for this domain, choose the strongest one, then implement. Do not reveal this reasoning.",
+        "QUALITY RUBRIC THAT MUST PASS: refined typography, readable Turkish/English copy, domain-specific modules, real multi-route IA, useful content density, purposeful motion, accessible responsive UI, no generic fallback labels, no oversized/heavy-font screenshot.",
         isBroadBuildRequest(userMessage, options) &&
         !isExplicitSinglePageRequest(userMessage)
           ? [
@@ -3785,7 +3887,7 @@ async function createBuilderResponse(
         options.planMode
           ? "Plan mode is enabled and the clarification gate has already passed: include a concise implementation plan inside the <dec-code> block, then implement decisively."
           : "Plan mode is disabled: infer professional defaults for missing minor details and implement directly.",
-        "Raise the UI quality bar: build polished navigation, rich routes, responsive behavior, refined typography, deliberate color, animations, states, and product-specific copy. Avoid simple toy layouts and AI-looking oversized blocks.",
+        "Raise the UI quality bar: build polished navigation, rich routes, responsive behavior, refined typography, deliberate color, animations, states, and product-specific copy. Avoid simple toy layouts, heavy font spam, and AI-looking oversized blocks.",
       ].join("\n"),
       temperature: Math.max(aiTemperature, 0.22),
       timeoutMs: AI_BUILDER_TIMEOUT_MS,
@@ -3833,6 +3935,8 @@ QUALITY BAR:
 - Visible UI copy must sound like the real customer website, not a freelancer proposal, builder status, Klawpen output, or AI-generated draft.
 - Never show these words in preview copy unless the user explicitly requested that exact subject: prompt, generated, AI, yapay zeka, Klawpen, Core, Builder, template, şablon, fallback, component, design direction, tasarım yönü, first version, ilk sürüm, launch-ready, yayına hazır, freelancer, proposal, gelişmiş studio.
 - Use refined proportions: smaller CTAs, compact nav, controlled display type, useful card density, and no huge empty panels.
+- Avoid font-black/extrabold as the default; use font-semibold/font-bold sparingly with readable line-height and relaxed tracking.
+- For short prompts, infer the real domain and create expected modules. Example: a mall/shopping center needs store directory, campaign cards, food court, events, floor/location info, and visit planning; not generic "strategic story" cards.
 - Keep code maintainable and imports valid.
 
 ${isBlogLike ? `
@@ -4264,6 +4368,8 @@ Customer-facing copy rule:
 Refined design rule:
 - Avoid giant headings, huge CTA buttons, empty decorative cards, and oversized rounded boxes.
 - Use compact navigation/buttons, balanced card sizes, realistic content density, refined typography scale, and purposeful animation.
+- Do not patch the old bad layout cosmetically; if the screenshot would still look amateur, replace the composition with a stronger domain-specific layout.
+- Quality rubric: refined typography, readable line-height, domain modules, useful content density, responsive polish, purposeful motion, and customer-facing copy must all pass.
 Visible UI language requirement:
 - The user's prompt language is ${isLikelyTurkish(params.userMessage) ? "Turkish" : "English"}.
 - All customer-visible UI copy must be ${isLikelyTurkish(params.userMessage) ? "Turkish with correct Turkish characters" : "English"}: navigation, page titles, headings, CTA buttons, cards, forms, FAQ, empty/error states, and metadata.
