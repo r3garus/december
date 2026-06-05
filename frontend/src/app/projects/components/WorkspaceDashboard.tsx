@@ -227,8 +227,9 @@ export const WorkspaceDashboard = ({
   const [billingCycle, setBillingCycle] = useState<BillingCycle>("monthly");
   const [activePlan, setActivePlan] = useState<AccountPlan>("starter");
   const [accountSnapshot, setAccountSnapshot] = useState<AccountSnapshot | null>(null);
-  const [settingsTheme, setSettingsTheme] = useState<UiTheme>("light");
-  const [settingsLanguage, setSettingsLanguage] = useState<UiLanguage>("en");
+  const [settingsTheme, setSettingsTheme] = useState<UiTheme>(resolveInitialTheme);
+  const [settingsLanguage, setSettingsLanguage] =
+    useState<UiLanguage>(resolveInitialLanguage);
   const [profileAvatarDataUrl, setProfileAvatarDataUrl] = useState<
     string | null
   >(null);
@@ -855,12 +856,12 @@ export const WorkspaceDashboard = ({
     fileUnsupported: "desteklenen bir dosya turu degil",
     fileTooLarge: "cok buyuk (dosya basina maksimum 5MB)",
     totalSizeExceeded: "Toplam dosya boyutu 20MB limitini asiyor",
-    processingFilesError: "Dosyalar islenirken hata olustu. Lutfen tekrar dene.",
-    filesTooLarge: "Dosyalar cok buyuk. Lutfen boyutlari dusurup tekrar dene.",
-    connectionError: "Baglanti hatasi. Lutfen tekrar dene.",
-    assistantError: "Uzgunum, bir hata olustu. Lutfen tekrar dene.",
+    processingFilesError: "Dosyalar işlenirken hata oluştu. Lütfen tekrar dene.",
+    filesTooLarge: "Dosyalar çok büyük. Lütfen boyutları düşürüp tekrar dene.",
+    connectionError: "Bağlantı hatası. Lütfen tekrar dene.",
+    assistantError: "Üzgünüm, bir hata oluştu. Lütfen tekrar dene.",
     initialAssistantError:
-      "Uzgunum, istegini islerken bir hata olustu. Lutfen tekrar dene.",
+      "Üzgünüm, isteğini işlerken bir hata oluştu. Lütfen tekrar dene.",
     exportProject: "Projeyi disa aktar",
     deployProject: "Projeyi yayinla",
     filesReady: "dosya gonderime hazir!",

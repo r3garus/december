@@ -50,6 +50,22 @@ const BUILD_INTENT_TERMS = [
   "design",
   "implement",
 ];
+const QUESTION_STARTERS = [
+  "ne",
+  "nasil",
+  "neden",
+  "niye",
+  "hangi",
+  "sence",
+  "what",
+  "why",
+  "how",
+  "which",
+  "can",
+  "could",
+  "should",
+];
+const GREETING_TERMS = ["merhaba", "selam", "slm", "sa", "hello", "hi", "hey", "naber"];
 
 const animatedPrompts = [
   "Design a modern marketing website for my startup...",
@@ -106,6 +122,25 @@ const hasProjectBuildIntent = (prompt: string) => {
   );
 };
 
+const isQuestionLikePrompt = (prompt: string) => {
+  const normalized = normalizeBuildIntentText(prompt);
+  if (!normalized) return false;
+  if (prompt.includes("?")) return true;
+  return QUESTION_STARTERS.some((starter) => normalized.startsWith(`${starter} `));
+};
+
+const isGreetingPrompt = (prompt: string) => {
+  const normalized = normalizeBuildIntentText(prompt);
+  return GREETING_TERMS.includes(normalized);
+};
+
+const isVagueProjectPrompt = (prompt: string) => {
+  const normalized = normalizeBuildIntentText(prompt);
+  if (!hasProjectBuildIntent(prompt)) return false;
+  if (normalized.length > 80) return false;
+  return normalized.split(/\s+/).length <= 3;
+};
+
 const readStoredMetadata = (): Record<string, StoredProjectMetadata> => {
   if (typeof window === "undefined") return {};
   try {
@@ -135,6 +170,7 @@ export const ProjectPromptInterface = ({ language, theme, accountName }: Project
   const [isPlanButtonPressing, setIsPlanButtonPressing] = useState(false);
   const [selectedImage, setSelectedImage] = useState<File | null>(null);
   const [selectedImagePreviewUrl, setSelectedImagePreviewUrl] = useState<string | null>(null);
+  const [promptGuidance, setPromptGuidance] = useState<string | null>(null);
   const [typewriterState, setTypewriterState] = useState({
     phraseIndex: 0,
     charIndex: 0,
@@ -168,6 +204,12 @@ export const ProjectPromptInterface = ({ language, theme, accountName }: Project
       usePrompt: "Use prompt",
       projectIntentRequired:
         "Please describe what you want to build, for example: \"Build a SaaS landing page\".",
+      greetingResponse:
+        "Hey! I am here. You can ask a question, describe a build, or share what you want to improve.",
+      questionResponse:
+        "Good question. This box starts a new build when you describe a project. For general questions, open a project and use the agent chat, or write a clear build brief here.",
+      vaguePromptResponse:
+        "To build this professionally, add the industry, target audience, goal, and visual style. Example: \"Build a premium restaurant landing page with menu, booking CTA, testimonials, and FAQ.\"",
     },
     tr: {
       title: `Merhaba ${accountName}, ne olu\u015fturmak istiyorsun?`,
@@ -188,6 +230,12 @@ export const ProjectPromptInterface = ({ language, theme, accountName }: Project
       usePrompt: "Promptu kullan",
       projectIntentRequired:
         "L\u00fctfen ne olu\u015fturmak istedi\u011fini yaz. \u00d6rnek: \"Modern bir SaaS landing page yap\".",
+      greetingResponse:
+        "Merhaba! Buradayım. Bir soru sorabilir, oluşturmak istediğin projeyi anlatabilir veya geliştirmek istediğin kısmı yazabilirsin.",
+      questionResponse:
+        "Güzel soru. Bu alan yeni proje başlatmak için çalışıyor. Genel sorular için bir projenin içindeki ajan sohbetini kullanabilir veya burada net bir proje brief'i yazabilirsin.",
+      vaguePromptResponse:
+        "Bunu profesyonel yapmak için sektör, hedef kullanıcı, amaç ve görsel tarzı da ekle. Örnek: \"Menü, rezervasyon CTA'sı, yorumlar ve SSS içeren premium restoran landing page yap.\"",
     },
   }[language];
 
@@ -311,12 +359,31 @@ export const ProjectPromptInterface = ({ language, theme, accountName }: Project
     if (!promptInput.trim() || isCreatingFromPrompt) return;
 
     setIsCreatingFromPrompt(true);
+    setPromptGuidance(null);
 
     try {
       const promptValue = promptInput.trim();
 
+      if (isGreetingPrompt(promptValue)) {
+        setPromptGuidance(labels.greetingResponse);
+        setIsCreatingFromPrompt(false);
+        return;
+      }
+
+      if (isQuestionLikePrompt(promptValue) && !hasProjectBuildIntent(promptValue)) {
+        setPromptGuidance(labels.questionResponse);
+        setIsCreatingFromPrompt(false);
+        return;
+      }
+
+      if (isVagueProjectPrompt(promptValue)) {
+        setPromptGuidance(labels.vaguePromptResponse);
+        setIsCreatingFromPrompt(false);
+        return;
+      }
+
       if (!hasProjectBuildIntent(promptValue)) {
-        toast.error(labels.projectIntentRequired);
+        setPromptGuidance(labels.projectIntentRequired);
         setIsCreatingFromPrompt(false);
         return;
       }
@@ -432,7 +499,10 @@ export const ProjectPromptInterface = ({ language, theme, accountName }: Project
               placeholder=""
               spellCheck="false"
               value={promptInput}
-              onChange={(e) => setPromptInput(e.target.value)}
+              onChange={(e) => {
+                setPromptInput(e.target.value);
+                if (promptGuidance) setPromptGuidance(null);
+              }}
               onKeyDown={handlePromptKeyDown}
               disabled={isCreatingFromPrompt}
               className={`motion-input relative z-10 h-16 w-full resize-none bg-transparent px-2 py-1 text-[12px] font-medium outline-none disabled:opacity-50 sm:text-[13px] ${
@@ -452,6 +522,18 @@ export const ProjectPromptInterface = ({ language, theme, accountName }: Project
               </span>
             )}
           </div>
+
+          {promptGuidance && (
+            <div
+              className={`mx-2 mb-1 mt-2 rounded-xl border px-3 py-2 text-[11px] leading-relaxed ${
+                isDark
+                  ? "border-[#31577d]/35 bg-[#31577d]/12 text-slate-200"
+                  : "border-[#cfe1f4] bg-[#f2f8ff] text-[#294b6f]"
+              }`}
+            >
+              {promptGuidance}
+            </div>
+          )}
 
           <div className={`mx-2 mt-1 flex items-center gap-1.5 rounded-xl px-2 py-1.5 text-[10px] leading-tight ${
             isDark ? "bg-white/[0.045] text-slate-400" : "bg-[#f6f9fc] text-slate-500"

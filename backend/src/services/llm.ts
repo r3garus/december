@@ -76,6 +76,10 @@ const TURKISH_HINT_PATTERN =
   /[çğıöşü]/i;
 const TURKISH_WORD_PATTERN =
   /\b(merhaba|selam|naber|nas[ıi]ls[ıi]n|tesekkur|te[sş]ekk[üu]r|sagol|sa[gğ] ol|eyvallah|kanka)\b/i;
+const QUESTION_PATTERN =
+  /[?？]|^(ne|nasil|nas[ıi]l|neden|niye|hangi|kim|nerede|nereyi|sence|bana anlat|aciklar|a[çc][ıi]klar|what|why|how|which|who|where|can|could|should|would|is|are|do|does|did)\b/i;
+const VERY_VAGUE_BUILD_PATTERN =
+  /^(bir\s+)?(site|website|web sitesi|landing|landing page|sayfa|dashboard|panel|app|uygulama)\s*(yap|olu[sş]tur|tasarla|build|create|make|design)?$/i;
 
 function isLikelyTurkish(message: string): boolean {
   return TURKISH_HINT_PATTERN.test(message) || TURKISH_WORD_PATTERN.test(message);
@@ -83,6 +87,28 @@ function isLikelyTurkish(message: string): boolean {
 
 function isBuildRequest(message: string): boolean {
   return BUILD_INTENT_PATTERN.test(message);
+}
+
+function isQuestion(message: string): boolean {
+  return QUESTION_PATTERN.test(message.trim());
+}
+
+function isVagueBuildRequest(message: string): boolean {
+  const text = message.trim();
+  if (!isBuildRequest(text)) return false;
+  if (text.length > 80) return false;
+  return VERY_VAGUE_BUILD_PATTERN.test(text) || text.split(/\s+/).length <= 3;
+}
+
+export function shouldUseConversationOnlyMode(
+  userMessage: string,
+  attachmentCount: number = 0
+): boolean {
+  if (attachmentCount > 0) return false;
+  const text = userMessage.trim();
+  if (!text || text.length > 1_000) return false;
+  if (isBuildRequest(text)) return false;
+  return isQuestion(text) || text.split(/\s+/).length <= 20;
 }
 
 export function getConversationalShortcutReply(
@@ -107,8 +133,8 @@ export function getConversationalShortcutReply(
     )
   ) {
     return turkish
-      ? "Merhaba! Ne yapmak veya değiştirmek istediğini yaz, birlikte halledelim."
-      : "Hey! Tell me what you want to build or change, and I will help.";
+      ? "Merhaba! Buradayım. İstersen bir soru sorabilir, istersen de ne oluşturmak veya değiştirmek istediğini yazabilirsin."
+      : "Hey! I am here. You can ask a question, or tell me what you want to build or change.";
   }
 
   if (
@@ -131,7 +157,41 @@ export function getConversationalShortcutReply(
       : "I can edit pages, components, styles, copy, packages, and project files. Describe the change clearly and I will apply it.";
   }
 
+  if (
+    /^(bir [sş]ey sorabilir miyim|soru sorabilir miyim|sana bir [sş]ey soraca[gğ][ıi]m|can i ask|can i ask a question)$/.test(
+      compact
+    )
+  ) {
+    return turkish
+      ? "Tabii, sorabilirsin. İstersen teknik, tasarım, iş modeli veya proje akışıyla ilgili sorunu yaz; net cevap vereyim."
+      : "Of course. Ask anything about the project, design, backend, security, or workflow and I will answer clearly.";
+  }
+
   return null;
+}
+
+export function getBuildClarificationReply(userMessage: string): string | null {
+  if (!isVagueBuildRequest(userMessage)) return null;
+
+  const turkish = isLikelyTurkish(userMessage);
+
+  return turkish
+    ? [
+        "Bunu kaliteli yapabilmem için önce birkaç noktayı netleştirelim:",
+        "1. Hangi sektör veya ürün için olacak?",
+        "2. Hedef kullanıcı kim ve ana amaç ne: satış, kayıt, randevu, demo veya portfolyo?",
+        "3. Görsel tarz nasıl olsun: premium, minimal, kurumsal, yaratıcı veya daha cesur?",
+        "",
+        "İstersen cevap vermeden \"varsayılanlarla devam et\" yaz; ben profesyonel bir brief oluşturup ilerlerim.",
+      ].join("\n")
+    : [
+        "To make this properly, let me clarify a few things first:",
+        "1. What industry or product is this for?",
+        "2. Who is the target user and main goal: sales, signup, booking, demo, or portfolio?",
+        "3. What visual direction should it follow: premium, minimal, corporate, creative, or bold?",
+        "",
+        "If you prefer, reply \"continue with defaults\" and I will create a professional brief before building.",
+      ].join("\n");
 }
 
 const PLANNER_SYSTEM_PROMPT = `
@@ -250,6 +310,59 @@ function extractResponseText(resp: any): string {
 
   const out = parts.join("").trim();
   return out || "Sorry, I could not generate a response.";
+}
+
+function extractChatCompletionText(resp: any): string {
+  const text = resp?.choices?.[0]?.message?.content;
+  return typeof text === "string" && text.trim()
+    ? text.trim()
+    : "Sorry, I could not generate a response.";
+}
+
+async function createAiText(params: {
+  provider: AiProviderConfig;
+  input: string;
+  temperature?: number;
+  retries?: number;
+}): Promise<string> {
+  const client = getAiClient(params.provider);
+  const temperature = params.temperature ?? aiTemperature;
+  const retries = params.retries ?? aiMaxRetries;
+
+  try {
+    const response = await withRetries(
+      () =>
+        client.responses.create({
+          model: params.provider.model,
+          input: params.input,
+          // @ts-ignore
+          temperature,
+        }),
+      retries
+    );
+
+    recordProviderRequest(params.provider.key);
+    return extractResponseText(response);
+  } catch (responsesError) {
+    console.warn(
+      "Responses API failed; falling back to chat completions:",
+      responsesError instanceof Error ? responsesError.message : responsesError
+    );
+
+    const response = await withRetries(
+      () =>
+        client.chat.completions.create({
+          model: params.provider.model,
+          messages: [{ role: "user", content: params.input }],
+          // @ts-ignore
+          temperature,
+        }),
+      retries
+    );
+
+    recordProviderRequest(params.provider.key);
+    return extractChatCompletionText(response);
+  }
 }
 
 function buildFlattenedInput(messages: Array<{ role: string; content: any }>): string {
@@ -552,58 +665,66 @@ USER REQUEST:
 ${userMessage}
 `;
 
-  const plannerResponse = await withRetries(
-    () =>
-      getAiClient(provider).responses.create({
-        model: provider.model,
-        input: plannerInput,
-        // @ts-ignore
-        temperature: Math.min(aiTemperature, 0.2),
-      }),
-    aiMaxRetries
-  );
-
-  recordProviderRequest(provider.key);
-  return extractResponseText(plannerResponse);
+  return createAiText({
+    provider,
+    input: plannerInput,
+    temperature: Math.min(aiTemperature, 0.2),
+  });
 }
 
 async function createBuilderResponse(
   input: string,
   provider: AiProviderConfig
 ): Promise<string> {
-  const response = await withRetries(
-    () =>
-      getAiClient(provider).responses.create({
-        model: provider.model,
-        input,
-        // @ts-ignore
-        temperature: aiTemperature,
-      }),
-    aiMaxRetries
-  );
-
-  recordProviderRequest(provider.key);
-  return extractResponseText(response);
+  return createAiText({
+    provider,
+    input,
+    temperature: aiTemperature,
+  });
 }
 
 async function createCriticReview(
   input: string,
   provider: AiProviderConfig
 ): Promise<CriticResult> {
-  const response = await withRetries(
-    () =>
-      getAiClient(provider).responses.create({
-        model: provider.model,
-        input,
-        // @ts-ignore
-        temperature: 0.1,
-      }),
-    aiMaxRetries
-  );
-
-  recordProviderRequest(provider.key);
-  const text = extractResponseText(response);
+  const text = await createAiText({
+    provider,
+    input,
+    temperature: 0.1,
+  });
   return parseCriticResult(text);
+}
+
+async function createConversationalAnswer(
+  userMessage: string,
+  recentConversation: string,
+  provider: AiProviderConfig
+): Promise<string> {
+  const turkish = isLikelyTurkish(userMessage);
+  const input = `
+SYSTEM:
+You are Klawpen Agent, a concise and professional product-building assistant.
+Answer the user's question directly in the same language as the user.
+Do not emit code-edit tags. Do not modify files. Do not claim that you changed code.
+If the user seems to want a build but has not provided enough detail, ask up to 3 focused clarification questions.
+End with a short invitation to share what they want next.
+
+LANGUAGE:
+${turkish ? "Turkish" : "English"}
+
+RECENT CONVERSATION:
+${recentConversation || "No prior conversation."}
+
+USER:
+${userMessage}
+`;
+
+  return createAiText({
+    provider,
+    input,
+    temperature: Math.min(aiTemperature, 0.25),
+    retries: Math.min(aiMaxRetries, 1),
+  });
 }
 
 async function improveWithCriticLoop(params: {
@@ -742,6 +863,27 @@ export function addConversationalMessage(
   session.updatedAt = assistantMsg.timestamp;
 
   return { userMessage: userMsg, assistantMessage: assistantMsg };
+}
+
+export async function answerConversationOnlyMessage(
+  containerId: string,
+  userMessage: string,
+  workloadEstimate?: AiWorkloadEstimate
+): Promise<{ userMessage: Message; assistantMessage: Message }> {
+  const session = getOrCreateChatSession(containerId);
+  const recentConversation = session.messages
+    .slice(-8)
+    .map((message) => `${message.role.toUpperCase()}: ${message.content}`)
+    .join("\n");
+
+  const provider = selectAiProvider(workloadEstimate);
+  const assistantReply = await createConversationalAnswer(
+    userMessage,
+    recentConversation,
+    provider
+  );
+
+  return addConversationalMessage(containerId, userMessage, assistantReply);
 }
 
 export async function sendMessage(

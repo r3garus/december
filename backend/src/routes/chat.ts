@@ -183,6 +183,40 @@ router.post("/:containerId/messages", async (req, res) => {
       });
     }
 
+    const clarificationReply = llmService.getBuildClarificationReply(message);
+
+    if (clarificationReply) {
+      const { userMessage, assistantMessage } =
+        llmService.addConversationalMessage(
+          containerId,
+          message,
+          clarificationReply
+        );
+
+      if (shouldStream) {
+        res.setHeader("Content-Type", "text/event-stream");
+        res.setHeader("Cache-Control", "no-cache");
+        res.setHeader("Connection", "keep-alive");
+        res.write(`data: ${JSON.stringify({ type: "user", data: userMessage })}\n\n`);
+        res.write(
+          `data: ${JSON.stringify({
+            type: "assistant",
+            data: assistantMessage,
+          })}\n\n`
+        );
+        res.write(`data: ${JSON.stringify({ type: "done", data: assistantMessage })}\n\n`);
+        res.write("data: [DONE]\n\n");
+        res.end();
+        return;
+      }
+
+      return res.json({
+        success: true,
+        userMessage,
+        assistantMessage,
+      });
+    }
+
     const workload = estimateAiWorkload({
       message,
       attachmentCount: safeAttachments.length,
@@ -214,6 +248,38 @@ router.post("/:containerId/messages", async (req, res) => {
         success: false,
         error,
         usage,
+      });
+    }
+
+    if (llmService.shouldUseConversationOnlyMode(message, safeAttachments.length)) {
+      const { userMessage, assistantMessage } =
+        await llmService.answerConversationOnlyMessage(
+          containerId,
+          message,
+          workload
+        );
+
+      if (shouldStream) {
+        res.setHeader("Content-Type", "text/event-stream");
+        res.setHeader("Cache-Control", "no-cache");
+        res.setHeader("Connection", "keep-alive");
+        res.write(`data: ${JSON.stringify({ type: "user", data: userMessage })}\n\n`);
+        res.write(
+          `data: ${JSON.stringify({
+            type: "assistant",
+            data: assistantMessage,
+          })}\n\n`
+        );
+        res.write(`data: ${JSON.stringify({ type: "done", data: assistantMessage })}\n\n`);
+        res.write("data: [DONE]\n\n");
+        res.end();
+        return;
+      }
+
+      return res.json({
+        success: true,
+        userMessage,
+        assistantMessage,
       });
     }
 
