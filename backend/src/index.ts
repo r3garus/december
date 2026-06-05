@@ -159,7 +159,7 @@ app.get("/health", (_req, res) => {
   res.json({
     success: true,
     service: "klawpen-builder-api",
-    marker: "deterministic-runtime-repair-v1",
+    marker: "professional-build-flow-v1",
     timestamp: new Date().toISOString(),
   });
 });

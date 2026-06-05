@@ -20,7 +20,7 @@ export interface AiWorkloadEstimate {
 }
 
 const DEFAULT_BASE_URL = "https://api.gptclubapi.xyz/openai/v1";
-const DEFAULT_CR_MODEL = "gpt-5.3-codex";
+const DEFAULT_CR_MODEL = "gpt-5.4-codex";
 const DEFAULT_SK_MODEL = "claude-sonnet-4.5";
 
 function readInt(value: string | undefined, fallback: number) {
@@ -175,14 +175,17 @@ export function estimateAiWorkload({
 
   const inputScore = lengthScore + attachmentScore + intentScore;
 
+  const buildIntent = /\b(yap|olu[sş]tur|tasarla|kodla|geli[sş]tir|landing|website|site|uygulama|dashboard|build|create|make|design|implement|generate)\b/i.test(message);
+  const preferredProvider: AiProviderKey = buildIntent ? "cr" : "sk";
+
   if (inputScore <= 3) {
-    return { tier: "light", coreCredits: 1, inputScore, attachmentCount, providerHint: "sk" };
+    return { tier: "light", coreCredits: 1, inputScore, attachmentCount, providerHint: preferredProvider };
   }
   if (inputScore <= 7) {
-    return { tier: "normal", coreCredits: 2, inputScore, attachmentCount, providerHint: "sk" };
+    return { tier: "normal", coreCredits: 2, inputScore, attachmentCount, providerHint: preferredProvider };
   }
   if (inputScore <= 13) {
-    return { tier: "medium", coreCredits: 5, inputScore, attachmentCount, providerHint: "sk" };
+    return { tier: "medium", coreCredits: 5, inputScore, attachmentCount, providerHint: preferredProvider };
   }
   if (inputScore <= 24) {
     return { tier: "heavy", coreCredits: 15, inputScore, attachmentCount, providerHint: "cr" };

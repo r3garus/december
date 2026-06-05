@@ -33,6 +33,14 @@ export interface Message {
   };
 }
 
+export interface BuildProgress {
+  stage: "scan" | "plan" | "draft" | "review" | "repair" | "apply" | "refresh";
+  title: string;
+  description: string;
+  percent: number;
+  files?: string[];
+}
+
 export interface Attachment {
   type: "image" | "document";
   data: string;

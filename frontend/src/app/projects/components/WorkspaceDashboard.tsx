@@ -31,6 +31,7 @@ import { getBackendAuthHeaders } from "@/lib/backend/auth";
 import { createClient as createSupabaseClient } from "@/lib/supabase/client";
 import type { AccountSnapshot } from "@/lib/account/types";
 import {
+  type BuildProgress,
   type Container,
   getChatHistory,
   getContainers,
@@ -225,6 +226,8 @@ export const WorkspaceDashboard = ({
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(
     null
   );
+  const [buildProgress, setBuildProgress] = useState<BuildProgress | null>(null);
+  const [recentBuildFiles, setRecentBuildFiles] = useState<string[]>([]);
   const [isDragOver, setIsDragOver] = useState<boolean>(false);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [isDesktopView, setIsDesktopView] = useState<boolean>(true);
@@ -491,6 +494,13 @@ export const WorkspaceDashboard = ({
     dropFilesDesc: "Images, PDFs, and documents are supported",
     agentThinking: "Klawpen Agent is thinking",
     agentThinkingDesc: "Reading your request and preparing the next change.",
+    buildOverlayTitle: "Your website is being built",
+    buildOverlayDesc:
+      "Klawpen Core is analyzing the brief, writing code, and preparing the preview.",
+    buildOverlayStepAnalyze: "Brief analysis",
+    buildOverlayStepCode: "Code generation",
+    buildOverlayStepPreview: "Preview refresh",
+    buildOverlayChangedFiles: "Live file activity",
     askFollowUp: "Ask about this code...",
     welcomeAssistantName: "Assistant",
     welcomeTitle:
@@ -850,6 +860,13 @@ export const WorkspaceDashboard = ({
     dropFilesDesc: "Gorseller, PDF'ler ve dokumanlar desteklenir",
     agentThinking: "Klawpen Agent dusunuyor",
     agentThinkingDesc: "Istegini okuyup siradaki degisikligi hazirliyor.",
+    buildOverlayTitle: "Websiteniz oluşturuluyor",
+    buildOverlayDesc:
+      "Klawpen Core brief'i analiz ediyor, kod yazıyor ve önizlemeyi hazırlıyor.",
+    buildOverlayStepAnalyze: "Brief analizi",
+    buildOverlayStepCode: "Kod üretimi",
+    buildOverlayStepPreview: "Önizleme yenileme",
+    buildOverlayChangedFiles: "Canlı dosya aktivitesi",
     askFollowUp: "Kod hakkinda sor...",
     welcomeAssistantName: "Asistan",
     welcomeTitle: "Next.js projen hazir. Ben burada gelistirme, duzenleme ve yayinlama akisinda yardim etmek icin varim.",
@@ -1685,6 +1702,14 @@ export const WorkspaceDashboard = ({
     setInputValue("");
     setPendingFiles([]);
     setIsLoading(true);
+    setBuildProgress({
+      stage: "scan",
+      title: settingsLabels.buildOverlayTitle,
+      description: settingsLabels.buildOverlayDesc,
+      percent: 8,
+      files: [],
+    });
+    setRecentBuildFiles([]);
 
     streamCancelRef.current?.();
 
@@ -1718,6 +1743,25 @@ export const WorkspaceDashboard = ({
       (data) => {
         if (data.type === "user") {
           setMessages((prev) => [...prev, data.data]);
+        } else if (data.type === "progress") {
+          const progress = data.data as BuildProgress;
+          setBuildProgress(progress);
+          if (progress.files?.length) {
+            setRecentBuildFiles((prev) =>
+              Array.from(
+                new Set([...(progress.files || []), ...prev])
+              ).slice(0, 8)
+            );
+          }
+          if (
+            (progress.stage === "apply" || progress.stage === "refresh") &&
+            progress.files?.length
+          ) {
+            setWorkspaceRefreshVersion((version) => version + 1);
+          }
+          if (progress.stage === "refresh") {
+            setViewMode("preview");
+          }
         } else if (data.type === "assistant") {
           setStreamingMessageId(data.data.id);
           setMessages((prev) => {
@@ -1736,6 +1780,7 @@ export const WorkspaceDashboard = ({
           });
         } else if (data.type === "done") {
           setStreamingMessageId(null);
+          setBuildProgress(null);
           refreshWorkspaceAfterAiEdit(data.data);
         }
       },
@@ -1743,6 +1788,7 @@ export const WorkspaceDashboard = ({
         console.error("Streaming error:", error);
         setIsLoading(false);
         setStreamingMessageId(null);
+        setBuildProgress(null);
 
         if (error.includes("413") || error.includes("Payload Too Large")) {
           toast.error(
@@ -1763,6 +1809,7 @@ export const WorkspaceDashboard = ({
       () => {
         setIsLoading(false);
         setStreamingMessageId(null);
+        setBuildProgress(null);
       }
     );
 
@@ -2189,6 +2236,23 @@ export const WorkspaceDashboard = ({
     });
   };
 
+  const activeBuildProgress = buildProgress || {
+    stage: "draft" as const,
+    title: settingsLabels.buildOverlayTitle,
+    description: settingsLabels.buildOverlayDesc,
+    percent: 12,
+    files: recentBuildFiles,
+  };
+  const buildSteps = [
+    { key: "scan", label: settingsLabels.buildOverlayStepAnalyze, doneAt: 28 },
+    { key: "draft", label: settingsLabels.buildOverlayStepCode, doneAt: 78 },
+    { key: "refresh", label: settingsLabels.buildOverlayStepPreview, doneAt: 96 },
+  ];
+  const visibleBuildFiles = (activeBuildProgress.files?.length
+    ? activeBuildProgress.files
+    : recentBuildFiles
+  ).slice(0, 5);
+
   const WelcomeMessage = () => (
     <div className="mb-3 flex flex-col items-start">
       <div className="mb-1.5 flex items-center gap-1.5">
@@ -2582,6 +2646,123 @@ export const WorkspaceDashboard = ({
                       labels={previewLabels}
                     />
                   </div>
+                  {isLoading && (
+                    <div className="absolute inset-0 z-30 flex items-center justify-center bg-slate-950/22 p-4 backdrop-blur-[6px]">
+                      <div
+                        className={`w-full max-w-md overflow-hidden rounded-[28px] border p-5 shadow-[0_30px_90px_rgba(15,23,42,0.28)] ${
+                          isDark
+                            ? "border-white/10 bg-[#1f2022]/88 text-slate-100"
+                            : "border-white/70 bg-white/88 text-slate-900"
+                        }`}
+                      >
+                        <div className="flex items-start gap-3">
+                          <div className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[#1689ff]/12 text-[#1689ff]">
+                            <span className="absolute h-8 w-8 animate-ping rounded-2xl bg-[#1689ff]/18" />
+                            <Terminal className="relative h-5 w-5" />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm font-semibold tracking-[-0.02em]">
+                              {activeBuildProgress.title}
+                            </p>
+                            <p
+                              className={`mt-1 text-xs leading-5 ${
+                                isDark ? "text-slate-400" : "text-slate-500"
+                              }`}
+                            >
+                              {activeBuildProgress.description}
+                            </p>
+                          </div>
+                          <span className="rounded-full bg-[#1689ff]/12 px-2 py-1 text-[10px] font-semibold text-[#1689ff]">
+                            {Math.max(1, Math.min(99, activeBuildProgress.percent))}%
+                          </span>
+                        </div>
+
+                        <div
+                          className={`mt-5 h-2 overflow-hidden rounded-full ${
+                            isDark ? "bg-white/10" : "bg-slate-900/10"
+                          }`}
+                        >
+                          <div
+                            className="h-full rounded-full bg-[linear-gradient(90deg,#1689ff,#7cc7ff)] transition-all duration-500"
+                            style={{
+                              width: `${Math.max(
+                                5,
+                                Math.min(99, activeBuildProgress.percent)
+                              )}%`,
+                            }}
+                          />
+                        </div>
+
+                        <div className="mt-5 grid gap-2 sm:grid-cols-3">
+                          {buildSteps.map((step) => {
+                            const active = activeBuildProgress.percent >= step.doneAt;
+
+                            return (
+                              <div
+                                key={step.key}
+                                className={`rounded-2xl border px-3 py-2 text-[11px] transition-all ${
+                                  active
+                                    ? "border-[#1689ff]/35 bg-[#1689ff]/10 text-[#1689ff]"
+                                    : isDark
+                                      ? "border-white/10 bg-white/[0.03] text-slate-400"
+                                      : "border-slate-200 bg-slate-50 text-slate-500"
+                                }`}
+                              >
+                                <span className="flex items-center gap-2">
+                                  <span
+                                    className={`h-1.5 w-1.5 rounded-full ${
+                                      active
+                                        ? "bg-[#1689ff]"
+                                        : isDark
+                                          ? "bg-slate-600"
+                                          : "bg-slate-300"
+                                    }`}
+                                  />
+                                  {step.label}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        <div
+                          className={`mt-5 rounded-2xl border p-3 ${
+                            isDark
+                              ? "border-white/10 bg-black/18"
+                              : "border-slate-200 bg-slate-50/80"
+                          }`}
+                        >
+                          <div className="mb-2 flex items-center justify-between">
+                            <span
+                              className={`text-[11px] font-semibold ${
+                                isDark ? "text-slate-300" : "text-slate-600"
+                              }`}
+                            >
+                              {settingsLabels.buildOverlayChangedFiles}
+                            </span>
+                            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#1689ff]" />
+                          </div>
+                          <div className="space-y-1.5">
+                            {(visibleBuildFiles.length
+                              ? visibleBuildFiles
+                              : ["src/app/page.tsx"]
+                            ).map((file) => (
+                              <div
+                                key={file}
+                                className={`truncate rounded-xl px-2.5 py-1.5 font-mono text-[11px] ${
+                                  isDark
+                                    ? "bg-white/[0.04] text-slate-300"
+                                    : "bg-white text-slate-600"
+                                }`}
+                              >
+                                {file}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </section>
 
