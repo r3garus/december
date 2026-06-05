@@ -403,6 +403,10 @@ If a short request has clear build intent, infer missing details professionally.
 Do not create a generic SaaS/agency brief unless the user's domain is actually SaaS/agency.
 If the user names a sector, make the brief sector-specific: page order, proof points,
 CTA logic, objections, copy tone, and visual direction must match that sector.
+The generated preview UI must use the user's prompt language for all visible copy:
+- navigation labels, route titles, hero text, CTAs, cards, FAQ, forms, error/empty states, metadata, and microcopy
+- code identifiers may stay in English, but customer-visible text must not switch language
+- if the prompt is Turkish, use correct Turkish characters such as ç, ğ, ı, İ, ö, ş, ü
 For broad website/app requests, plan a real multi-route project by default:
 - Home route plus 2-4 supporting routes such as about, services/features, pricing/menu/treatments, FAQ, contact, dashboard, or blog when sensible.
 - Shared content/config data, reusable components, responsive navigation, and meaningful page transitions.
@@ -440,6 +444,9 @@ Deliver production-minded quality:
 - do not generate a centered hero followed by identical cards unless the user explicitly asks for a minimal template
 - when the user asks for pages such as pricing, FAQ, contact, dashboard, login, register, blog, or about, create those routes/files instead of only naming them in nav
 - keep copy in the user's language and make it specific enough that it cannot be reused for an unrelated sector
+- all customer-visible UI copy must match the user's prompt language: navigation, headings, CTA buttons, route page titles, form labels, FAQ, cards, status/empty/error text, and metadata
+- if the prompt is Turkish, use natural Turkish with Turkish characters; do not leave English labels such as Home, Services, About, Contact, Get Started, Learn More, Features, Pricing, or FAQ in the preview
+- code identifiers, component names, filenames, and comments may stay in English; only visible UI copy must follow the prompt language
 - Klawpen is the builder brand, not the default brand for the generated customer website; do not name the generated project "Klawpen", "Klawpen Cloud", or "Klawpen Studio" unless the user explicitly asks for it
 `;
 
@@ -474,6 +481,8 @@ Rules:
 - FAIL when the visual system is basic, repeated, or looks like a logo/title swap.
 - FAIL broad website/application builds that lack shared components/content/config structure.
 - FAIL broad website/application builds that have no purposeful animation, transition, hover state, or motion system unless the user requested static/minimal.
+- FAIL outputs where visible UI copy uses a different language than the user's prompt.
+- FAIL Turkish-prompt outputs that leave common English UI labels visible, such as Home, Services, About, Contact, Get Started, Learn More, Features, Pricing, or FAQ.
 - FAIL outputs that use Klawpen, Klawpen Cloud, or Klawpen Studio as the generated customer brand unless the user explicitly requested Klawpen itself.
 - Keep feedback specific and actionable.
 `;
@@ -1228,6 +1237,36 @@ function shouldRepairGeneratedBrandReuse(
       operation.content || ""
     )
   );
+}
+
+function shouldRepairVisibleLanguageMismatch(
+  userMessage: string,
+  assistantContent: string
+) {
+  const writes = getWriteOperations(assistantContent);
+  if (!writes.length) return false;
+
+  const visibleCopy = writes
+    .map((operation) => operation.content || "")
+    .join("\n")
+    .replace(/\/\/.*$/gm, "")
+    .replace(/\/\*[\s\S]*?\*\//g, "");
+
+  if (isLikelyTurkish(userMessage)) {
+    const englishUiLabels =
+      /(["'`>])\s*(Home|Services|Service|About|About us|Contact|Get Started|Get started|Start Now|Learn More|Learn more|Features|Pricing|FAQ|Book now|Book Now|Request demo|View details|Explore|Sign in|Sign up|Subscribe|Dashboard|Testimonials|Case Studies|Case studies)\s*(["'`<])/i;
+    const turkishSignalCount = (
+      visibleCopy.match(/[çğıİöşü]|(Ana sayfa|Hizmetler|Hakkımızda|İletişim|Başla|Daha fazla|Özellikler|Fiyatlar|SSS|Randevu|Demo|Giriş|Kayıt)/gi) ||
+      []
+    ).length;
+
+    return englishUiLabels.test(visibleCopy) || turkishSignalCount < 3;
+  }
+
+  const turkishUiLabels =
+    /(["'`>])\s*(Ana sayfa|Hizmetler|Hakkımızda|İletişim|Başla|Hemen başla|Daha fazla|Özellikler|Fiyatlar|SSS|Randevu al|Demo iste|Giriş yap|Kayıt ol|Abone ol|Panel|Yorumlar)\s*(["'`<])/i;
+
+  return turkishUiLabels.test(visibleCopy);
 }
 
 function normalizePromptText(userMessage: string) {
@@ -2165,6 +2204,9 @@ async function createBuilderResponse(
         "Return exactly one <dec-code> block.",
         "Use executable edit tags only.",
         "Rewrite src/app/page.tsx completely.",
+        isLikelyTurkish(userMessage)
+          ? "VISIBLE UI LANGUAGE: Turkish. Every preview-visible label, heading, CTA, form label, FAQ, route title, metadata title/description, empty state, and error/status text must be Turkish with correct Turkish characters. Do not leave English UI labels like Home, Services, Contact, Get Started, Learn More, Features, Pricing, or FAQ."
+          : "VISIBLE UI LANGUAGE: English. Every preview-visible label, heading, CTA, form label, FAQ, route title, metadata title/description, empty state, and error/status text must be English.",
         isBroadBuildRequest(userMessage, options) &&
         !isExplicitSinglePageRequest(userMessage)
           ? [
@@ -2369,8 +2411,17 @@ async function repairMissingExecutableEdits(params: {
     params.userMessage,
     params.draft
   );
+  const languageMismatch = shouldRepairVisibleLanguageMismatch(
+    params.userMessage,
+    params.draft
+  );
 
-  if (!missingExecutableEdits && !shallowBroadBuild && !reusedBuilderBrand) {
+  if (
+    !missingExecutableEdits &&
+    !shallowBroadBuild &&
+    !reusedBuilderBrand &&
+    !languageMismatch
+  ) {
     return params.draft;
   }
 
@@ -2380,6 +2431,7 @@ async function repairMissingExecutableEdits(params: {
       missingExecutableEdits,
       shallowBroadBuild,
       reusedBuilderBrand,
+      languageMismatch,
     }
   );
 
@@ -2387,7 +2439,9 @@ async function repairMissingExecutableEdits(params: {
     ? "The previous assistant output is invalid because it did not contain executable edit operations."
     : shallowBroadBuild
       ? "The previous assistant output was too shallow for a broad build: it did not create enough real routes, shared structure, motion, or implementation depth."
-      : "The previous assistant output reused Klawpen as the customer-facing generated brand without user intent.";
+      : reusedBuilderBrand
+        ? "The previous assistant output reused Klawpen as the customer-facing generated brand without user intent."
+        : "The previous assistant output used visible UI copy in a different language than the user's prompt.";
 
   const repairInput = `
 SYSTEM:
@@ -2404,6 +2458,10 @@ For this build request, rewrite src/app/page.tsx and create a real multi-page Ap
 - real links between pages and meaningful CTAs
 - purposeful modern motion: transitions, hover states, reveal animations, or CSS keyframes
 The implementation must feel prompt-specific, visually polished, responsive, and complete enough to preview as a professional first version.
+Visible UI language requirement:
+- The user's prompt language is ${isLikelyTurkish(params.userMessage) ? "Turkish" : "English"}.
+- All customer-visible UI copy must be ${isLikelyTurkish(params.userMessage) ? "Turkish with correct Turkish characters" : "English"}: navigation, page titles, headings, CTA buttons, cards, forms, FAQ, empty/error states, and metadata.
+- Code identifiers and filenames may remain English, but preview text must not switch language.
 Do not use Klawpen, Klawpen Cloud, or Klawpen Studio as the customer-facing site name unless the user explicitly asks for Klawpen.
 Do not use markdown code fences. Do not only explain. Do not repeat the previous invalid response.
 
@@ -2430,13 +2488,14 @@ ${clipText(params.codeContext, 80_000)}
     if (hasExecutableCodeOperations(repaired)) {
       if (
         !shouldRepairBuildDepth(params.userMessage, repaired, params.options) &&
-        !shouldRepairGeneratedBrandReuse(params.userMessage, repaired)
+        !shouldRepairGeneratedBrandReuse(params.userMessage, repaired) &&
+        !shouldRepairVisibleLanguageMismatch(params.userMessage, repaired)
       ) {
         return repaired;
       }
 
       console.warn(
-        "AI repair response was executable but still too shallow or reused builder branding; falling back to structured local build."
+        "AI repair response was executable but still too shallow, reused builder branding, or mixed visible UI language; falling back to structured local build."
       );
     }
 
@@ -2622,6 +2681,7 @@ ${BUILDER_SYSTEM_PROMPT}
 BUILD OPTIONS:
 - Plan mode: ${options.planMode ? "enabled" : "disabled"}
 - Quality target: polished Klawpen/Replit-style product prototype, not a basic template
+- Visible UI language: ${isLikelyTurkish(userMessage) ? "Turkish. All preview-visible copy must be Turkish with correct Turkish characters." : "English. All preview-visible copy must be English."}
 
 PLANNER BRIEF:
 ${plannerBrief}
