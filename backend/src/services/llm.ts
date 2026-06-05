@@ -2,6 +2,7 @@ import OpenAI from "openai";
 import { config } from "../../config";
 import prompt from "../utils/prompt.txt";
 import {
+  getAiProviders,
   recordProviderRequest,
   selectAiProvider,
   type AiProviderConfig,
@@ -89,9 +90,12 @@ interface BuildProgress {
   stage:
     | "scan"
     | "plan"
+    | "architect"
     | "draft"
     | "review"
+    | "validate"
     | "repair"
+    | "verify"
     | "apply"
     | "refresh";
   title: string;
@@ -105,9 +109,45 @@ type ProgressReporter = (progress: BuildProgress) => void | Promise<void>;
 interface BuildOptions {
   planMode?: boolean;
   forceBuild?: boolean;
+  qualityMode?: "fast" | "standard" | "power";
+  powerMode?: boolean;
 }
 
 const chatSessions = new Map<string, ChatSession>();
+
+const POWER_BUILD_AUTO_ENABLED = process.env.KLAWPEN_POWER_BUILD_AUTO !== "false";
+const ARCHITECT_SPEC_ENABLED =
+  process.env.KLAWPEN_ENABLE_ARCHITECT_SPEC !== "false";
+const BUILD_GATE_ENABLED = process.env.KLAWPEN_ENABLE_BUILD_GATE === "true";
+const PREVIEW_CHECK_ENABLED = process.env.KLAWPEN_ENABLE_PREVIEW_CHECK === "true";
+const CROSS_REVIEW_ENABLED = process.env.KLAWPEN_ENABLE_CROSS_REVIEW !== "false";
+
+interface ResolvedBuildOptions extends BuildOptions {
+  qualityMode: "fast" | "standard" | "power";
+  powerMode: boolean;
+}
+
+interface ArchitectSpecRoute {
+  path: string;
+  purpose: string;
+  visibleTitle: string;
+}
+
+interface ArchitectSpec {
+  projectType: string;
+  language: "tr" | "en";
+  routes: ArchitectSpecRoute[];
+  designDirection: string;
+  animationPlan: string[];
+  components: string[];
+  contentFiles: string[];
+  acceptanceCriteria: string[];
+}
+
+interface ValidationResult {
+  passed: boolean;
+  issues: string[];
+}
 
 const BUILD_INTENT_PATTERN =
   /\b(yap|yapal[ıi]m|olu[sş]tur|haz[ıi]rla|kur|geli[sş]tir|ekle|de[gğ]i[sş]tir|d[üu]zelt|kald[ıi]r|sil|tasarla|kodla|g[üu]ncelle|ayarla|[çc][ıi]kar|koy|olsun|build|create|make|add|change|update|fix|remove|delete|design|implement|generate)\b/i;
@@ -241,6 +281,10 @@ function getBuildProgressCopy(
       tr: ["Brief netleştiriliyor", "İstek sektöre, hedefe ve sayfa akışına çevriliyor."],
       en: ["Shaping the brief", "Translating the prompt into product, audience, and page flow."],
     },
+    architect: {
+      tr: ["Mimari plan çıkarılıyor", "Sayfalar, bileşenler, içerik dili ve kabul kriterleri netleştiriliyor."],
+      en: ["Creating architecture", "Defining routes, components, content language, and acceptance criteria."],
+    },
     draft: {
       tr: ["Kod yazılıyor", "Klawpen Core sayfa yapısını ve arayüz detaylarını üretiyor."],
       en: ["Writing code", "Klawpen Core is generating the page structure and UI details."],
@@ -249,9 +293,17 @@ function getBuildProgressCopy(
       tr: ["Kalite kontrol yapılıyor", "Kod, tasarım hiyerarşisi ve uygulanabilirlik kontrol ediliyor."],
       en: ["Reviewing quality", "Checking code, design hierarchy, and applicability."],
     },
+    validate: {
+      tr: ["Kapsam doğrulanıyor", "Route, dil, bileşen ve animasyon gereksinimleri taslağa karşı kontrol ediliyor."],
+      en: ["Validating scope", "Checking routes, language, components, and motion requirements against the draft."],
+    },
     repair: {
       tr: ["Eksikler onarılıyor", "Eksik edit komutları veya bozuk çıktı düzeltiliyor."],
       en: ["Repairing output", "Fixing missing edit operations or invalid output."],
+    },
+    verify: {
+      tr: ["Teknik doğrulama yapılıyor", "Opsiyonel build ve preview kontrolleri yalnızca güvenli modda çalıştırılıyor."],
+      en: ["Running technical checks", "Optional build and preview gates run only in safe gated mode."],
     },
     apply: {
       tr: ["Dosyalar güncelleniyor", "Üretilen değişiklikler proje dosyalarına uygulanıyor."],
@@ -1113,6 +1165,42 @@ function isBroadBuildRequest(message: string, options: BuildOptions = {}) {
       normalized
     ) || options.forceBuild === true
   );
+}
+
+function resolveBuildOptions(
+  userMessage: string,
+  options: BuildOptions = {},
+  workloadEstimate?: AiWorkloadEstimate
+): ResolvedBuildOptions {
+  const broadBuild =
+    isBroadBuildRequest(userMessage, options) &&
+    !isExplicitSinglePageRequest(userMessage);
+  const explicitlyPower =
+    options.powerMode === true || options.qualityMode === "power";
+  const explicitlyFast = options.qualityMode === "fast";
+  const workloadIsHeavy =
+    workloadEstimate?.tier === "heavy" || workloadEstimate?.tier === "extreme";
+  const powerMode =
+    !explicitlyFast &&
+    (explicitlyPower ||
+      (POWER_BUILD_AUTO_ENABLED &&
+        (broadBuild || workloadIsHeavy || options.planMode === true)));
+
+  const qualityMode: ResolvedBuildOptions["qualityMode"] = powerMode
+    ? "power"
+    : explicitlyFast
+      ? "fast"
+      : "standard";
+
+  return {
+    ...options,
+    qualityMode,
+    powerMode,
+  };
+}
+
+function shouldUsePowerBuildLayer(options: BuildOptions = {}) {
+  return options.powerMode === true || options.qualityMode === "power";
 }
 
 function getWriteOperations(assistantContent: string) {
@@ -2187,6 +2275,478 @@ function createLocalPlannerBrief(
     "Acceptance Checklist: At least 3 real page routes, shared component/content structure, responsive layout, meaningful sector-specific copy, accessible HTML, no broken imports, no one-page/template feel.",
   ].join("\n");
 }
+
+function shouldCreateArchitectSpec(
+  userMessage: string,
+  options: BuildOptions = {}
+) {
+  return (
+    ARCHITECT_SPEC_ENABLED &&
+    shouldUsePowerBuildLayer(options) &&
+    isBroadBuildRequest(userMessage, options) &&
+    !isExplicitSinglePageRequest(userMessage)
+  );
+}
+
+function normalizeArchitectRoutePath(routePath: string): string {
+  const normalized = `/${String(routePath || "")
+    .trim()
+    .replace(/^\/+/, "")
+    .replace(/\/+$/, "")}`;
+
+  if (normalized === "/") return "/";
+  if (!/^\/[a-z0-9][a-z0-9-/]*$/i.test(normalized)) return "/";
+  return normalized.replace(/\/+/g, "/").toLowerCase();
+}
+
+function routePathToPageFile(routePath: string): string {
+  const normalized = normalizeArchitectRoutePath(routePath);
+  return normalized === "/"
+    ? "src/app/page.tsx"
+    : `src/app${normalized}/page.tsx`;
+}
+
+function dedupeArchitectRoutes(routes: ArchitectSpecRoute[]) {
+  const seen = new Set<string>();
+  const cleaned: ArchitectSpecRoute[] = [];
+
+  for (const route of routes) {
+    const pathName = normalizeArchitectRoutePath(route.path);
+    if (seen.has(pathName)) continue;
+    seen.add(pathName);
+    cleaned.push({
+      path: pathName,
+      purpose: String(route.purpose || "Support the conversion flow").slice(0, 180),
+      visibleTitle: String(route.visibleTitle || pathName || "Home").slice(0, 80),
+    });
+  }
+
+  return cleaned;
+}
+
+function createLocalArchitectSpec(userMessage: string): ArchitectSpec {
+  const turkish = isLikelyTurkish(userMessage);
+  const plain = normalizePromptText(userMessage);
+  const profile = chooseFallbackProfile(userMessage);
+  const isRestaurant = /restoran|restaurant|cafe|kahve|menu/.test(plain);
+  const isDental = /dis|dent|ortodont|klinik|implant/.test(plain);
+  const isSaas = /saas|software|dashboard|crm|app|platform|urun|product/.test(plain);
+  const isLegal = /avukat|hukuk|law|legal/.test(plain);
+
+  const routeLabels = turkish
+    ? {
+        home: "Ana sayfa",
+        services: isRestaurant
+          ? "Menü"
+          : isDental
+            ? "Tedaviler"
+            : isLegal
+              ? "Uzmanlıklar"
+              : isSaas
+                ? "Özellikler"
+                : "Hizmetler",
+        proof: isSaas ? "Fiyatlar" : "Süreç",
+        contact: "İletişim",
+      }
+    : {
+        home: "Home",
+        services: isRestaurant
+          ? "Menu"
+          : isDental
+            ? "Treatments"
+            : isLegal
+              ? "Practice Areas"
+              : isSaas
+                ? "Features"
+                : "Services",
+        proof: isSaas ? "Pricing" : "Process",
+        contact: "Contact",
+      };
+
+  const servicePath = isRestaurant
+    ? "/menu"
+    : isDental
+      ? "/treatments"
+      : isLegal
+        ? "/practice-areas"
+        : isSaas
+          ? "/features"
+          : "/services";
+  const proofPath = isSaas ? "/pricing" : "/process";
+
+  return {
+    projectType: `${profile.sector} ${isSaas ? "product" : "website"} prototype`,
+    language: turkish ? "tr" : "en",
+    routes: [
+      {
+        path: "/",
+        purpose: turkish
+          ? "Marka vaadini, güven unsurlarını ve ana dönüşüm aksiyonunu anlatır."
+          : "Explain the brand promise, trust proof, and primary conversion action.",
+        visibleTitle: routeLabels.home,
+      },
+      {
+        path: servicePath,
+        purpose: turkish
+          ? "Ana hizmet/ürün mimarisini sektöre özel ve karar vermeyi kolaylaştıracak şekilde detaylandırır."
+          : "Detail the service/product architecture in a domain-specific decision-friendly way.",
+        visibleTitle: routeLabels.services,
+      },
+      {
+        path: proofPath,
+        purpose: turkish
+          ? "Karar sürecini güçlendiren paket, süreç, kanıt veya karşılaştırma bilgilerini sunar."
+          : "Show package, process, proof, or comparison content that strengthens decision-making.",
+        visibleTitle: routeLabels.proof,
+      },
+      {
+        path: "/contact",
+        purpose: turkish
+          ? "Form, iletişim bilgisi ve son CTA ile dönüşümü tamamlar."
+          : "Complete the conversion flow with a form, contact details, and final CTA.",
+        visibleTitle: routeLabels.contact,
+      },
+    ],
+    designDirection: turkish
+      ? `Sektöre özel ${profile.layout} kompozisyon; güçlü tipografi, bilinçli renk paleti, modern kart geometrisi ve prompt'a özel görsel ritim.`
+      : `Domain-specific ${profile.layout} composition with strong typography, deliberate palette, modern card geometry, and prompt-specific visual rhythm.`,
+    animationPlan: turkish
+      ? [
+          "Sayfa yüklenirken yumuşak reveal geçişleri",
+          "Kartlarda hover/press geri bildirimi",
+          "Route ve bölüm geçişlerinde hissedilir ama hafif motion",
+        ]
+      : [
+          "Soft page-load reveal transitions",
+          "Hover/press feedback on cards",
+          "Noticeable but lightweight route and section motion",
+        ],
+    components: [
+      "src/components/site-shell.tsx",
+      "src/components/site-sections.tsx",
+      "src/components/animated-card.tsx",
+    ],
+    contentFiles: ["src/lib/site-content.ts"],
+    acceptanceCriteria: turkish
+      ? [
+          "En az 3 gerçek App Router route dosyası oluşturulmalı.",
+          "Görünen tüm metinler Türkçe ve doğru Türkçe karakterlerle yazılmalı.",
+          "Tek sayfalık jenerik template hissi olmamalı.",
+          "Ortak component ve content/config yapısı kullanılmalı.",
+          "Responsive, erişilebilir ve animasyonlu ilk sürüm olmalı.",
+        ]
+      : [
+          "Create at least 3 real App Router route files.",
+          "All preview-visible copy must be English.",
+          "Avoid one-page generic template feel.",
+          "Use shared components and content/config structure.",
+          "Ship a responsive, accessible, animated first version.",
+        ],
+  };
+}
+
+function sanitizeArchitectSpec(
+  value: Partial<ArchitectSpec> | null,
+  fallback: ArchitectSpec
+): ArchitectSpec {
+  const routes = Array.isArray(value?.routes)
+    ? dedupeArchitectRoutes(
+        value.routes
+          .filter(Boolean)
+          .map((route) => ({
+            path: String((route as ArchitectSpecRoute).path || "/"),
+            purpose: String((route as ArchitectSpecRoute).purpose || ""),
+            visibleTitle: String((route as ArchitectSpecRoute).visibleTitle || ""),
+          }))
+      )
+    : [];
+  const mergedRoutes = dedupeArchitectRoutes([
+    ...(routes.some((route) => route.path === "/") ? [] : fallback.routes.slice(0, 1)),
+    ...routes,
+    ...fallback.routes,
+  ]).slice(0, 5);
+
+  return {
+    projectType: String(value?.projectType || fallback.projectType).slice(0, 120),
+    language: value?.language === "en" || value?.language === "tr"
+      ? value.language
+      : fallback.language,
+    routes: mergedRoutes.length >= 3 ? mergedRoutes : fallback.routes,
+    designDirection: String(value?.designDirection || fallback.designDirection).slice(
+      0,
+      500
+    ),
+    animationPlan:
+      Array.isArray(value?.animationPlan) && value.animationPlan.length
+        ? value.animationPlan.map(String).slice(0, 6)
+        : fallback.animationPlan,
+    components:
+      Array.isArray(value?.components) && value.components.length
+        ? value.components.map(String).slice(0, 8)
+        : fallback.components,
+    contentFiles:
+      Array.isArray(value?.contentFiles) && value.contentFiles.length
+        ? value.contentFiles.map(String).slice(0, 6)
+        : fallback.contentFiles,
+    acceptanceCriteria:
+      Array.isArray(value?.acceptanceCriteria) && value.acceptanceCriteria.length
+        ? value.acceptanceCriteria.map(String).slice(0, 10)
+        : fallback.acceptanceCriteria,
+  };
+}
+
+function extractJsonObject<T>(text: string): T | null {
+  const cleaned = text
+    .replace(/^```(?:json)?/i, "")
+    .replace(/```$/i, "")
+    .trim();
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
+
+  if (start < 0 || end <= start) return null;
+
+  try {
+    return JSON.parse(cleaned.slice(start, end + 1)) as T;
+  } catch {
+    return null;
+  }
+}
+
+async function createArchitectSpec(params: {
+  userMessage: string;
+  plannerBrief: string;
+  recentMessages: string;
+  provider: AiProviderConfig;
+}): Promise<ArchitectSpec> {
+  const fallback = createLocalArchitectSpec(params.userMessage);
+  const turkish = isLikelyTurkish(params.userMessage);
+  const system = `
+You are Klawpen Core's product architect.
+Create a compact JSON implementation spec for a professional multi-page Next.js App Router build.
+Return JSON only. No markdown.
+Schema:
+{
+  "projectType": "short type",
+  "language": "tr" | "en",
+  "routes": [{"path": "/", "purpose": "short", "visibleTitle": "label"}],
+  "designDirection": "specific visual direction",
+  "animationPlan": ["short motion requirement"],
+  "components": ["src/components/example.tsx"],
+  "contentFiles": ["src/lib/site-content.ts"],
+  "acceptanceCriteria": ["testable criterion"]
+}
+Rules:
+- Language must be ${turkish ? "tr" : "en"}.
+- Use 3-5 real routes. The home route must be "/".
+- Routes must match the user's domain, not a generic SaaS template.
+- Prefer reusable components and content/config files.
+- The spec must protect quality without making tiny edits slow; this is only for power builds.
+`;
+  const user = `
+RECENT_CONVERSATION:
+${clipText(params.recentMessages || "No recent conversation.", 8_000)}
+
+PLANNER_BRIEF:
+${clipText(params.plannerBrief, 12_000)}
+
+USER_REQUEST:
+${params.userMessage}
+
+LOCAL_FALLBACK_SPEC:
+${JSON.stringify(fallback, null, 2)}
+`;
+
+  try {
+    const raw = await createAiChatText({
+      provider: params.provider,
+      system,
+      user,
+      temperature: 0.08,
+      retries: 1,
+    });
+    const parsed = extractJsonObject<Partial<ArchitectSpec>>(raw);
+    return sanitizeArchitectSpec(parsed, fallback);
+  } catch (error) {
+    console.warn(
+      "AI architect spec failed; continuing with local architect spec:",
+      error instanceof Error ? error.message : error
+    );
+    return fallback;
+  }
+}
+
+function formatArchitectSpec(spec: ArchitectSpec | null): string {
+  return spec ? JSON.stringify(spec, null, 2) : "No architect spec required.";
+}
+
+function validateBuildAgainstSpec(params: {
+  userMessage: string;
+  assistantContent: string;
+  spec: ArchitectSpec | null;
+  options?: BuildOptions;
+}): ValidationResult {
+  const issues: string[] = [];
+  const { userMessage, assistantContent, spec } = params;
+  const options = params.options || {};
+
+  if (!hasBuildIntent(userMessage, options)) {
+    return { passed: true, issues };
+  }
+
+  if (!hasExecutableCodeOperations(assistantContent)) {
+    issues.push("The response has no executable edit operations.");
+  }
+
+  if (shouldRepairGeneratedBrandReuse(userMessage, assistantContent)) {
+    issues.push("The generated customer-facing brand reuses Klawpen without user intent.");
+  }
+
+  if (shouldRepairVisibleLanguageMismatch(userMessage, assistantContent)) {
+    issues.push(
+      isLikelyTurkish(userMessage)
+        ? "Visible UI copy does not consistently use Turkish with correct Turkish characters."
+        : "Visible UI copy does not consistently use English."
+    );
+  }
+
+  if (
+    isBroadBuildRequest(userMessage, options) &&
+    !isExplicitSinglePageRequest(userMessage)
+  ) {
+    if (hasShallowBroadBuildStructure(assistantContent)) {
+      issues.push(
+        "Broad build is too shallow: it needs real routes, shared components, content/config structure, motion, and deeper implementation."
+      );
+    }
+
+    const writes = getWriteOperations(assistantContent);
+    const writtenPaths = new Set(
+      writes.map((operation) => normalizeProjectPath(operation.path || ""))
+    );
+    const requiredRoutes = spec?.routes?.length
+      ? spec.routes.slice(0, 4)
+      : createLocalArchitectSpec(userMessage).routes.slice(0, 3);
+
+    for (const route of requiredRoutes) {
+      const routeFile = routePathToPageFile(route.path);
+      if (!writtenPaths.has(routeFile)) {
+        issues.push(
+          `Architect spec route "${route.path}" is missing; write ${routeFile}.`
+        );
+      }
+    }
+
+    if (spec?.components?.length) {
+      const hasAnySpecComponent = spec.components.some((filePath) =>
+        writtenPaths.has(normalizeProjectPath(filePath))
+      );
+      if (!hasAnySpecComponent && !hasComponentStructure(writes)) {
+        issues.push("Architect spec requires reusable shared components.");
+      }
+    }
+
+    if (spec?.contentFiles?.length) {
+      const hasAnySpecContentFile = spec.contentFiles.some((filePath) =>
+        writtenPaths.has(normalizeProjectPath(filePath))
+      );
+      if (!hasAnySpecContentFile && !hasContentStructure(writes)) {
+        issues.push("Architect spec requires a shared content/config/data file.");
+      }
+    }
+  }
+
+  return { passed: issues.length === 0, issues };
+}
+
+async function repairSpecValidationIssues(params: {
+  userMessage: string;
+  plannerBrief: string;
+  architectSpec: ArchitectSpec | null;
+  codeContext: string;
+  draft: string;
+  provider: AiProviderConfig;
+  options?: BuildOptions;
+}): Promise<string> {
+  if (!shouldUsePowerBuildLayer(params.options)) return params.draft;
+
+  const validation = validateBuildAgainstSpec({
+    userMessage: params.userMessage,
+    assistantContent: params.draft,
+    spec: params.architectSpec,
+    options: params.options,
+  });
+
+  if (validation.passed) return params.draft;
+
+  console.warn("Architect/spec validation failed; requesting repair:", validation.issues);
+
+  const repairInput = `
+SYSTEM:
+${prompt}
+
+${BUILDER_SYSTEM_PROMPT}
+
+You are repairing a draft that failed Klawpen's architect/spec validator.
+Return exactly one <dec-code> block with executable edit tags only.
+Do not explain outside the tags.
+
+USER_REQUEST:
+${params.userMessage}
+
+PLANNER_BRIEF:
+${params.plannerBrief}
+
+ARCHITECT_SPEC:
+${formatArchitectSpec(params.architectSpec)}
+
+VALIDATOR_ISSUES:
+${validation.issues.map((issue) => `- ${issue}`).join("\n")}
+
+PREVIOUS_DRAFT:
+${params.draft}
+
+CURRENT_CODEBASE_SNAPSHOT:
+${clipText(params.codeContext, 80_000)}
+`;
+
+  try {
+    const repaired = await createBuilderResponse(
+      repairInput,
+      params.provider,
+      params.userMessage,
+      params.options
+    );
+    const repairedValidation = validateBuildAgainstSpec({
+      userMessage: params.userMessage,
+      assistantContent: repaired,
+      spec: params.architectSpec,
+      options: params.options,
+    });
+
+    if (hasExecutableCodeOperations(repaired) && repairedValidation.passed) {
+      return repaired;
+    }
+
+    console.warn(
+      "Spec repair remained incomplete; keeping best executable response or falling back.",
+      repairedValidation.issues
+    );
+
+    return hasExecutableCodeOperations(repaired)
+      ? repaired
+      : buildFallbackAssistantContent(
+          params.userMessage,
+          "Architect/spec validation repair did not return executable edit tags."
+        );
+  } catch (error) {
+    console.warn(
+      "Spec validation repair failed; keeping previous draft:",
+      error instanceof Error ? error.message : error
+    );
+    return params.draft;
+  }
+}
+
 async function createBuilderResponse(
   input: string,
   provider: AiProviderConfig,
@@ -2247,6 +2807,29 @@ async function createCriticReview(
   return parseCriticResult(text);
 }
 
+function selectReviewerProvider(
+  currentProvider: AiProviderConfig,
+  options: BuildOptions = {}
+): AiProviderConfig {
+  if (!CROSS_REVIEW_ENABLED || !shouldUsePowerBuildLayer(options)) {
+    return currentProvider;
+  }
+
+  try {
+    const providers = getAiProviders();
+    const preferredReviewer =
+      providers.find(
+        (provider) =>
+          provider.key !== currentProvider.key &&
+          (provider.key === "sk" || provider.envPrefix === "SK")
+      ) || providers.find((provider) => provider.key !== currentProvider.key);
+
+    return preferredReviewer || currentProvider;
+  } catch {
+    return currentProvider;
+  }
+}
+
 async function createConversationalAnswer(
   userMessage: string,
   recentConversation: string,
@@ -2282,6 +2865,7 @@ ${userMessage}
 async function improveWithCriticLoop(params: {
   userMessage: string;
   plannerBrief: string;
+  architectSpec?: ArchitectSpec | null;
   codeContext: string;
   recentMessages: string;
   draft: string;
@@ -2289,6 +2873,10 @@ async function improveWithCriticLoop(params: {
   options?: BuildOptions;
 }): Promise<string> {
   let currentDraft = params.draft;
+  const reviewerProvider = selectReviewerProvider(
+    params.provider,
+    params.options
+  );
 
   for (let round = 1; round <= aiMaxCriticRounds; round++) {
     const criticInput = `
@@ -2304,6 +2892,9 @@ ${params.userMessage}
 PLANNER_BRIEF:
 ${params.plannerBrief}
 
+ARCHITECT_SPEC:
+${formatArchitectSpec(params.architectSpec || null)}
+
 RECENT_CONVERSATION:
 ${params.recentMessages || "No recent conversation."}
 
@@ -2313,7 +2904,7 @@ ${currentDraft}
 
     let critic: CriticResult;
     try {
-      critic = await createCriticReview(criticInput, params.provider);
+      critic = await createCriticReview(criticInput, reviewerProvider);
     } catch (error) {
       console.warn(
         "AI critic review failed; keeping the current executable draft:",
@@ -2343,6 +2934,9 @@ ${params.userMessage}
 
 PLANNER_BRIEF:
 ${params.plannerBrief}
+
+ARCHITECT_SPEC:
+${formatArchitectSpec(params.architectSpec || null)}
 
 QUALITY_FEEDBACK:
 ${critic.feedback}
@@ -2392,6 +2986,7 @@ ${params.codeContext}
 async function repairMissingExecutableEdits(params: {
   userMessage: string;
   plannerBrief: string;
+  architectSpec?: ArchitectSpec | null;
   codeContext: string;
   draft: string;
   provider: AiProviderConfig;
@@ -2471,6 +3066,9 @@ ${params.userMessage}
 PLANNER_BRIEF:
 ${params.plannerBrief}
 
+ARCHITECT_SPEC:
+${formatArchitectSpec(params.architectSpec || null)}
+
 PREVIOUS_INVALID_OUTPUT:
 ${params.draft}
 
@@ -2516,6 +3114,77 @@ ${clipText(params.codeContext, 80_000)}
       "AI repair pass failed before returning executable edit tags."
     );
   }
+}
+
+async function runPostApplyQualityGates(params: {
+  containerId: string;
+  userMessage: string;
+  assistantContent: string;
+  applyResult: { applied: number; failed: Array<{ label: string; error: string }> };
+  progress?: ProgressReporter;
+  options?: BuildOptions;
+}): Promise<string[]> {
+  const reports: string[] = [];
+
+  if (
+    !shouldUsePowerBuildLayer(params.options) ||
+    params.applyResult.applied <= 0 ||
+    params.applyResult.failed.length > 0
+  ) {
+    return reports;
+  }
+
+  const isBroad =
+    isBroadBuildRequest(params.userMessage, params.options) &&
+    !isExplicitSinglePageRequest(params.userMessage);
+
+  if (!isBroad) return reports;
+
+  if (BUILD_GATE_ENABLED) {
+    await params.progress?.(getBuildProgressCopy(params.userMessage, "verify", 92));
+
+    try {
+      const output = await withTimeout(
+        fileService.runProjectCommand(params.containerId, ["npm", "run", "build"]),
+        90_000,
+        "project build gate"
+      );
+      reports.push(
+        `Build gate passed.\n${clipText(output.trim() || "npm run build completed.", 2_000)}`
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      reports.push(`Build gate failed:\n${clipText(message, 3_000)}`);
+      console.warn("Build gate failed:", message);
+    }
+  }
+
+  if (PREVIEW_CHECK_ENABLED) {
+    await params.progress?.(
+      getBuildProgressCopy(params.userMessage, "verify", BUILD_GATE_ENABLED ? 94 : 92)
+    );
+
+    try {
+      const runtime = await dockerService.getPreviewRuntime(params.containerId);
+      const url = dockerService.buildRawPreviewUrl(runtime.port);
+      const response = await withTimeout(fetch(url), 20_000, "preview gate");
+      const html = await response.text();
+
+      if (!response.ok) {
+        reports.push(`Preview gate failed: ${response.status} ${response.statusText}`);
+      } else if (!html || html.length < 500) {
+        reports.push("Preview gate warning: preview HTML was unexpectedly small.");
+      } else {
+        reports.push(`Preview gate passed: ${url}`);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      reports.push(`Preview gate failed:\n${clipText(message, 2_000)}`);
+      console.warn("Preview gate failed:", message);
+    }
+  }
+
+  return reports;
 }
 
 export async function createChatSession(containerId: string): Promise<ChatSession> {
@@ -2626,6 +3295,11 @@ async function buildAssistantMessageFromSession(
   progress?: ProgressReporter,
   options: BuildOptions = {}
 ): Promise<{ assistantMessage: Message }> {
+  const resolvedOptions = resolveBuildOptions(
+    userMessage,
+    options,
+    workloadEstimate
+  );
   await progress?.(getBuildProgressCopy(userMessage, "scan", 8));
   const fileContentTree = await fileService.getFileContentTree(
     dockerService.docker,
@@ -2656,19 +3330,30 @@ async function buildAssistantMessageFromSession(
       .join("\n");
 
     let plannerBrief = createLocalPlannerBrief(userMessage, options);
+    let architectSpec: ArchitectSpec | null = null;
     await progress?.(getBuildProgressCopy(userMessage, "plan", 18));
     try {
       plannerBrief = await createPlannerBrief(
         userMessage,
         recentMessages,
         provider,
-        options
+        resolvedOptions
       );
     } catch (error) {
       console.warn(
         "AI planner failed; continuing with local planner brief:",
         error instanceof Error ? error.message : error
       );
+    }
+
+    if (shouldCreateArchitectSpec(userMessage, resolvedOptions)) {
+      await progress?.(getBuildProgressCopy(userMessage, "architect", 27));
+      architectSpec = await createArchitectSpec({
+        userMessage,
+        plannerBrief,
+        recentMessages,
+        provider,
+      });
     }
 
     await progress?.(getBuildProgressCopy(userMessage, "draft", 36, [
@@ -2679,12 +3364,17 @@ async function buildAssistantMessageFromSession(
 ${BUILDER_SYSTEM_PROMPT}
 
 BUILD OPTIONS:
-- Plan mode: ${options.planMode ? "enabled" : "disabled"}
+- Plan mode: ${resolvedOptions.planMode ? "enabled" : "disabled"}
+- Quality mode: ${resolvedOptions.qualityMode}
+- Power build: ${resolvedOptions.powerMode ? "enabled for this broad/heavy request" : "disabled for speed"}
 - Quality target: polished Klawpen/Replit-style product prototype, not a basic template
 - Visible UI language: ${isLikelyTurkish(userMessage) ? "Turkish. All preview-visible copy must be Turkish with correct Turkish characters." : "English. All preview-visible copy must be English."}
 
 PLANNER BRIEF:
 ${plannerBrief}
+
+ARCHITECT SPEC:
+${formatArchitectSpec(architectSpec)}
 
 CURRENT CODEBASE SNAPSHOT:
 ${codeContext}`;
@@ -2707,28 +3397,43 @@ ${codeContext}`;
         flattenedInput,
         provider,
         userMessage,
-        options
+        resolvedOptions
       );
 
       await progress?.(getBuildProgressCopy(userMessage, "review", 62));
       assistantContent = await improveWithCriticLoop({
         userMessage,
         plannerBrief,
+        architectSpec,
         codeContext: clipText(codeContext, 80_000),
         recentMessages: clipText(recentMessages, 10_000),
         draft: assistantContent,
         provider,
-        options,
+        options: resolvedOptions,
       });
 
-      await progress?.(getBuildProgressCopy(userMessage, "repair", 72));
+      if (shouldUsePowerBuildLayer(resolvedOptions)) {
+        await progress?.(getBuildProgressCopy(userMessage, "validate", 70));
+        assistantContent = await repairSpecValidationIssues({
+          userMessage,
+          plannerBrief,
+          architectSpec,
+          codeContext,
+          draft: assistantContent,
+          provider,
+          options: resolvedOptions,
+        });
+      }
+
+      await progress?.(getBuildProgressCopy(userMessage, "repair", 76));
       assistantContent = await repairMissingExecutableEdits({
         userMessage,
         plannerBrief,
+        architectSpec,
         codeContext,
         draft: assistantContent,
         provider,
-        options,
+        options: resolvedOptions,
       });
     } catch (error) {
       console.error(
@@ -2756,8 +3461,17 @@ ${codeContext}`;
     assistantContent,
     userMessage,
     progress,
-    options
+    resolvedOptions
   );
+
+  const gateReports = await runPostApplyQualityGates({
+    containerId,
+    userMessage,
+    assistantContent,
+    applyResult,
+    progress,
+    options: resolvedOptions,
+  });
 
   if (applyResult.failed.length > 0) {
     const failedItems = applyResult.failed
@@ -2766,6 +3480,12 @@ ${codeContext}`;
       .join("\n");
 
     assistantContent += `\n<dec-error>Some generated edits could not be applied automatically. The backend logged the details:\n${failedItems}</dec-error>`;
+  }
+
+  if (gateReports.length > 0) {
+    assistantContent += `\n<dec-verification>${gateReports
+      .map((report) => clipText(report, 3_500))
+      .join("\n\n")}</dec-verification>`;
   }
 
   await progress?.(

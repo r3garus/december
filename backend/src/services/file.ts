@@ -147,6 +147,13 @@ async function runContainerCommand(
   return output || errorOutput;
 }
 
+export async function runProjectCommand(
+  containerId: string,
+  command: string[]
+): Promise<string> {
+  return runContainerCommand(containerId, command, BASE_PATH);
+}
+
 export interface FileItem {
   name: string;
   path: string;

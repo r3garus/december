@@ -34,7 +34,17 @@ export interface Message {
 }
 
 export interface BuildProgress {
-  stage: "scan" | "plan" | "draft" | "review" | "repair" | "apply" | "refresh";
+  stage:
+    | "scan"
+    | "plan"
+    | "architect"
+    | "draft"
+    | "review"
+    | "validate"
+    | "repair"
+    | "verify"
+    | "apply"
+    | "refresh";
   title: string;
   description: string;
   percent: number;

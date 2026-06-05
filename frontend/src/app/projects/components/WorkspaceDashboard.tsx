@@ -501,6 +501,7 @@ export const WorkspaceDashboard = ({
       "Klawpen Core is analyzing the brief, writing code, and preparing the preview.",
     buildOverlayStepAnalyze: "Brief analysis",
     buildOverlayStepCode: "Code generation",
+    buildOverlayStepVerify: "Quality check",
     buildOverlayStepPreview: "Preview refresh",
     buildOverlayChangedFiles: "Live file activity",
     askFollowUp: "Ask about this code...",
@@ -867,6 +868,7 @@ export const WorkspaceDashboard = ({
       "Klawpen Core brief'i analiz ediyor, kod yazıyor ve önizlemeyi hazırlıyor.",
     buildOverlayStepAnalyze: "Brief analizi",
     buildOverlayStepCode: "Kod üretimi",
+    buildOverlayStepVerify: "Kalite kontrolü",
     buildOverlayStepPreview: "Önizleme yenileme",
     buildOverlayChangedFiles: "Canlı dosya aktivitesi",
     askFollowUp: "Kod hakkinda sor...",
@@ -2305,6 +2307,7 @@ export const WorkspaceDashboard = ({
   const buildSteps = [
     { key: "scan", label: settingsLabels.buildOverlayStepAnalyze, doneAt: 28 },
     { key: "draft", label: settingsLabels.buildOverlayStepCode, doneAt: 78 },
+    { key: "verify", label: settingsLabels.buildOverlayStepVerify, doneAt: 94 },
     { key: "refresh", label: settingsLabels.buildOverlayStepPreview, doneAt: 96 },
   ];
   const visibleBuildFiles = (activeBuildProgress.files?.length
@@ -2752,7 +2755,7 @@ export const WorkspaceDashboard = ({
                           />
                         </div>
 
-                        <div className="mt-5 grid gap-2 sm:grid-cols-3">
+                        <div className="mt-5 grid gap-2 sm:grid-cols-4">
                           {buildSteps.map((step) => {
                             const active = activeBuildProgress.percent >= step.doneAt;
 

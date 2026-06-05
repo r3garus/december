@@ -314,6 +314,7 @@ const sanitizeAssistantText = (content: string) =>
     .replace(/<dec-code>[\s\S]*?<\/dec-code>/g, "")
     .replace(/<dec-write\s+(?:path|file_path)="[^"]+">[\s\S]*?<\/dec-write>/g, "")
     .replace(/<dec-change-summary>[\s\S]*?<\/dec-change-summary>/g, "")
+    .replace(/<dec-verification>[\s\S]*?<\/dec-verification>/g, "")
     .replace(/<\/?dec-[^>]*>/g, "")
     .replace(
       /<\/?(response_format|user_message|ai_message|examples|guidelines|console-logs|useful-context|current-route|instructions-reminder|last-diff)[^>]*>/g,
@@ -343,6 +344,7 @@ const parseSpecialTags = (
     code: /<dec-code>([\s\S]*?)<\/dec-code>/g,
     thinking: /<dec-thinking>([\s\S]*?)<\/dec-thinking>/g,
     error: /<dec-error>([\s\S]*?)<\/dec-error>/g,
+    verification: /<dec-verification>([\s\S]*?)<\/dec-verification>/g,
     success: /<dec-success>([\s\S]*?)<\/dec-success>/g,
     responseFormat: /<response_format>([\s\S]*?)<\/response_format>/g,
     userMessage: /<user_message>([\s\S]*?)<\/user_message>/g,
