@@ -134,6 +134,11 @@ Rules:
 - For every <dec-write>, provide complete file content.
 - Do not put code-edit tags outside the single <dec-code> block.
 - Do not wrap operation tags in markdown code fences.
+- Never answer build requests with plain markdown code blocks only.
+- Never show code without a matching <dec-write> operation.
+- For a new landing page or website, always rewrite at least src/app/page.tsx.
+- If you create or change styling that depends on global CSS, also rewrite the required CSS file.
+- A build response with no <dec-write>, <dec-rename>, <dec-delete>, or <dec-add-dependency> tags is invalid.
 
 ========================
 OUTPUT STYLE

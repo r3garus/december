@@ -69,6 +69,17 @@ interface CriticResult {
   feedback: string;
 }
 
+interface CodeOperation {
+  type: "write" | "rename" | "delete" | "dependency";
+  index: number;
+  path?: string;
+  content?: string;
+  from?: string;
+  to?: string;
+  packageName?: string;
+  version?: string;
+}
+
 const chatSessions = new Map<string, ChatSession>();
 
 const BUILD_INTENT_PATTERN =
@@ -223,6 +234,8 @@ Deliver production-minded quality:
 - maintainable code
 - strong visual hierarchy
 - avoid generic repetitive template output
+- when implementing, output executable edit tags only; plain markdown code is not applied
+- for any new website or landing page, rewrite src/app/page.tsx at minimum
 `;
 
 const CRITIC_SYSTEM_PROMPT = `
@@ -667,26 +680,8 @@ function extractAttribute(tag: string, name: string): string | null {
   return match?.[2] ? decodeHtmlEntities(match[2]) : null;
 }
 
-function extractCodeOperations(assistantContent: string): Array<{
-  type: "write" | "rename" | "delete" | "dependency";
-  index: number;
-  path?: string;
-  content?: string;
-  from?: string;
-  to?: string;
-  packageName?: string;
-  version?: string;
-}> {
-  const operations: Array<{
-    type: "write" | "rename" | "delete" | "dependency";
-    index: number;
-    path?: string;
-    content?: string;
-    from?: string;
-    to?: string;
-    packageName?: string;
-    version?: string;
-  }> = [];
+function extractCodeOperations(assistantContent: string): CodeOperation[] {
+  const operations: CodeOperation[] = [];
 
   const writePattern = /<dec-write\b([^>]*)>([\s\S]*?)<\/dec-write>/gi;
   const renamePattern = /<dec-rename\b([^>]*?)\/>/gi;
@@ -746,11 +741,255 @@ function extractCodeOperations(assistantContent: string): Array<{
   return operations.sort((left, right) => left.index - right.index);
 }
 
+function extractMarkdownCodeOperations(assistantContent: string): CodeOperation[] {
+  const operations: CodeOperation[] = [];
+  const fencePattern =
+    /(?:^|\n)(?:file|path|filename)?\s*:?\s*`?((?:src|app|components|lib|styles|public)\/[^`\n]+\.(?:tsx|ts|jsx|js|css|json|mdx?))`?\s*\n```[a-zA-Z0-9_-]*\n([\s\S]*?)```/gi;
+  let match: RegExpExecArray | null;
+
+  while ((match = fencePattern.exec(assistantContent)) !== null) {
+    const filePath = match[1]?.trim();
+    const content = match[2];
+
+    if (filePath && content !== undefined) {
+      operations.push({
+        type: "write",
+        index: match.index,
+        path: filePath,
+        content: content.trim(),
+      });
+    }
+  }
+
+  return operations;
+}
+
+function shouldForceFallbackPage(userMessage: string, assistantContent: string) {
+  if (!isBuildRequest(userMessage)) return false;
+  if (extractCodeOperations(assistantContent).length > 0) return false;
+  if (extractMarkdownCodeOperations(assistantContent).length > 0) return false;
+
+  return true;
+}
+
+function inferBusinessTitle(userMessage: string) {
+  const normalized = userMessage
+    .replace(/\s+/g, " ")
+    .replace(/[.!?]+$/g, "")
+    .trim();
+
+  const tesisatMatch = normalized.match(/tesisat|plumb|su ka[cç]a[gğ][iı]|komb/i);
+  if (tesisatMatch) return "Vurkany Tesisat";
+
+  const firstWords = normalized
+    .split(" ")
+    .filter((word) => word.length > 2)
+    .slice(0, 3)
+    .join(" ");
+
+  return firstWords ? `${firstWords} Studio` : "Klawpen Studio";
+}
+
+function buildFallbackLandingPage(userMessage: string): string {
+  const title = inferBusinessTitle(userMessage);
+  const isTurkish = isLikelyTurkish(userMessage);
+
+  const copy = isTurkish
+    ? {
+        badge: "7/24 güvenilir servis",
+        headline: "Eviniz ve iş yeriniz için hızlı, temiz ve garantili tesisat çözümleri",
+        intro:
+          "Klawpen tarafından oluşturulan bu başlangıç sayfası; acil servis, bakım, onarım ve yenileme hizmetlerini güven veren modern bir akışla sunar.",
+        primary: "Hemen teklif al",
+        secondary: "Hizmetleri incele",
+        trust: "Aynı gün keşif, şeffaf fiyatlandırma ve temiz teslimat",
+        servicesTitle: "Öne çıkan hizmetler",
+        processTitle: "Nasıl çalışıyoruz?",
+        ctaTitle: "Tesisat problemini bugün çözelim",
+        ctaText:
+          "İhtiyacınızı yazın; ekip yönlendirme, maliyet ve süre planını hızlıca netleştirelim.",
+      }
+    : {
+        badge: "Reliable service, 24/7",
+        headline: "Fast, clean, guaranteed plumbing solutions for homes and businesses",
+        intro:
+          "This Klawpen-generated starter page presents emergency repair, maintenance, and renovation services with a trustworthy modern flow.",
+        primary: "Get a quote",
+        secondary: "Explore services",
+        trust: "Same-day inspection, transparent pricing, clean delivery",
+        servicesTitle: "Featured services",
+        processTitle: "How it works",
+        ctaTitle: "Let us solve the plumbing issue today",
+        ctaText:
+          "Share the need and we will clarify team dispatch, cost, and timing quickly.",
+      };
+
+  return `import type { Metadata } from "next";
+
+export const metadata: Metadata = {
+  title: "${title} | Modern Service Landing Page",
+  description: "${copy.intro}",
+};
+
+const services = ${
+    isTurkish
+      ? JSON.stringify([
+          ["Acil tesisat onarımı", "Su kaçağı, tıkanıklık ve arıza durumlarında hızlı müdahale."],
+          ["Banyo ve mutfak yenileme", "Kırmadan dökmeden planlanan temiz montaj ve dönüşüm işleri."],
+          ["Kombi ve petek hattı", "Isıtma hattı kontrolü, bakım ve verimlilik odaklı iyileştirme."],
+        ])
+      : JSON.stringify([
+          ["Emergency plumbing repair", "Fast response for leaks, clogs, and urgent failures."],
+          ["Bathroom and kitchen upgrades", "Clean installation and renovation work with minimal disruption."],
+          ["Boiler and radiator lines", "Heating line checks, maintenance, and efficiency-focused improvements."],
+        ])
+  };
+
+const steps = ${
+    isTurkish
+      ? JSON.stringify([
+          "İhtiyacı dinleriz",
+          "Net keşif ve fiyat veririz",
+          "Temiz işçilikle teslim ederiz",
+        ])
+      : JSON.stringify([
+          "We understand the need",
+          "We provide clear scope and pricing",
+          "We deliver clean, reliable work",
+        ])
+  };
+
+export default function Home() {
+  return (
+    <main className="min-h-screen bg-[#f5f1e8] text-[#17201a]">
+      <section className="relative overflow-hidden px-6 py-8 sm:px-10 lg:px-16">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_15%_20%,rgba(38,88,73,0.22),transparent_28%),radial-gradient(circle_at_80%_0%,rgba(224,139,72,0.28),transparent_30%)]" />
+        <nav className="relative z-10 mx-auto flex max-w-7xl items-center justify-between rounded-full border border-[#17201a]/10 bg-white/55 px-5 py-3 backdrop-blur">
+          <div className="text-lg font-black tracking-[-0.04em]">{title}</div>
+          <a href="#contact" className="rounded-full bg-[#17201a] px-5 py-2 text-sm font-bold text-white">
+            ${copy.primary}
+          </a>
+        </nav>
+
+        <div className="relative z-10 mx-auto grid max-w-7xl gap-12 py-20 lg:grid-cols-[1.05fr_0.95fr] lg:items-center lg:py-28">
+          <div>
+            <p className="mb-5 inline-flex rounded-full border border-[#265849]/20 bg-white/60 px-4 py-2 text-sm font-bold text-[#265849]">
+              ${copy.badge}
+            </p>
+            <h1 className="max-w-4xl text-5xl font-black leading-[0.92] tracking-[-0.075em] sm:text-7xl lg:text-8xl">
+              ${copy.headline}
+            </h1>
+            <p className="mt-7 max-w-2xl text-lg leading-8 text-[#17201a]/70">
+              ${copy.intro}
+            </p>
+            <div className="mt-9 flex flex-col gap-3 sm:flex-row">
+              <a href="#contact" className="rounded-full bg-[#e08b48] px-7 py-4 text-center font-black text-[#17201a] shadow-[0_18px_40px_rgba(224,139,72,0.35)]">
+                ${copy.primary}
+              </a>
+              <a href="#services" className="rounded-full border border-[#17201a]/15 bg-white/70 px-7 py-4 text-center font-black">
+                ${copy.secondary}
+              </a>
+            </div>
+          </div>
+
+          <div className="rounded-[2.5rem] border border-[#17201a]/10 bg-[#17201a] p-5 text-white shadow-[0_28px_90px_rgba(23,32,26,0.28)]">
+            <div className="rounded-[2rem] bg-[#22382f] p-7">
+              <p className="text-sm font-bold uppercase tracking-[0.24em] text-[#e08b48]">Service board</p>
+              <div className="mt-8 space-y-4">
+                {services.map(([name, text]) => (
+                  <div key={name} className="rounded-3xl bg-white/8 p-5">
+                    <h3 className="text-xl font-black">{name}</h3>
+                    <p className="mt-2 text-sm leading-6 text-white/70">{text}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="border-y border-[#17201a]/10 bg-white/55 px-6 py-6 sm:px-10 lg:px-16">
+        <div className="mx-auto grid max-w-7xl gap-4 text-center text-sm font-bold text-[#17201a]/65 sm:grid-cols-3">
+          <span>${copy.trust}</span>
+          <span>Premium responsive design</span>
+          <span>Klawpen Core generated</span>
+        </div>
+      </section>
+
+      <section id="services" className="mx-auto max-w-7xl px-6 py-20 sm:px-10 lg:px-16">
+        <div className="mb-10 flex flex-col justify-between gap-4 md:flex-row md:items-end">
+          <h2 className="max-w-2xl text-4xl font-black tracking-[-0.055em] sm:text-6xl">${copy.servicesTitle}</h2>
+          <p className="max-w-md text-[#17201a]/65">${copy.trust}</p>
+        </div>
+        <div className="grid gap-5 md:grid-cols-3">
+          {services.map(([name, text], index) => (
+            <article key={name} className="rounded-[2rem] border border-[#17201a]/10 bg-white p-7 shadow-sm">
+              <span className="text-sm font-black text-[#e08b48]">0{index + 1}</span>
+              <h3 className="mt-6 text-2xl font-black tracking-[-0.035em]">{name}</h3>
+              <p className="mt-4 leading-7 text-[#17201a]/65">{text}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="mx-auto max-w-7xl px-6 pb-20 sm:px-10 lg:px-16">
+        <div className="rounded-[2.5rem] bg-[#265849] p-8 text-white sm:p-12">
+          <h2 className="text-4xl font-black tracking-[-0.05em]">${copy.processTitle}</h2>
+          <div className="mt-8 grid gap-4 md:grid-cols-3">
+            {steps.map((step, index) => (
+              <div key={step} className="rounded-3xl bg-white/10 p-6">
+                <span className="text-[#e08b48]">Step {index + 1}</span>
+                <p className="mt-3 text-xl font-black">{step}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section id="contact" className="px-6 pb-24 sm:px-10 lg:px-16">
+        <div className="mx-auto max-w-5xl rounded-[2.5rem] bg-[#17201a] p-10 text-center text-white sm:p-16">
+          <h2 className="text-4xl font-black tracking-[-0.06em] sm:text-6xl">${copy.ctaTitle}</h2>
+          <p className="mx-auto mt-5 max-w-2xl text-white/70">${copy.ctaText}</p>
+          <a href="mailto:hello@example.com" className="mt-9 inline-flex rounded-full bg-[#e08b48] px-8 py-4 font-black text-[#17201a]">
+            ${copy.primary}
+          </a>
+        </div>
+      </section>
+    </main>
+  );
+}
+`;
+}
+
+function buildFallbackOperations(userMessage: string): CodeOperation[] {
+  return [
+    {
+      type: "write",
+      index: Number.MAX_SAFE_INTEGER,
+      path: "src/app/page.tsx",
+      content: buildFallbackLandingPage(userMessage),
+    },
+  ];
+}
+
 async function applyCodeOperations(
   containerId: string,
-  assistantContent: string
+  assistantContent: string,
+  userMessage: string
 ): Promise<{ applied: number; failed: Array<{ label: string; error: string }> }> {
-  const operations = extractCodeOperations(assistantContent);
+  let operations = extractCodeOperations(assistantContent);
+
+  if (!operations.length) {
+    operations = extractMarkdownCodeOperations(assistantContent);
+  }
+
+  if (!operations.length && shouldForceFallbackPage(userMessage, assistantContent)) {
+    operations = buildFallbackOperations(userMessage);
+    console.warn(
+      "AI response did not include executable edit tags; applying fallback landing page."
+    );
+  }
+
   const result: {
     applied: number;
     failed: Array<{ label: string; error: string }>;
@@ -1133,7 +1372,11 @@ ${codeContext}`;
     provider,
   });
   assistantContent = appendChangeSummaryTag(assistantContent, fileContentTree);
-  const applyResult = await applyCodeOperations(containerId, assistantContent);
+  const applyResult = await applyCodeOperations(
+    containerId,
+    assistantContent,
+    userMessage
+  );
 
   if (applyResult.failed.length > 0) {
     const failedItems = applyResult.failed
