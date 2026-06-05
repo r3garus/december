@@ -1391,6 +1391,18 @@ export function getOrCreateChatSession(containerId: string): ChatSession {
   return session;
 }
 
+function removeTrailingUnansweredUserMessage(
+  session: ChatSession,
+  userMessage: string
+) {
+  const lastMessage = session.messages[session.messages.length - 1];
+  if (lastMessage?.role !== "user") return;
+  if (lastMessage.content.trim() !== userMessage.trim()) return;
+
+  session.messages.pop();
+  session.updatedAt = new Date().toISOString();
+}
+
 export function addConversationalMessage(
   containerId: string,
   userMessage: string,
@@ -1571,6 +1583,7 @@ export async function sendMessage(
   workloadEstimate?: AiWorkloadEstimate
 ): Promise<{ userMessage: Message; assistantMessage: Message }> {
   const session = getOrCreateChatSession(containerId);
+  removeTrailingUnansweredUserMessage(session, userMessage);
 
   const userMsg: Message = {
     id: `user-${Date.now()}`,
@@ -1602,6 +1615,8 @@ export async function* sendMessageStream(
   workloadEstimate?: AiWorkloadEstimate
 ): AsyncGenerator<{ type: "user" | "assistant" | "done"; data: any }> {
   const session = getOrCreateChatSession(containerId);
+  removeTrailingUnansweredUserMessage(session, userMessage);
+
   const userMsg: Message = {
     id: `user-${Date.now()}`,
     role: "user",

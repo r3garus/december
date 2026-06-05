@@ -198,6 +198,21 @@ const getContainerCreatedTime = (container: Container) => {
   return Number.isFinite(parsedTime) ? parsedTime : 0;
 };
 
+const hasAppliedAssistantEdit = (messages: Message[]) =>
+  messages.some(
+    (message) => message.role === "assistant" && (message.edits?.applied || 0) > 0
+  );
+
+const shouldProcessInitialPrompt = (messages: Message[], promptFromUrl: string | null) => {
+  if (!promptFromUrl) return false;
+  if (messages.length === 0) return true;
+
+  const lastMessage = messages[messages.length - 1];
+  if (lastMessage?.role === "user") return true;
+
+  return !hasAppliedAssistantEdit(messages);
+};
+
 export const WorkspaceDashboard = ({
   containerId,
 }: WorkspaceDashboardProps) => {
@@ -1539,50 +1554,51 @@ export const WorkspaceDashboard = ({
       try {
         const response = await getChatHistory(containerId);
         if (response.success) {
-          if (response.messages.length === 0 && !hasProcessedPrompt) {
-            const urlParams = new URLSearchParams(window.location.search);
-            const promptFromUrl = urlParams.get("prompt");
+          const urlParams = new URLSearchParams(window.location.search);
+          const promptFromUrl = urlParams.get("prompt");
 
-            if (promptFromUrl) {
-              setHasProcessedPrompt(true);
-              setIsLoading(true);
+          if (
+            shouldProcessInitialPrompt(response.messages, promptFromUrl) &&
+            !hasProcessedPrompt
+          ) {
+            setHasProcessedPrompt(true);
+            setIsLoading(true);
 
-              try {
-                const response = await sendChatMessage(
-                  containerId,
-                  promptFromUrl,
-                  undefined
-                );
-                if (response.success) {
-                  setMessages([
-                    response.userMessage,
-                    response.assistantMessage,
-                  ]);
-                  refreshWorkspaceAfterAiEdit(response.assistantMessage);
-                }
-              } catch (error) {
-                console.error("Failed to send initial prompt:", error);
-                const errorText =
-                  error instanceof Error && error.message
-                    ? error.message
-                    : settingsLabels.initialAssistantError;
-                const errorMessage: Message = {
-                  id: `error-${Date.now()}`,
-                  role: "assistant",
-                  content: errorText,
-                  timestamp: new Date().toISOString(),
-                };
-                setMessages([errorMessage]);
-              } finally {
-                setIsLoading(false);
-              }
-
-              window.history.replaceState(
-                {},
-                document.title,
-                window.location.pathname
+            try {
+              const nextResponse = await sendChatMessage(
+                containerId,
+                promptFromUrl || "",
+                undefined
               );
+              if (nextResponse.success) {
+                setMessages([
+                  nextResponse.userMessage,
+                  nextResponse.assistantMessage,
+                ]);
+                refreshWorkspaceAfterAiEdit(nextResponse.assistantMessage);
+              }
+            } catch (error) {
+              console.error("Failed to send initial prompt:", error);
+              const errorText =
+                error instanceof Error && error.message
+                  ? error.message
+                  : settingsLabels.initialAssistantError;
+              const errorMessage: Message = {
+                id: `error-${Date.now()}`,
+                role: "assistant",
+                content: errorText,
+                timestamp: new Date().toISOString(),
+              };
+              setMessages([errorMessage]);
+            } finally {
+              setIsLoading(false);
             }
+
+            window.history.replaceState(
+              {},
+              document.title,
+              window.location.pathname
+            );
           } else {
             setMessages(response.messages);
           }

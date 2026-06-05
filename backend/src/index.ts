@@ -159,7 +159,7 @@ app.get("/health", (_req, res) => {
   res.json({
     success: true,
     service: "klawpen-builder-api",
-    marker: "ai-provider-timeout-fallback-v1",
+    marker: "stuck-initial-prompt-retry-v1",
     timestamp: new Date().toISOString(),
   });
 });
