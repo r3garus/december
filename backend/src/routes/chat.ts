@@ -150,6 +150,39 @@ router.post("/:containerId/messages", async (req, res) => {
       });
     }
 
+    const shortcutReply = llmService.getConversationalShortcutReply(
+      message,
+      safeAttachments.length
+    );
+
+    if (shortcutReply) {
+      const { userMessage, assistantMessage } =
+        llmService.addConversationalMessage(containerId, message, shortcutReply);
+
+      if (shouldStream) {
+        res.setHeader("Content-Type", "text/event-stream");
+        res.setHeader("Cache-Control", "no-cache");
+        res.setHeader("Connection", "keep-alive");
+        res.write(`data: ${JSON.stringify({ type: "user", data: userMessage })}\n\n`);
+        res.write(
+          `data: ${JSON.stringify({
+            type: "assistant",
+            data: assistantMessage,
+          })}\n\n`
+        );
+        res.write(`data: ${JSON.stringify({ type: "done", data: assistantMessage })}\n\n`);
+        res.write("data: [DONE]\n\n");
+        res.end();
+        return;
+      }
+
+      return res.json({
+        success: true,
+        userMessage,
+        assistantMessage,
+      });
+    }
+
     const workload = estimateAiWorkload({
       message,
       attachmentCount: safeAttachments.length,

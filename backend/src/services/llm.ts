@@ -70,6 +70,70 @@ interface CriticResult {
 
 const chatSessions = new Map<string, ChatSession>();
 
+const BUILD_INTENT_PATTERN =
+  /\b(yap|yapal[ıi]m|olu[sş]tur|ekle|de[gğ]i[sş]tir|d[üu]zelt|kald[ıi]r|sil|tasarla|kodla|g[üu]ncelle|ayarla|[çc][ıi]kar|koy|olsun|build|create|make|add|change|update|fix|remove|delete|design|implement)\b/i;
+const TURKISH_HINT_PATTERN =
+  /[çğıöşü]/i;
+const TURKISH_WORD_PATTERN =
+  /\b(merhaba|selam|naber|nas[ıi]ls[ıi]n|tesekkur|te[sş]ekk[üu]r|sagol|sa[gğ] ol|eyvallah|kanka)\b/i;
+
+function isLikelyTurkish(message: string): boolean {
+  return TURKISH_HINT_PATTERN.test(message) || TURKISH_WORD_PATTERN.test(message);
+}
+
+function isBuildRequest(message: string): boolean {
+  return BUILD_INTENT_PATTERN.test(message);
+}
+
+export function getConversationalShortcutReply(
+  userMessage: string,
+  attachmentCount: number = 0
+): string | null {
+  if (attachmentCount > 0) return null;
+
+  const text = userMessage.trim();
+  if (!text || text.length > 160 || isBuildRequest(text)) return null;
+
+  const normalized = text
+    .toLocaleLowerCase("tr-TR")
+    .replace(/[!?.]+$/g, "")
+    .trim();
+  const compact = normalized.replace(/\s+/g, " ");
+  const turkish = isLikelyTurkish(text);
+
+  if (
+    /^(kanka\s+)?(merhaba|selam|slm|sa|hello|hi|hey|naber|nas[ıi]ls[ıi]n|nas[ıi]l gidiyor)(\s+kanka)?$/.test(
+      compact
+    )
+  ) {
+    return turkish
+      ? "Merhaba! Ne yapmak veya değiştirmek istediğini yaz, birlikte halledelim."
+      : "Hey! Tell me what you want to build or change, and I will help.";
+  }
+
+  if (
+    /^(te[sş]ekk[üu]rler|te[sş]ekk[üu]r ederim|tesekkurler|tesekkur ederim|sa[gğ] ol|sagol|eyvallah|thanks|thank you)$/.test(
+      compact
+    )
+  ) {
+    return turkish
+      ? "Rica ederim! Bir sonraki değişikliği yazman yeterli."
+      : "You're welcome! Send the next change whenever you're ready.";
+  }
+
+  if (
+    /^(ne yapabilirsin|neler yapabilirsin|yard[ıi]m|help|what can you do)$/.test(
+      compact
+    )
+  ) {
+    return turkish
+      ? "Bu projede sayfa, component, stil, içerik, paket ve dosya düzenlemeleri yapabilirim. Net bir değişiklik yazarsan doğrudan uygularım."
+      : "I can edit pages, components, styles, copy, packages, and project files. Describe the change clearly and I will apply it.";
+  }
+
+  return null;
+}
+
 const PLANNER_SYSTEM_PROMPT = `
 You are a senior product strategist for a coding agent.
 Given a user's request, produce an implementation brief in concise plain text with:
@@ -80,7 +144,14 @@ Given a user's request, produce an implementation brief in concise plain text wi
 5) Technical Plan
 6) Acceptance Checklist
 
-If request is short, infer missing details professionally.
+Only produce an implementation brief when the user clearly asks to build,
+change, update, remove, design, or implement something.
+
+If the request is a greeting, thanks, status check, question, or ambiguous
+conversation, explicitly say no implementation is required and recommend a
+plain conversational answer without code-edit tags.
+
+If a short request has clear build intent, infer missing details professionally.
 `;
 
 const BUILDER_SYSTEM_PROMPT = `
@@ -644,6 +715,33 @@ export function getOrCreateChatSession(containerId: string): ChatSession {
 
   chatSessions.set(sessionId, session);
   return session;
+}
+
+export function addConversationalMessage(
+  containerId: string,
+  userMessage: string,
+  assistantReply: string
+): { userMessage: Message; assistantMessage: Message } {
+  const session = getOrCreateChatSession(containerId);
+  const now = Date.now();
+  const timestamp = new Date(now).toISOString();
+  const userMsg: Message = {
+    id: `user-${now}`,
+    role: "user",
+    content: userMessage,
+    timestamp,
+  };
+  const assistantMsg: Message = {
+    id: `assistant-${now + 1}`,
+    role: "assistant",
+    content: assistantReply,
+    timestamp: new Date(now + 1).toISOString(),
+  };
+
+  session.messages.push(userMsg, assistantMsg);
+  session.updatedAt = assistantMsg.timestamp;
+
+  return { userMessage: userMsg, assistantMessage: assistantMsg };
 }
 
 export async function sendMessage(

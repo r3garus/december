@@ -20,6 +20,36 @@ interface StoredProjectMetadata {
 }
 
 const PROJECT_METADATA_STORAGE_KEY = "december:project-metadata";
+const BUILD_INTENT_TERMS = [
+  "yap",
+  "yapalim",
+  "olustur",
+  "ekle",
+  "degistir",
+  "duzelt",
+  "kaldir",
+  "sil",
+  "tasarla",
+  "kodla",
+  "guncelle",
+  "site",
+  "website",
+  "sayfa",
+  "panel",
+  "dashboard",
+  "landing",
+  "app",
+  "build",
+  "create",
+  "make",
+  "add",
+  "change",
+  "update",
+  "fix",
+  "remove",
+  "design",
+  "implement",
+];
 
 const animatedPrompts = [
   "Design a modern marketing website for my startup...",
@@ -51,6 +81,29 @@ const buildSummaryFromPrompt = (prompt: string) => {
   if (!cleaned) return "Custom project generated from your prompt.";
   if (cleaned.length <= 120) return cleaned;
   return `${cleaned.slice(0, 117)}...`;
+};
+
+const normalizeBuildIntentText = (value: string) =>
+  value
+    .toLocaleLowerCase("tr-TR")
+    .replace(/\u0131/g, "i")
+    .replace(/\u015f/g, "s")
+    .replace(/\u011f/g, "g")
+    .replace(/\u00fc/g, "u")
+    .replace(/\u00f6/g, "o")
+    .replace(/\u00e7/g, "c")
+    .replace(/[^a-z0-9\s-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const hasProjectBuildIntent = (prompt: string) => {
+  const normalized = normalizeBuildIntentText(prompt);
+  if (!normalized) return false;
+  if (normalized.length >= 90) return true;
+
+  return BUILD_INTENT_TERMS.some((term) =>
+    new RegExp(`(^|\\s)${term}(\\s|$)`).test(normalized)
+  );
 };
 
 const readStoredMetadata = (): Record<string, StoredProjectMetadata> => {
@@ -113,6 +166,8 @@ export const ProjectPromptInterface = ({ language, theme, accountName }: Project
       recentPrompts: "Recent prompt starters",
       smartSuggestion: "Smart suggestion",
       usePrompt: "Use prompt",
+      projectIntentRequired:
+        "Please describe what you want to build, for example: \"Build a SaaS landing page\".",
     },
     tr: {
       title: `Merhaba ${accountName}, ne olu\u015fturmak istiyorsun?`,
@@ -131,6 +186,8 @@ export const ProjectPromptInterface = ({ language, theme, accountName }: Project
       recentPrompts: "Prompt ba\u015flang\u0131\u00e7lar\u0131",
       smartSuggestion: "Ak\u0131ll\u0131 \u00f6neri",
       usePrompt: "Promptu kullan",
+      projectIntentRequired:
+        "L\u00fctfen ne olu\u015fturmak istedi\u011fini yaz. \u00d6rnek: \"Modern bir SaaS landing page yap\".",
     },
   }[language];
 
@@ -254,10 +311,17 @@ export const ProjectPromptInterface = ({ language, theme, accountName }: Project
     if (!promptInput.trim() || isCreatingFromPrompt) return;
 
     setIsCreatingFromPrompt(true);
-    toast("Creating new project...");
 
     try {
       const promptValue = promptInput.trim();
+
+      if (!hasProjectBuildIntent(promptValue)) {
+        toast.error(labels.projectIntentRequired);
+        setIsCreatingFromPrompt(false);
+        return;
+      }
+
+      toast("Creating new project...");
       const containerResponse = await createContainer();
       const containerId = containerResponse.containerId;
       const existingMetadata = readStoredMetadata();

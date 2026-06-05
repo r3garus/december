@@ -6,6 +6,8 @@ import path from "path";
 const docker = new Docker({ socketPath: "/var/run/docker.sock" });
 const BASE_PORT = 8100;
 const ALLOW_LEGACY_CONTAINERS = process.env.ALLOW_LEGACY_CONTAINERS === "true";
+const TEMPLATE_IMAGE_NAME =
+  process.env.PROJECT_TEMPLATE_IMAGE || "dec-nextjs-template-klawpen";
 
 const usedPorts = new Set<number>();
 
@@ -68,6 +70,14 @@ export async function getDockerfile(): Promise<string> {
 }
 
 export async function buildImage(containerId: string): Promise<string> {
+  try {
+    await docker.getImage(TEMPLATE_IMAGE_NAME).inspect();
+    console.log(`Using cached template image: ${TEMPLATE_IMAGE_NAME}`);
+    return TEMPLATE_IMAGE_NAME;
+  } catch {
+    // Image does not exist yet; build it once and reuse it for new projects.
+  }
+
   const tempDir = path.join("/tmp", `docker-app-${containerId}`);
   await fs.mkdir(tempDir, { recursive: true });
 
@@ -75,7 +85,7 @@ export async function buildImage(containerId: string): Promise<string> {
     const dockerfileContent = await getDockerfile();
     await fs.writeFile(path.join(tempDir, "Dockerfile"), dockerfileContent);
 
-    const imageName = `dec-nextjs-${containerId}`;
+    const imageName = TEMPLATE_IMAGE_NAME;
     console.log(`Building image: ${imageName}`);
 
     const tarStream = await docker.buildImage(
@@ -224,6 +234,10 @@ function getPortFromContainer(containerInfo: any): number {
 
 export async function cleanupImage(containerId: string): Promise<void> {
   try {
+    if (TEMPLATE_IMAGE_NAME) {
+      return;
+    }
+
     const imageName = `dec-nextjs-${containerId}`;
     const image = docker.getImage(imageName);
     await image.remove({ force: true });
@@ -364,7 +378,11 @@ export async function deleteContainer(
     console.log(`Deleted container: ${containerId}, freed port: ${port}`);
 
     const imageName = containerInfo.Config.Image;
-    if (imageName && imageName.includes("dec-nextjs-")) {
+    if (
+      imageName &&
+      imageName.includes("dec-nextjs-") &&
+      imageName !== TEMPLATE_IMAGE_NAME
+    ) {
       try {
         const image = docker.getImage(imageName);
         await image.remove({ force: true });

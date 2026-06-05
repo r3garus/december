@@ -15,6 +15,6 @@ WORKDIR /app/my-nextjs-app
 
 RUN bun install
 
-EXPOSE 3001
+EXPOSE 3000
 
-CMD ["bun", "dev"]
+CMD ["bun", "run", "dev", "--hostname", "0.0.0.0", "--port", "3000"]
