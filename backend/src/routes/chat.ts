@@ -10,6 +10,10 @@ const MAX_ATTACHMENTS = 4;
 const MAX_ATTACHMENT_BYTES = 8_000_000;
 const MAX_TOTAL_ATTACHMENT_BYTES = 12_000_000;
 const CREDIT_UNIT_CENTS = Number(process.env.KLAWPEN_CORE_CREDIT_CENTS || "100");
+const TURKISH_HINT_PATTERN =
+  /[çğıöşü]/i;
+const TURKISH_WORD_PATTERN =
+  /\b(merhaba|selam|kanka|tesisat|site|yap|oluştur|tasarla|düzenle|değiştir|lütfen|için)\b/i;
 
 router.param("containerId", async (req, res, next, containerId: string) => {
   try {
@@ -108,6 +112,10 @@ function getTotalAttachmentBytes(attachments: llmService.Attachment[]) {
     (total, attachment) => total + estimateBase64Bytes(attachment.data),
     0
   );
+}
+
+function isLikelyTurkishMessage(message: string) {
+  return TURKISH_HINT_PATTERN.test(message) || TURKISH_WORD_PATTERN.test(message);
 }
 
 //@ts-ignore
@@ -239,10 +247,15 @@ router.post("/:containerId/messages", async (req, res) => {
     });
 
     if (!usage.allowed) {
+      const isTurkish = isLikelyTurkishMessage(message);
       const error =
         usage.reason === "free_limit_reached"
-          ? "Free plan limit reached. Upgrade your plan to continue building."
-          : "Your Klawpen Core credit is not enough. Add credit or upgrade your plan.";
+          ? isTurkish
+            ? "Ücretsiz kullanım limitin doldu. Devam etmek için planını yükseltmen veya hesabına kredi eklemen gerekiyor."
+            : "Free plan limit reached. Upgrade your plan or add credits to continue building."
+          : isTurkish
+            ? "Klawpen Core kredin yetersiz. Devam etmek için kredi eklemen veya planını yükseltmen gerekiyor."
+            : "Your Klawpen Core credit is not enough. Add credit or upgrade your plan.";
 
       return res.status(402).json({
         success: false,

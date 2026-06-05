@@ -1552,11 +1552,14 @@ export const WorkspaceDashboard = ({
                 }
               } catch (error) {
                 console.error("Failed to send initial prompt:", error);
+                const errorText =
+                  error instanceof Error && error.message
+                    ? error.message
+                    : settingsLabels.initialAssistantError;
                 const errorMessage: Message = {
                   id: `error-${Date.now()}`,
                   role: "assistant",
-                  content:
-                    settingsLabels.initialAssistantError,
+                  content: errorText,
                   timestamp: new Date().toISOString(),
                 };
                 setMessages([errorMessage]);
@@ -1719,13 +1722,13 @@ export const WorkspaceDashboard = ({
             settingsLabels.filesTooLarge
           );
         } else {
-          toast.error(settingsLabels.connectionError);
+          toast.error(error || settingsLabels.connectionError);
         }
 
         const errorMessage: Message = {
           id: `error-${Date.now()}`,
           role: "assistant",
-          content: settingsLabels.assistantError,
+          content: error || settingsLabels.assistantError,
           timestamp: new Date().toISOString(),
         };
         setMessages((prev) => [...prev, errorMessage]);

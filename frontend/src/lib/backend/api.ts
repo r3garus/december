@@ -104,7 +104,18 @@ async function fetchApi<T>(
   });
 
   if (!response.ok) {
-    throw new Error(`API request failed: ${response.statusText}`);
+    let errorMessage = `API request failed: ${response.statusText}`;
+
+    try {
+      const errorBody = await response.json();
+      if (typeof errorBody?.error === "string" && errorBody.error.trim()) {
+        errorMessage = errorBody.error;
+      }
+    } catch {
+      // Fall back to status text when the backend does not return JSON.
+    }
+
+    throw new Error(errorMessage);
   }
 
   return response.json();
@@ -194,7 +205,18 @@ export function sendChatMessageStream(
     )
     .then(async (response) => {
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+
+        try {
+          const errorBody = await response.json();
+          if (typeof errorBody?.error === "string" && errorBody.error.trim()) {
+            errorMessage = errorBody.error;
+          }
+        } catch {
+          // Fall back to status text when the backend does not return JSON.
+        }
+
+        throw new Error(errorMessage);
       }
 
       const reader = response.body?.getReader();
