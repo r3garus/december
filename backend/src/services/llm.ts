@@ -45,6 +45,10 @@ export interface Message {
   content: string;
   timestamp: string;
   attachments?: Attachment[];
+  edits?: {
+    applied: number;
+    failed: Array<{ label: string; error: string }>;
+  };
 }
 
 export interface Attachment {
@@ -772,6 +776,13 @@ function shouldForceFallbackPage(userMessage: string, assistantContent: string) 
   return true;
 }
 
+function hasExecutableCodeOperations(assistantContent: string) {
+  return (
+    extractCodeOperations(assistantContent).length > 0 ||
+    extractMarkdownCodeOperations(assistantContent).length > 0
+  );
+}
+
 function inferBusinessTitle(userMessage: string) {
   const normalized = userMessage
     .replace(/\s+/g, " ")
@@ -1213,6 +1224,64 @@ ${params.codeContext}
   return currentDraft;
 }
 
+async function repairMissingExecutableEdits(params: {
+  userMessage: string;
+  plannerBrief: string;
+  codeContext: string;
+  draft: string;
+  provider: AiProviderConfig;
+}): Promise<string> {
+  if (!shouldForceFallbackPage(params.userMessage, params.draft)) {
+    return params.draft;
+  }
+
+  console.warn(
+    "AI build response had no executable edit tags; requesting one repair pass before fallback."
+  );
+
+  const repairInput = `
+SYSTEM:
+${prompt}
+
+${BUILDER_SYSTEM_PROMPT}
+
+The previous assistant output is invalid because it did not contain executable edit operations.
+Return exactly one <dec-code> block with executable edit tags.
+For this build request, rewrite at least src/app/page.tsx using a full <dec-write path="src/app/page.tsx">...</dec-write> operation.
+Do not use markdown code fences. Do not only explain. Do not repeat the previous invalid response.
+
+USER_REQUEST:
+${params.userMessage}
+
+PLANNER_BRIEF:
+${params.plannerBrief}
+
+PREVIOUS_INVALID_OUTPUT:
+${params.draft}
+
+CURRENT_CODEBASE_SNAPSHOT:
+${clipText(params.codeContext, 80_000)}
+`;
+
+  try {
+    const repaired = await createBuilderResponse(repairInput, params.provider);
+    if (hasExecutableCodeOperations(repaired)) {
+      return repaired;
+    }
+
+    console.warn(
+      "AI repair response still had no executable edit tags; falling back to generated landing page."
+    );
+    return repaired;
+  } catch (error) {
+    console.warn(
+      "AI repair pass failed; falling back to generated landing page:",
+      error instanceof Error ? error.message : error
+    );
+    return params.draft;
+  }
+}
+
 export async function createChatSession(containerId: string): Promise<ChatSession> {
   const sessionId = `${containerId}-${Date.now()}`;
   const session: ChatSession = {
@@ -1301,24 +1370,13 @@ export async function answerConversationOnlyMessage(
   return addConversationalMessage(containerId, userMessage, assistantReply);
 }
 
-export async function sendMessage(
+async function buildAssistantMessageFromSession(
+  session: ChatSession,
   containerId: string,
   userMessage: string,
-  attachments: Attachment[] = [],
   workloadEstimate?: AiWorkloadEstimate
-): Promise<{ userMessage: Message; assistantMessage: Message }> {
-  const session = getOrCreateChatSession(containerId);
+): Promise<{ assistantMessage: Message }> {
   const provider = selectAiProvider(workloadEstimate);
-
-  const userMsg: Message = {
-    id: `user-${Date.now()}`,
-    role: "user",
-    content: userMessage,
-    timestamp: new Date().toISOString(),
-    attachments: attachments.length > 0 ? attachments : undefined,
-  };
-
-  session.messages.push(userMsg);
 
   const fileContentTree = await fileService.getFileContentTree(
     dockerService.docker,
@@ -1371,6 +1429,13 @@ ${codeContext}`;
     draft: assistantContent,
     provider,
   });
+  assistantContent = await repairMissingExecutableEdits({
+    userMessage,
+    plannerBrief,
+    codeContext,
+    draft: assistantContent,
+    provider,
+  });
   assistantContent = appendChangeSummaryTag(assistantContent, fileContentTree);
   const applyResult = await applyCodeOperations(
     containerId,
@@ -1392,14 +1457,45 @@ ${codeContext}`;
     role: "assistant",
     content: assistantContent,
     timestamp: new Date().toISOString(),
+    edits: applyResult,
   };
 
   session.messages.push(assistantMsg);
   session.updatedAt = new Date().toISOString();
 
   return {
-    userMessage: userMsg,
     assistantMessage: assistantMsg,
+  };
+}
+
+export async function sendMessage(
+  containerId: string,
+  userMessage: string,
+  attachments: Attachment[] = [],
+  workloadEstimate?: AiWorkloadEstimate
+): Promise<{ userMessage: Message; assistantMessage: Message }> {
+  const session = getOrCreateChatSession(containerId);
+
+  const userMsg: Message = {
+    id: `user-${Date.now()}`,
+    role: "user",
+    content: userMessage,
+    timestamp: new Date().toISOString(),
+    attachments: attachments.length > 0 ? attachments : undefined,
+  };
+
+  session.messages.push(userMsg);
+
+  const { assistantMessage } = await buildAssistantMessageFromSession(
+    session,
+    containerId,
+    userMessage,
+    workloadEstimate
+  );
+
+  return {
+    userMessage: userMsg,
+    assistantMessage,
   };
 }
 
@@ -1409,14 +1505,25 @@ export async function* sendMessageStream(
   attachments: Attachment[] = [],
   workloadEstimate?: AiWorkloadEstimate
 ): AsyncGenerator<{ type: "user" | "assistant" | "done"; data: any }> {
-  const { userMessage: userMsg, assistantMessage } = await sendMessage(
+  const session = getOrCreateChatSession(containerId);
+  const userMsg: Message = {
+    id: `user-${Date.now()}`,
+    role: "user",
+    content: userMessage,
+    timestamp: new Date().toISOString(),
+    attachments: attachments.length > 0 ? attachments : undefined,
+  };
+
+  session.messages.push(userMsg);
+  yield { type: "user", data: userMsg };
+
+  const { assistantMessage } = await buildAssistantMessageFromSession(
+    session,
     containerId,
     userMessage,
-    attachments,
     workloadEstimate
   );
 
-  yield { type: "user", data: userMsg };
   yield { type: "assistant", data: assistantMessage };
   yield { type: "done", data: assistantMessage };
 }

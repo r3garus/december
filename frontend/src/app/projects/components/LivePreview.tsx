@@ -7,6 +7,7 @@ interface LivePreviewProps {
   containerId: string;
   isDesktopView?: boolean;
   isDark?: boolean;
+  refreshVersion?: number;
   labels?: Partial<Record<string, string>>;
 }
 
@@ -82,6 +83,7 @@ const LivePreviewComponent = ({
   containerId,
   isDesktopView = true,
   isDark = true,
+  refreshVersion = 0,
   labels = {},
 }: LivePreviewProps) => {
   const [container, setContainer] = useState<Container | null>(null);
@@ -230,10 +232,15 @@ const LivePreviewComponent = ({
     );
   }
 
+  const previewUrl =
+    container.url && refreshVersion > 0
+      ? `${container.url}${container.url.includes("?") ? "&" : "?"}kp_refresh=${refreshVersion}`
+      : container.url;
+
   const previewContainer = (
     <div className="relative h-full w-full overflow-hidden bg-white">
       <iframe
-        src={container.url}
+        src={previewUrl || ""}
         data-live-preview-frame="true"
         loading="eager"
         className="absolute inset-0 h-full w-full border-0"
@@ -264,7 +271,7 @@ const LivePreviewComponent = ({
           <div className="absolute left-1/2 top-0 z-20 h-7 w-28 -translate-x-1/2 rounded-b-2xl bg-slate-950 shadow-sm" />
           <div className="pointer-events-none absolute inset-0 z-20 rounded-[2.45rem] ring-1 ring-inset ring-black/10" />
           <iframe
-            src={container.url}
+            src={previewUrl || ""}
             data-live-preview-frame="true"
             loading="eager"
             className="h-full w-full border-0"

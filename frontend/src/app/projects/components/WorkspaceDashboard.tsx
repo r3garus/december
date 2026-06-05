@@ -206,6 +206,7 @@ export const WorkspaceDashboard = ({
   const [viewMode, setViewMode] = useState<"preview" | "editor">("editor");
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [hasProcessedPrompt, setHasProcessedPrompt] = useState<boolean>(false);
+  const [workspaceRefreshVersion, setWorkspaceRefreshVersion] = useState(0);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(
     null
   );
@@ -1473,6 +1474,14 @@ export const WorkspaceDashboard = ({
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
 
+  const refreshWorkspaceAfterAiEdit = useCallback((message?: Message) => {
+    if (message?.edits && message.edits.applied > 0) {
+      setWorkspaceRefreshVersion((version) => version + 1);
+      setViewMode("preview");
+      loadProjectSwitcherProjects();
+    }
+  }, [loadProjectSwitcherProjects]);
+
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
@@ -1549,6 +1558,7 @@ export const WorkspaceDashboard = ({
                     response.userMessage,
                     response.assistantMessage,
                   ]);
+                  refreshWorkspaceAfterAiEdit(response.assistantMessage);
                 }
               } catch (error) {
                 console.error("Failed to send initial prompt:", error);
@@ -1710,6 +1720,7 @@ export const WorkspaceDashboard = ({
           });
         } else if (data.type === "done") {
           setStreamingMessageId(null);
+          refreshWorkspaceAfterAiEdit(data.data);
         }
       },
       (error) => {
@@ -2533,6 +2544,7 @@ export const WorkspaceDashboard = ({
                       containerId={containerId}
                       workspaceTheme={isDark ? "dark" : "light"}
                       isVisible={viewMode === "editor"}
+                      refreshVersion={workspaceRefreshVersion}
                       labels={codeEditorLabels}
                       onOpenSettings={openProfileSettingsPanel}
                       onOpenSubscriptions={openSubscriptionsPanel}
@@ -2550,6 +2562,7 @@ export const WorkspaceDashboard = ({
                       containerId={containerId}
                       isDesktopView={isDesktopView}
                       isDark={isDark}
+                      refreshVersion={workspaceRefreshVersion}
                       labels={previewLabels}
                     />
                   </div>

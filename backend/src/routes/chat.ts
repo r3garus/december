@@ -232,6 +232,10 @@ router.post("/:containerId/messages", async (req, res) => {
     });
     const requestCreditCents = workload.coreCredits * CREDIT_UNIT_CENTS;
 
+    console.log(
+      `Chat request for ${containerId}: tier=${workload.tier}, coreCredits=${workload.coreCredits}, stream=${shouldStream}, account=${account.teamId}`
+    );
+
     const usage = await consumeAiRequestCredit({
       account,
       requestCreditCents,
@@ -247,6 +251,9 @@ router.post("/:containerId/messages", async (req, res) => {
     });
 
     if (!usage.allowed) {
+      console.warn(
+        `Chat request denied for ${containerId}: reason=${usage.reason || "unknown"}`
+      );
       const isTurkish = isLikelyTurkishMessage(message);
       const error =
         usage.reason === "free_limit_reached"

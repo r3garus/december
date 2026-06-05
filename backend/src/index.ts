@@ -155,6 +155,15 @@ app.use((req, res, next): void => {
   next();
 });
 
+app.get("/health", (_req, res) => {
+  res.json({
+    success: true,
+    service: "klawpen-builder-api",
+    marker: "ai-edit-refresh-v1",
+    timestamp: new Date().toISOString(),
+  });
+});
+
 app.use("/preview", previewRoutes);
 
 app.use(express.json({ limit: "50mb" }));

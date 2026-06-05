@@ -31,6 +31,7 @@ interface CodeEditorProps {
   containerId: string;
   workspaceTheme?: "light" | "dark";
   isVisible?: boolean;
+  refreshVersion?: number;
   labels?: Partial<Record<string, string>>;
   onOpenSettings?: () => void;
   onOpenSubscriptions?: () => void;
@@ -115,6 +116,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
   containerId,
   workspaceTheme = "light",
   isVisible = true,
+  refreshVersion = 0,
   labels = {},
   onOpenSettings,
   onOpenSubscriptions,
@@ -225,6 +227,15 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
     fileContentCacheRef.current = getContainerFileCache(containerId);
     fileLoadPromisesRef.current = getContainerLoadCache(containerId);
 
+    if (refreshVersion > 0) {
+      fileTreeCache.delete(containerId);
+      fileContentCache.delete(containerId);
+      fileLoadPromiseCache.delete(containerId);
+      editorSessionCache.delete(containerId);
+      fileContentCacheRef.current = getContainerFileCache(containerId);
+      fileLoadPromisesRef.current = getContainerLoadCache(containerId);
+    }
+
     const cachedDirectory = fileTreeCache.get(containerId) ?? null;
     const cachedSession = editorSessionCache.get(containerId);
 
@@ -310,7 +321,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
     }
 
     return () => abortController.abort();
-  }, [containerId, fileTreeVersion]);
+  }, [containerId, fileTreeVersion, refreshVersion]);
 
   useEffect(() => {
     editorSessionCache.set(containerId, {

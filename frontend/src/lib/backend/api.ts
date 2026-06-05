@@ -27,6 +27,10 @@ export interface Message {
   content: string;
   timestamp: string;
   attachments?: Attachment[];
+  edits?: {
+    applied: number;
+    failed: Array<{ label: string; error: string }>;
+  };
 }
 
 export interface Attachment {
