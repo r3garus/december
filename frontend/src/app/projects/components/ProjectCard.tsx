@@ -119,7 +119,7 @@ export const ProjectCard = ({
           <div className="flex items-center gap-2 mb-3">
             <div className="w-1.5 h-1.5 bg-blue-400 rounded-full"></div>
             <p className="text-sm text-white/70 font-medium">
-              Next.js Application
+              Klawpen Workspace
             </p>
           </div>
           <p className="text-xs text-white/50">

@@ -20,12 +20,12 @@ export const TemplatesSection = ({
 }: TemplatesSectionProps) => {
   const templates: Template[] = [
     {
-      id: "nextjs",
-      name: "Next.js",
-      description: "Build full-stack React apps with Next.js",
+      id: "klawpen-web",
+      name: "Klawpen Web",
+      description: "Build polished websites with live preview",
       icon: "/nextjs-logo.png",
       category: "template",
-      gradient: "from-black to-gray-800",
+      gradient: "from-sky-500 to-blue-900",
     },
     {
       id: "express-react",

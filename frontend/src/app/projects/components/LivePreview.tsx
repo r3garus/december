@@ -13,7 +13,7 @@ interface LivePreviewProps {
 
 const PREVIEW_CACHE_TTL_MS = 4000;
 const PREVIEW_REFRESH_MS = 12000;
-const PREVIEW_STORAGE_PREFIX = "december:preview-container:";
+const PREVIEW_STORAGE_PREFIX = "klawpen:preview-container:";
 
 const previewContainerCache = new Map<string, Container>();
 let containersRequest: Promise<Container[]> | null = null;

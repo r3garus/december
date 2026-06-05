@@ -19,7 +19,7 @@ interface StoredProjectMetadata {
   prompt?: string;
 }
 
-const PROJECT_METADATA_STORAGE_KEY = "december:project-metadata";
+const PROJECT_METADATA_STORAGE_KEY = "klawpen:project-metadata";
 const BUILD_INTENT_TERMS = [
   "yap",
   "yapalim",
@@ -88,13 +88,13 @@ const buildTitleFromPrompt = (prompt: string) => {
     .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
-  if (!cleaned) return "Untitled Project";
+  if (!cleaned) return "Untitled Klawpen Project";
   return toTitleCase(cleaned);
 };
 
 const buildSummaryFromPrompt = (prompt: string) => {
   const cleaned = prompt.replace(/\s+/g, " ").trim();
-  if (!cleaned) return "Custom project generated from your prompt.";
+  if (!cleaned) return "Klawpen project generated from your prompt.";
   if (cleaned.length <= 120) return cleaned;
   return `${cleaned.slice(0, 117)}...`;
 };
@@ -190,14 +190,14 @@ export const ProjectPromptInterface = ({ language, theme, accountName }: Project
       tryExample: "Try an example prompt",
       plan: "Plan",
       planMode: "Plan mode",
-      planDescription: "Splits your request into clear steps before execution.",
+      planDescription: "Lets Klawpen clarify the brief and plan the build before execution.",
       planOn: "Plan on",
       addImage: "Add image",
       imageDescription: "Attach a visual reference",
       referenceImage: "Reference image",
       removeImage: "Remove image",
       promptHintIdle: "Tip: include audience, style, pages, and must-have sections.",
-      promptHintPlan: "Plan mode is on. I will structure this before building.",
+      promptHintPlan: "Plan mode is on. Klawpen will clarify the brief before building.",
       promptHintImage: "Image attached. Add what should match or change.",
       recentPrompts: "Recent prompt starters",
       smartSuggestion: "Smart suggestion",
@@ -388,7 +388,7 @@ export const ProjectPromptInterface = ({ language, theme, accountName }: Project
         return;
       }
 
-      toast("Creating new project...");
+      toast(language === "tr" ? "Klawpen projesi oluşturuluyor..." : "Creating Klawpen project...");
       const containerResponse = await createContainer();
       const containerId = containerResponse.containerId;
       const existingMetadata = readStoredMetadata();
@@ -402,8 +402,10 @@ export const ProjectPromptInterface = ({ language, theme, accountName }: Project
       };
       writeStoredMetadata(nextMetadata);
 
-      toast.success("Project created. Redirecting...");
-      router.push(`/projects/${containerId}?prompt=${encodeURIComponent(promptValue)}`);
+      toast.success(language === "tr" ? "Proje oluşturuldu. Klawpen açılıyor..." : "Project created. Opening Klawpen...");
+      const params = new URLSearchParams({ prompt: promptValue });
+      if (isPlanModeEnabled) params.set("plan", "1");
+      router.push(`/projects/${containerId}?${params.toString()}`);
     } catch (error) {
       console.error("Failed to create project from prompt:", error);
       toast.error("Failed to create project. Please try again.");

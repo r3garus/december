@@ -7,6 +7,48 @@ import * as packageService from "../services/package";
 
 const router = express.Router();
 
+const KLAWPEN_STARTER_PAGE = `import type { Metadata } from "next";
+
+export const metadata: Metadata = {
+  title: "Klawpen Workspace",
+  description: "Your Klawpen project is being prepared.",
+};
+
+export default function Home() {
+  return (
+    <main className="min-h-screen overflow-hidden bg-[#f6f8fb] text-[#111827]">
+      <section className="relative flex min-h-screen items-center justify-center px-6 py-16">
+        <div className="absolute left-[-10%] top-[-10%] h-72 w-72 rounded-full bg-[#1689ff]/20 blur-3xl" />
+        <div className="absolute bottom-[-12%] right-[-8%] h-80 w-80 rounded-full bg-[#7cc7ff]/20 blur-3xl" />
+        <div className="relative w-full max-w-3xl rounded-[2rem] border border-white/80 bg-white/82 p-8 text-center shadow-[0_30px_90px_rgba(15,23,42,0.12)] backdrop-blur-xl sm:p-12">
+          <div className="mx-auto mb-7 flex h-16 w-16 items-center justify-center rounded-3xl bg-[#1689ff] text-xl font-black text-white shadow-[0_18px_40px_rgba(22,137,255,0.28)]">
+            K
+          </div>
+          <p className="mb-4 text-xs font-black uppercase tracking-[0.32em] text-[#1689ff]">
+            Klawpen Builder
+          </p>
+          <h1 className="text-4xl font-black tracking-[-0.06em] text-slate-950 sm:text-6xl">
+            Your project is being crafted
+          </h1>
+          <p className="mx-auto mt-5 max-w-xl text-base leading-8 text-slate-500">
+            Klawpen Core is preparing the first version of your website. The preview will refresh automatically as files are generated.
+          </p>
+          <div className="mx-auto mt-8 grid max-w-xl gap-3 text-left sm:grid-cols-3">
+            {["Brief", "Code", "Preview"].map((item) => (
+              <div key={item} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <div className="mb-3 h-2 w-10 rounded-full bg-[#1689ff]" />
+                <p className="text-sm font-bold text-slate-800">{item}</p>
+                <p className="mt-1 text-xs leading-5 text-slate-500">Preparing</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+    </main>
+  );
+}
+`;
+
 router.param("containerId", async (req, res, next, containerId: string) => {
   try {
     await dockerService.assertProjectContainer(containerId, req.account);
@@ -51,6 +93,7 @@ router.post("/create", async (req, res) => {
         localUserId: req.account!.localUserId,
       }
     );
+    await fileService.writeFile(container.id, "src/app/page.tsx", KLAWPEN_STARTER_PAGE);
 
     res.json({
       success: true,
@@ -63,7 +106,7 @@ router.post("/create", async (req, res) => {
         url: dockerService.buildPreviewUrl(container.id),
         rawUrl: dockerService.buildRawPreviewUrl(port),
         createdAt: new Date().toISOString(),
-        type: "Next.js App",
+        type: "Klawpen Workspace",
       },
     });
   } catch (error) {

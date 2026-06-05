@@ -64,10 +64,10 @@ export const CreateProjectCard = ({
                 Create New Project
               </span>
               <span className="text-sm text-center leading-relaxed text-white/70">
-                Start a new Next.js application
+                Start a new Klawpen workspace
                 <br />
                 <span className="text-white/50">
-                  with Docker containerization
+                  with live code and preview
                 </span>
               </span>
             </div>

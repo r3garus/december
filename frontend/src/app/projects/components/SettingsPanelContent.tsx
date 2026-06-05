@@ -25,13 +25,13 @@ import { ChangeEvent, useEffect, useState } from "react";
 import type { AccountEntitlementsSnapshot } from "@/lib/account/types";
 import type { UiLanguage, UiTheme } from "./ProjectsPage";
 
-export const SETTINGS_INVITE_STORAGE_KEY = "december:settings:pending-invite";
-export const SETTINGS_SIGNED_OUT_STORAGE_KEY = "december:settings:sessions-cleared";
-export const SETTINGS_PROFILE_EMAIL_STORAGE_KEY = "december:settings:profile-email";
+export const SETTINGS_INVITE_STORAGE_KEY = "klawpen:settings:pending-invite";
+export const SETTINGS_SIGNED_OUT_STORAGE_KEY = "klawpen:settings:sessions-cleared";
+export const SETTINGS_PROFILE_EMAIL_STORAGE_KEY = "klawpen:settings:profile-email";
 export const SETTINGS_PASSWORD_UPDATED_STORAGE_KEY =
-  "december:settings:password-updated-at";
+  "klawpen:settings:password-updated-at";
 export const SETTINGS_BONUS_CLAIMED_STORAGE_KEY =
-  "december:settings:bonus-claimed";
+  "klawpen:settings:bonus-claimed";
 
 export const SETTINGS_LOCAL_STORAGE_KEYS = [
   SETTINGS_INVITE_STORAGE_KEY,

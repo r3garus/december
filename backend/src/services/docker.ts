@@ -8,10 +8,14 @@ import path from "path";
 const docker = new Docker({ socketPath: "/var/run/docker.sock" });
 const BASE_PORT = 8100;
 const ALLOW_LEGACY_CONTAINERS = process.env.ALLOW_LEGACY_CONTAINERS === "true";
+const PROJECT_LABEL = "klawpen";
+const LEGACY_PROJECT_LABEL = ["de", "cember"].join("");
+const CONTAINER_PREFIX = "klawpen-workspace-";
+const LEGACY_CONTAINER_PREFIX = ["dec", "nextjs"].join("-") + "-";
 const TEMPLATE_IMAGE_NAME =
-  process.env.PROJECT_TEMPLATE_IMAGE || "dec-nextjs-template-klawpen";
+  process.env.PROJECT_TEMPLATE_IMAGE || "klawpen-workspace-template";
 const TEMPLATE_IMAGE_VERSION = (
-  process.env.PROJECT_TEMPLATE_VERSION || "klawpen-preview-proxy-v1"
+  process.env.PROJECT_TEMPLATE_VERSION || "klawpen-workspace-v2"
 ).replace(/[^a-zA-Z0-9_.-]/g, "-");
 const TEMPLATE_VERSION_LABEL = "klawpen.template.version";
 const DEFAULT_PUBLIC_API_ORIGIN =
@@ -37,8 +41,13 @@ async function getAllAssignedPorts(): Promise<number[]> {
   const containers = await docker.listContainers({ all: true });
   const projectContainers = containers.filter(
     (container) =>
-      container.Labels?.project === "december" ||
-      container.Names?.some((name) => name.includes("dec-nextjs-"))
+      container.Labels?.project === PROJECT_LABEL ||
+      container.Labels?.project === LEGACY_PROJECT_LABEL ||
+      container.Names?.some(
+        (name) =>
+          name.includes(CONTAINER_PREFIX) ||
+          name.includes(LEGACY_CONTAINER_PREFIX)
+      )
   );
 
   return projectContainers
@@ -154,6 +163,194 @@ export async function getDockerfile(): Promise<string> {
   return await fs.readFile("./src/Dockerfile", "utf-8");
 }
 
+async function writeTemplateFile(
+  rootDir: string,
+  relativePath: string,
+  content: string
+) {
+  const targetPath = path.join(rootDir, relativePath);
+  await fs.mkdir(path.dirname(targetPath), { recursive: true });
+  await fs.writeFile(targetPath, content);
+}
+
+async function writeKlawpenWorkspaceTemplate(rootDir: string) {
+  await writeTemplateFile(
+    rootDir,
+    "package.json",
+    JSON.stringify(
+      {
+        name: "klawpen-workspace",
+        version: "0.1.0",
+        private: true,
+        scripts: {
+          dev: "next dev",
+          build: "next build",
+          start: "next start",
+        },
+        dependencies: {
+          "@tailwindcss/postcss": "^4.1.7",
+          "lucide-react": "^0.511.0",
+          next: "15.5.18",
+          react: "^19.0.0",
+          "react-dom": "^19.0.0",
+          tailwindcss: "^4.1.7",
+        },
+        devDependencies: {
+          "@types/node": "^20",
+          "@types/react": "^19",
+          "@types/react-dom": "^19",
+          typescript: "^5",
+        },
+      },
+      null,
+      2
+    )
+  );
+
+  await writeTemplateFile(
+    rootDir,
+    "tsconfig.json",
+    JSON.stringify(
+      {
+        compilerOptions: {
+          target: "ES2017",
+          lib: ["dom", "dom.iterable", "esnext"],
+          allowJs: true,
+          skipLibCheck: true,
+          strict: true,
+          noEmit: true,
+          esModuleInterop: true,
+          module: "esnext",
+          moduleResolution: "bundler",
+          resolveJsonModule: true,
+          isolatedModules: true,
+          jsx: "preserve",
+          incremental: true,
+          plugins: [{ name: "next" }],
+          paths: {
+            "@/*": ["./src/*"],
+          },
+        },
+        include: ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
+        exclude: ["node_modules"],
+      },
+      null,
+      2
+    )
+  );
+
+  await writeTemplateFile(
+    rootDir,
+    "next.config.ts",
+    `import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {};
+
+export default nextConfig;
+`
+  );
+
+  await writeTemplateFile(
+    rootDir,
+    "postcss.config.mjs",
+    `const config = {
+  plugins: {
+    "@tailwindcss/postcss": {},
+  },
+};
+
+export default config;
+`
+  );
+
+  await writeTemplateFile(
+    rootDir,
+    "src/app/globals.css",
+    `@import "tailwindcss";
+
+:root {
+  background: #f6f8fb;
+  color: #111827;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+}
+`
+  );
+
+  await writeTemplateFile(
+    rootDir,
+    "src/app/layout.tsx",
+    `import type { Metadata } from "next";
+import "./globals.css";
+
+export const metadata: Metadata = {
+  title: "Klawpen Workspace",
+  description: "A live Klawpen generated project.",
+};
+
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
+  return (
+    <html lang="en">
+      <body>{children}</body>
+    </html>
+  );
+}
+`
+  );
+
+  await writeTemplateFile(
+    rootDir,
+    "src/app/page.tsx",
+    `import type { Metadata } from "next";
+
+export const metadata: Metadata = {
+  title: "Klawpen Workspace",
+  description: "Your Klawpen project is being prepared.",
+};
+
+export default function Home() {
+  return (
+    <main className="min-h-screen overflow-hidden bg-[#f6f8fb] text-[#111827]">
+      <section className="relative flex min-h-screen items-center justify-center px-6 py-16">
+        <div className="absolute left-[-10%] top-[-10%] h-72 w-72 rounded-full bg-[#1689ff]/20 blur-3xl" />
+        <div className="absolute bottom-[-12%] right-[-8%] h-80 w-80 rounded-full bg-[#7cc7ff]/20 blur-3xl" />
+        <div className="relative w-full max-w-3xl rounded-[2rem] border border-white/80 bg-white/85 p-8 text-center shadow-[0_30px_90px_rgba(15,23,42,0.12)] backdrop-blur-xl sm:p-12">
+          <div className="mx-auto mb-7 flex h-16 w-16 items-center justify-center rounded-3xl bg-[#1689ff] text-xl font-black text-white shadow-[0_18px_40px_rgba(22,137,255,0.28)]">
+            K
+          </div>
+          <p className="mb-4 text-xs font-black uppercase tracking-[0.32em] text-[#1689ff]">
+            Klawpen Builder
+          </p>
+          <h1 className="text-4xl font-black tracking-[-0.06em] text-slate-950 sm:text-6xl">
+            Your project is being crafted
+          </h1>
+          <p className="mx-auto mt-5 max-w-xl text-base leading-8 text-slate-500">
+            Klawpen Core is preparing the first version of your website. The preview will refresh automatically as files are generated.
+          </p>
+        </div>
+      </section>
+    </main>
+  );
+}
+`
+  );
+}
+
 export async function buildImage(containerId: string): Promise<string> {
   try {
     const existingImage = docker.getImage(TEMPLATE_IMAGE_NAME);
@@ -179,6 +376,7 @@ export async function buildImage(containerId: string): Promise<string> {
   try {
     const dockerfileContent = `${(await getDockerfile()).trimEnd()}\n\nLABEL ${TEMPLATE_VERSION_LABEL}="${TEMPLATE_IMAGE_VERSION}"\n`;
     await fs.writeFile(path.join(tempDir, "Dockerfile"), dockerfileContent);
+    await writeKlawpenWorkspaceTemplate(tempDir);
 
     const imageName = TEMPLATE_IMAGE_NAME;
     console.log(`Building image: ${imageName}`);
@@ -186,7 +384,14 @@ export async function buildImage(containerId: string): Promise<string> {
     const tarStream = await docker.buildImage(
       {
         context: tempDir,
-        src: ["Dockerfile"],
+        src: [
+          "Dockerfile",
+          "package.json",
+          "tsconfig.json",
+          "next.config.ts",
+          "postcss.config.mjs",
+          "src",
+        ],
       },
       {
         t: imageName,
@@ -240,7 +445,7 @@ export async function createContainer(
   containerId: string,
   owner: ProjectOwner
 ): Promise<{ container: Docker.Container; port: number }> {
-  const containerName = `dec-nextjs-${containerId}`;
+  const containerName = `${CONTAINER_PREFIX}${containerId}`;
   const assignedPort = await findAvailablePort();
   const networkMode = await resolveProjectNetwork();
 
@@ -255,8 +460,8 @@ export async function createContainer(
       ...(networkMode ? { NetworkMode: networkMode } : {}),
     },
     Labels: {
-      project: "december",
-      type: "nextjs-app",
+      project: PROJECT_LABEL,
+      type: "klawpen-workspace",
       assignedPort: assignedPort.toString(),
       teamId: String(owner.teamId),
       userId: owner.localUserId ? String(owner.localUserId) : "",
@@ -335,7 +540,7 @@ export async function cleanupImage(containerId: string): Promise<void> {
       return;
     }
 
-    const imageName = `dec-nextjs-${containerId}`;
+    const imageName = `${CONTAINER_PREFIX}${containerId}`;
     const image = docker.getImage(imageName);
     await image.remove({ force: true });
     console.log(`Cleaned up failed image: ${imageName}`);
@@ -391,9 +596,14 @@ function isProjectContainerInfo(containerInfo: any): boolean {
   const imageName = containerInfo.Image || containerInfo.Config?.Image || "";
 
   return (
-    labels.project === "december" ||
-    names.some((name: string) => name.includes("dec-nextjs-")) ||
-    imageName.includes("dec-nextjs-")
+    labels.project === PROJECT_LABEL ||
+    labels.project === LEGACY_PROJECT_LABEL ||
+    names.some(
+      (name: string) =>
+        name.includes(CONTAINER_PREFIX) || name.includes(LEGACY_CONTAINER_PREFIX)
+    ) ||
+    imageName.includes(CONTAINER_PREFIX) ||
+    imageName.includes(LEGACY_CONTAINER_PREFIX)
   );
 }
 

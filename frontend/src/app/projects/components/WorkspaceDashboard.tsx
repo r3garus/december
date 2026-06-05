@@ -36,7 +36,6 @@ import {
   getChatHistory,
   getContainers,
   Message,
-  sendChatMessage,
   sendChatMessageStream,
 } from "@/lib/backend/api";
 import { buildProjectZipFromFileApi } from "../../../lib/export/projectZip";
@@ -79,11 +78,11 @@ type SettingsPanelSection =
   | "accountSeats"
   | "advanced";
 
-const ACCOUNT_PLAN_STORAGE_KEY = "december:account-plan";
-const PROJECT_METADATA_STORAGE_KEY = "december:project-metadata";
-const workspaceProfileStoragePrefix = "december:prefs:kaichen";
-const UI_THEME_STORAGE_KEY = "december:ui-theme";
-const UI_LANGUAGE_STORAGE_KEY = "december:ui-language";
+const ACCOUNT_PLAN_STORAGE_KEY = "klawpen:account-plan";
+const PROJECT_METADATA_STORAGE_KEY = "klawpen:project-metadata";
+const workspaceProfileStoragePrefix = "klawpen:prefs:kaichen";
+const UI_THEME_STORAGE_KEY = "klawpen:ui-theme";
+const UI_LANGUAGE_STORAGE_KEY = "klawpen:ui-language";
 const WORKSPACE_NOTIFICATIONS_STORAGE_KEY = `${workspaceProfileStoragePrefix}:notifications`;
 const WORKSPACE_TWO_FACTOR_STORAGE_KEY = `${workspaceProfileStoragePrefix}:twoFactor`;
 const WORKSPACE_LOGIN_ALERTS_STORAGE_KEY = `${workspaceProfileStoragePrefix}:loginAlerts`;
@@ -167,7 +166,7 @@ const buildTitleFromPrompt = (prompt: string) => {
     .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
-  return cleaned ? toTitleCase(cleaned) : "Untitled Project";
+  return cleaned ? toTitleCase(cleaned) : "Untitled Klawpen Project";
 };
 
 const cleanContainerName = (name: string | null | undefined, id: string) => {
@@ -213,6 +212,9 @@ const shouldProcessInitialPrompt = (messages: Message[], promptFromUrl: string |
 
   return !hasAppliedAssistantEdit(messages);
 };
+
+const mergeUniqueFiles = (files: string[], previous: string[] = []) =>
+  Array.from(new Set([...files, ...previous])).slice(0, 8);
 
 export const WorkspaceDashboard = ({
   containerId,
@@ -483,7 +485,7 @@ export const WorkspaceDashboard = ({
     buildMode: "Build mode",
     meshFireStudio: "Klawpen Studio",
     currentProject: "Current project",
-    projectName: "AI Banking App",
+    projectName: "Klawpen Project",
     recentProjects: "Recent projects",
     noOtherProjects: "No other projects yet",
     switchProject: "Switch project",
@@ -504,7 +506,7 @@ export const WorkspaceDashboard = ({
     askFollowUp: "Ask about this code...",
     welcomeAssistantName: "Assistant",
     welcomeTitle:
-      "Welcome to your Next.js project. I am here to help you build, modify, and deploy your application.",
+      "Welcome to your Klawpen workspace. I can help you plan, build, refine, and ship this project.",
     welcomeCanHelp: "I can help you with:",
     welcomeFeatureOne: "Adding new features and components",
     welcomeFeatureTwo: "Modifying existing code",
@@ -849,7 +851,7 @@ export const WorkspaceDashboard = ({
     buildMode: "Build modu",
     meshFireStudio: "Klawpen Studio",
     currentProject: "Mevcut proje",
-    projectName: "AI Banking App",
+    projectName: "Klawpen Project",
     recentProjects: "Son projeler",
     noOtherProjects: "Baska proje yok",
     switchProject: "Projeye gec",
@@ -869,7 +871,7 @@ export const WorkspaceDashboard = ({
     buildOverlayChangedFiles: "Canlı dosya aktivitesi",
     askFollowUp: "Kod hakkinda sor...",
     welcomeAssistantName: "Asistan",
-    welcomeTitle: "Next.js projen hazir. Ben burada gelistirme, duzenleme ve yayinlama akisinda yardim etmek icin varim.",
+    welcomeTitle: "Klawpen calisma alanin hazir. Bu projeyi planlama, gelistirme, duzenleme ve yayinlama akisinda birlikte ilerletebiliriz.",
     welcomeCanHelp: "Sana sunlarda yardim edebilirim:",
     welcomeFeatureOne: "Yeni ozellik ve komponent ekleme",
     welcomeFeatureTwo: "Mevcut kodu duzenleme",
@@ -1573,6 +1575,7 @@ export const WorkspaceDashboard = ({
         if (response.success) {
           const urlParams = new URLSearchParams(window.location.search);
           const promptFromUrl = urlParams.get("prompt");
+          const planModeFromUrl = urlParams.get("plan") === "1";
 
           if (
             shouldProcessInitialPrompt(response.messages, promptFromUrl) &&
@@ -1580,36 +1583,94 @@ export const WorkspaceDashboard = ({
           ) {
             setHasProcessedPrompt(true);
             setIsLoading(true);
+            setViewMode("preview");
+            setBuildProgress({
+              stage: "scan",
+              title: settingsLabels.buildOverlayTitle,
+              description: settingsLabels.buildOverlayDesc,
+              percent: 8,
+              files: [],
+            });
+            setRecentBuildFiles([]);
+            setMessages([]);
 
-            try {
-              const nextResponse = await sendChatMessage(
-                containerId,
-                promptFromUrl || "",
-                undefined
-              );
-              if (nextResponse.success) {
-                setMessages([
-                  nextResponse.userMessage,
-                  nextResponse.assistantMessage,
-                ]);
-                refreshWorkspaceAfterAiEdit(nextResponse.assistantMessage);
+            const cancel = sendChatMessageStream(
+              containerId,
+              promptFromUrl || "",
+              [],
+              (data) => {
+                if (data.type === "user") {
+                  setMessages((prev) =>
+                    prev.some((message) => message.id === data.data.id)
+                      ? prev
+                      : [...prev, data.data]
+                  );
+                } else if (data.type === "progress") {
+                  const progress = data.data as BuildProgress;
+                  setBuildProgress(progress);
+                  if (progress.files?.length) {
+                    setRecentBuildFiles((prev) =>
+                      mergeUniqueFiles(progress.files || [], prev)
+                    );
+                  }
+                  if (
+                    (progress.stage === "apply" ||
+                      progress.stage === "refresh") &&
+                    progress.files?.length
+                  ) {
+                    setWorkspaceRefreshVersion((version) => version + 1);
+                  }
+                  if (progress.stage === "refresh") {
+                    setViewMode("preview");
+                  }
+                } else if (data.type === "assistant") {
+                  setStreamingMessageId(data.data.id);
+                  setMessages((prev) => {
+                    const newMessages = [...prev];
+                    const existingIndex = newMessages.findIndex(
+                      (message) => message.id === data.data.id
+                    );
+
+                    if (existingIndex >= 0) {
+                      newMessages[existingIndex] = data.data;
+                    } else {
+                      newMessages.push(data.data);
+                    }
+
+                    return newMessages;
+                  });
+                } else if (data.type === "done") {
+                  setStreamingMessageId(null);
+                  setBuildProgress(null);
+                  refreshWorkspaceAfterAiEdit(data.data);
+                }
+              },
+              (error) => {
+                console.error("Failed to send initial prompt:", error);
+                setIsLoading(false);
+                setStreamingMessageId(null);
+                setBuildProgress(null);
+
+                const errorMessage: Message = {
+                  id: `error-${Date.now()}`,
+                  role: "assistant",
+                  content: error || settingsLabels.initialAssistantError,
+                  timestamp: new Date().toISOString(),
+                };
+                setMessages((prev) => [...prev, errorMessage]);
+              },
+              () => {
+                setIsLoading(false);
+                setStreamingMessageId(null);
+                setBuildProgress(null);
+              },
+              {
+                planMode: planModeFromUrl,
+                forceBuild: true,
               }
-            } catch (error) {
-              console.error("Failed to send initial prompt:", error);
-              const errorText =
-                error instanceof Error && error.message
-                  ? error.message
-                  : settingsLabels.initialAssistantError;
-              const errorMessage: Message = {
-                id: `error-${Date.now()}`,
-                role: "assistant",
-                content: errorText,
-                timestamp: new Date().toISOString(),
-              };
-              setMessages([errorMessage]);
-            } finally {
-              setIsLoading(false);
-            }
+            );
+
+            streamCancelRef.current = cancel;
 
             window.history.replaceState(
               {},
@@ -1748,9 +1809,7 @@ export const WorkspaceDashboard = ({
           setBuildProgress(progress);
           if (progress.files?.length) {
             setRecentBuildFiles((prev) =>
-              Array.from(
-                new Set([...(progress.files || []), ...prev])
-              ).slice(0, 8)
+              mergeUniqueFiles(progress.files || [], prev)
             );
           }
           if (
@@ -1888,7 +1947,7 @@ export const WorkspaceDashboard = ({
 
       try {
         const storedPreview = window.localStorage.getItem(
-          `december:preview-container:${containerId}`
+          `klawpen:preview-container:${containerId}`
         );
         const parsedPreview = storedPreview
           ? (JSON.parse(storedPreview) as Container)

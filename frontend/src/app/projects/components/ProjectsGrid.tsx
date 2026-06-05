@@ -25,7 +25,7 @@ interface StoredProjectMetadata {
   prompt?: string;
 }
 
-const PROJECT_METADATA_STORAGE_KEY = "december:project-metadata";
+const PROJECT_METADATA_STORAGE_KEY = "klawpen:project-metadata";
 
 const readStoredMetadata = (): Record<string, StoredProjectMetadata> => {
   if (typeof window === "undefined") return {};
@@ -61,20 +61,20 @@ const buildTitleFromPrompt = (prompt: string) => {
     .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
-  if (!cleaned) return "Untitled Project";
+  if (!cleaned) return "Untitled Klawpen Project";
   return toTitleCase(cleaned);
 };
 
 const buildSummaryFromPrompt = (prompt: string) => {
   const cleaned = prompt.replace(/\s+/g, " ").trim();
-  if (!cleaned) return "Custom project generated from your prompt.";
+  if (!cleaned) return "Klawpen project generated from your prompt.";
   if (cleaned.length <= 120) return cleaned;
   return `${cleaned.slice(0, 117)}...`;
 };
 
 const cleanContainerName = (name: string | null | undefined, id: string) => {
   const raw = (name || "").replace(/[\/_-]+/g, " ").trim();
-  if (!raw) return `Project ${id.slice(0, 8)}`;
+  if (!raw) return `Klawpen ${id.slice(0, 8)}`;
   return toTitleCase(raw);
 };
 
@@ -105,8 +105,8 @@ export const ProjectsGrid = ({
       : "grid-cols-[repeat(auto-fill,minmax(min(220px,100%),1fr))]";
   const labels = {
     en: {
-      noProjects: "No projects yet",
-      noProjectsDesc: "Use the prompt above to create your first project.",
+      noProjects: "No Klawpen projects yet",
+      noProjectsDesc: "Use the prompt above to create your first Klawpen project.",
       live: "Live",
       draft: "Draft",
       retry: "Retry",
@@ -117,8 +117,8 @@ export const ProjectsGrid = ({
       share: "Share",
       open: "Open",
       searchEmpty: "No project matches your search",
-      untitled: "Untitled Project",
-      defaultSummary: "Custom project generated from your prompt.",
+      untitled: "Untitled Klawpen Project",
+      defaultSummary: "Klawpen project generated from your prompt.",
     },
     tr: {
       noProjects: "Henüz proje yok",

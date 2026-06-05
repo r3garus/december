@@ -1,17 +1,14 @@
 FROM node:18-alpine
 
-RUN apk add --no-cache curl bash
+RUN apk add --no-cache bash curl
 
 RUN curl -fsSL https://bun.sh/install | bash
 ENV PATH="/root/.bun/bin:$PATH"
 
-WORKDIR /app
-
-# Clone the December Next.js template repository
-RUN curl -L https://github.com/ntegrals/december-nextjs-template/archive/main.tar.gz | tar -xz && \
-    mv december-nextjs-template-main my-nextjs-app
-
 WORKDIR /app/my-nextjs-app
+
+COPY package.json tsconfig.json next.config.ts postcss.config.mjs ./
+COPY src ./src
 
 RUN bun install
 

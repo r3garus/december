@@ -102,10 +102,19 @@ interface BuildProgress {
 
 type ProgressReporter = (progress: BuildProgress) => void | Promise<void>;
 
+interface BuildOptions {
+  planMode?: boolean;
+  forceBuild?: boolean;
+}
+
 const chatSessions = new Map<string, ChatSession>();
 
 const BUILD_INTENT_PATTERN =
-  /\b(yap|yapal[ıi]m|olu[sş]tur|ekle|de[gğ]i[sş]tir|d[üu]zelt|kald[ıi]r|sil|tasarla|kodla|g[üu]ncelle|ayarla|[çc][ıi]kar|koy|olsun|build|create|make|add|change|update|fix|remove|delete|design|implement)\b/i;
+  /\b(yap|yapal[ıi]m|olu[sş]tur|haz[ıi]rla|kur|geli[sş]tir|ekle|de[gğ]i[sş]tir|d[üu]zelt|kald[ıi]r|sil|tasarla|kodla|g[üu]ncelle|ayarla|[çc][ıi]kar|koy|olsun|build|create|make|add|change|update|fix|remove|delete|design|implement|generate)\b/i;
+const BUILD_WANT_PATTERN =
+  /\b(istiyorum|laz[ıi]m|ihtiyac[ıi]m|need|want)\b/i;
+const BUILD_SUBJECT_PATTERN =
+  /\b(site|website|web\s*sitesi|landing|landing\s*page|sayfa|dashboard|panel|app|uygulama|component|komponent|[öo]zellik|feature|tasar[ıi]m|design|page|route|form|login|register|blog|pricing|faq|sss|store|shop|api|backend|database|auth)\b/i;
 const TURKISH_HINT_PATTERN =
   /[çğıöşü]/i;
 const TURKISH_WORD_PATTERN =
@@ -116,13 +125,65 @@ const VERY_VAGUE_BUILD_PATTERN =
   /^(bir\s+)?(site|website|web sitesi|landing|landing page|sayfa|dashboard|panel|app|uygulama)\s*(yap|olu[sş]tur|tasarla|build|create|make|design)?$/i;
 const RUNTIME_REPAIR_PATTERN =
   /\b(runtime|referenceerror|server-side exception|application error|hata|hatasi|hatası|bozuk|calismiyor|çalışmıyor|duzelt|düzelt|onar|repair|fix|çalışır hale getir|calisir hale getir)\b/i;
+const BUILD_DETAIL_PATTERN =
+  /\b(premium|minimal|kurumsal|corporate|luxury|editorial|brutal|bold|modern|renk|color|style|tarz|hedef|audience|kitle|cta|sat[ıi][sş]|sales|randevu|booking|demo|portfolio|portfolyo|fiyat|pricing|sss|faq|dashboard|auth|login|register|blog|about|hakk[ıi]nda|contact|iletisim|ileti[sş]im|sayfa|pages|routes|route|section|b[öo]l[üu]m)\b/i;
+const GENERIC_BUILD_WORDS = new Set([
+  "bir",
+  "bana",
+  "benim",
+  "icin",
+  "ile",
+  "site",
+  "website",
+  "web",
+  "sayfa",
+  "landing",
+  "page",
+  "dashboard",
+  "panel",
+  "app",
+  "uygulama",
+  "yap",
+  "yapalim",
+  "olustur",
+  "tasarla",
+  "hazirla",
+  "kur",
+  "istiyorum",
+  "lazim",
+  "build",
+  "create",
+  "make",
+  "design",
+  "generate",
+  "need",
+  "want",
+  "merhaba",
+  "selam",
+  "hello",
+  "hi",
+  "hey",
+  "naber",
+  "soru",
+  "sormak",
+  "sorabilir",
+  "yardim",
+  "help",
+]);
 
 function isLikelyTurkish(message: string): boolean {
   return TURKISH_HINT_PATTERN.test(message) || TURKISH_WORD_PATTERN.test(message);
 }
 
 function isBuildRequest(message: string): boolean {
-  return BUILD_INTENT_PATTERN.test(message);
+  return (
+    BUILD_INTENT_PATTERN.test(message) ||
+    (BUILD_WANT_PATTERN.test(message) && BUILD_SUBJECT_PATTERN.test(message))
+  );
+}
+
+function hasBuildIntent(message: string, options: BuildOptions = {}): boolean {
+  return options.forceBuild === true || isBuildRequest(message);
 }
 
 function isRuntimeRepairRequest(message: string): boolean {
@@ -137,7 +198,28 @@ function isVagueBuildRequest(message: string): boolean {
   const text = message.trim();
   if (!isBuildRequest(text)) return false;
   if (text.length > 80) return false;
+  if (hasSpecificBuildSubject(text)) return false;
   return VERY_VAGUE_BUILD_PATTERN.test(text) || text.split(/\s+/).length <= 3;
+}
+
+function isUnderspecifiedPlanBuildRequest(message: string): boolean {
+  const text = message.trim();
+  if (!isBuildRequest(text)) return false;
+  if (text.length > 280) return false;
+
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length <= 5) return true;
+
+  return words.length <= 18 && !BUILD_DETAIL_PATTERN.test(text);
+}
+
+function hasSpecificBuildSubject(message: string): boolean {
+  const words = normalizePromptText(message)
+    .split(/\s+/)
+    .map((word) => word.trim())
+    .filter((word) => word.length > 2);
+
+  return words.some((word) => !GENERIC_BUILD_WORDS.has(word));
 }
 
 function getBuildProgressCopy(
@@ -193,8 +275,10 @@ function getBuildProgressCopy(
 
 export function shouldUseConversationOnlyMode(
   userMessage: string,
-  attachmentCount: number = 0
+  attachmentCount: number = 0,
+  options: BuildOptions = {}
 ): boolean {
+  if (options.forceBuild) return false;
   if (attachmentCount > 0) return false;
   const text = userMessage.trim();
   if (!text || text.length > 1_000) return false;
@@ -261,8 +345,19 @@ export function getConversationalShortcutReply(
   return null;
 }
 
-export function getBuildClarificationReply(userMessage: string): string | null {
-  if (!isVagueBuildRequest(userMessage)) return null;
+export function getBuildClarificationReply(
+  userMessage: string,
+  options: BuildOptions = {}
+): string | null {
+  const wordCount = userMessage.trim().split(/\s+/).filter(Boolean).length;
+  const needsClarification =
+    isVagueBuildRequest(userMessage) ||
+    (options.planMode &&
+      (isUnderspecifiedPlanBuildRequest(userMessage) ||
+        (options.forceBuild && wordCount <= 10))) ||
+    (options.forceBuild && !hasSpecificBuildSubject(userMessage));
+
+  if (!needsClarification) return null;
 
   const turkish = isLikelyTurkish(userMessage);
 
@@ -294,6 +389,7 @@ Given a user's request, produce an implementation brief in concise plain text wi
 4) Required Pages/Sections
 5) Technical Plan
 6) Acceptance Checklist
+7) Design Differentiators
 
 Only produce an implementation brief when the user clearly asks to build,
 change, update, remove, design, or implement something.
@@ -303,10 +399,13 @@ conversation, explicitly say no implementation is required and recommend a
 plain conversational answer without code-edit tags.
 
 If a short request has clear build intent, infer missing details professionally.
+Do not create a generic SaaS/agency brief unless the user's domain is actually SaaS/agency.
+If the user names a sector, make the brief sector-specific: page order, proof points,
+CTA logic, objections, copy tone, and visual direction must match that sector.
 `;
 
 const BUILDER_SYSTEM_PROMPT = `
-You are a senior full-stack engineer and frontend architect.
+You are Klawpen Core, a senior full-stack product engineer, frontend architect, UX director, and implementation lead.
 Deliver production-minded quality:
 - responsive layout
 - semantic and accessible structure
@@ -321,6 +420,17 @@ Deliver production-minded quality:
 - for any new website or landing page, rewrite src/app/page.tsx at minimum
 - prefer one complete, polished page over many shallow files
 - do not use placeholder copy, fake generic stats, lorem ipsum, or repeated card names
+- when the request implies a website, create a coherent site experience, not only a decorative hero section
+- if multiple pages are explicitly requested, create real App Router pages and navigation
+- if pages are not specified, build the strongest sensible first version: homepage plus sections that feel like a complete product/site
+- make the result feel closer to a polished Replit/Lovable-quality prototype than a simple landing-page template
+- include thoughtful empty states, microcopy, responsive behavior, and conversion logic where relevant
+- ask focused questions only when missing information would materially change the product; otherwise make professional defaults and build
+- for full website requests, build at least 7 meaningful sections unless the requested scope is smaller
+- generated sites must have a clear visual concept: color system, spacing rhythm, typography scale, card geometry, and section transitions
+- do not generate a centered hero followed by identical cards unless the user explicitly asks for a minimal template
+- when the user asks for pages such as pricing, FAQ, contact, dashboard, login, register, blog, or about, create those routes/files instead of only naming them in nav
+- keep copy in the user's language and make it specific enough that it cannot be reused for an unrelated sector
 `;
 
 const CRITIC_SYSTEM_PROMPT = `
@@ -340,9 +450,15 @@ Scoring criteria:
 - Responsiveness expectations
 - Code quality / maintainability
 - Avoidance of generic template output
+- Product-specific information architecture, not just a hero and generic cards
+- Professional visual craft: typography, spacing, palette, sections, states, and conversion flow
 
 Rules:
 - PASS only if score >= required minimum and quality is clearly strong.
+- FAIL generic/simple landing pages that could fit any industry after only changing the logo.
+- FAIL outputs that ignore requested pages or do not create routes for explicitly requested pages.
+- FAIL outputs with fewer than 7 meaningful sections for broad website/landing requests unless the user asked for something intentionally small.
+- FAIL when the visual system is basic, repeated, or looks like a logo/title swap.
 - Keep feedback specific and actionable.
 `;
 
@@ -926,8 +1042,12 @@ function extractMarkdownCodeOperations(assistantContent: string): CodeOperation[
   return operations;
 }
 
-function shouldForceFallbackPage(userMessage: string, assistantContent: string) {
-  if (!isBuildRequest(userMessage)) return false;
+function shouldForceFallbackPage(
+  userMessage: string,
+  assistantContent: string,
+  options: BuildOptions = {}
+) {
+  if (!hasBuildIntent(userMessage, options)) return false;
   if (extractCodeOperations(assistantContent).length > 0) return false;
   if (extractMarkdownCodeOperations(assistantContent).length > 0) return false;
 
@@ -1313,7 +1433,8 @@ async function applyCodeOperations(
   containerId: string,
   assistantContent: string,
   userMessage: string,
-  progress?: ProgressReporter
+  progress?: ProgressReporter,
+  options: BuildOptions = {}
 ): Promise<{ applied: number; failed: Array<{ label: string; error: string }> }> {
   let operations = extractCodeOperations(assistantContent);
 
@@ -1321,7 +1442,10 @@ async function applyCodeOperations(
     operations = extractMarkdownCodeOperations(assistantContent);
   }
 
-  if (!operations.length && shouldForceFallbackPage(userMessage, assistantContent)) {
+  if (
+    !operations.length &&
+    shouldForceFallbackPage(userMessage, assistantContent, options)
+  ) {
     operations = buildFallbackOperations(userMessage);
     console.warn(
       "AI response did not include executable edit tags; applying fallback landing page."
@@ -1424,11 +1548,15 @@ async function applyCodeOperations(
 async function createPlannerBrief(
   userMessage: string,
   recentConversation: string,
-  provider: AiProviderConfig
+  provider: AiProviderConfig,
+  options: BuildOptions = {}
 ): Promise<string> {
   const plannerInput = `
 SYSTEM:
 ${PLANNER_SYSTEM_PROMPT}
+
+PLAN_MODE:
+${options.planMode ? "Enabled. Produce a stronger product plan and identify only the questions that materially affect the result." : "Disabled. Infer sensible defaults unless the request is materially underspecified."}
 
 RECENT CONVERSATION:
 ${recentConversation || "No prior conversation."}
@@ -1444,15 +1572,26 @@ ${userMessage}
   });
 }
 
-function createLocalPlannerBrief(userMessage: string): string {
+function createLocalPlannerBrief(
+  userMessage: string,
+  options: BuildOptions = {}
+): string {
   const turkish = isLikelyTurkish(userMessage);
   const inferredTitle = inferBusinessTitle(userMessage);
   const inferredProfile = chooseFallbackProfile(userMessage);
+  const planningLine = options.planMode
+    ? turkish
+      ? "Planning Mode: Önce bilgi mimarisi, sayfa yapısı, tasarım yönü ve kritik belirsizlikleri netleştir; eksik ama kritik bilgi varsa en fazla 3 soru sor."
+      : "Planning Mode: First clarify information architecture, page structure, visual direction, and critical unknowns; ask up to 3 questions only when they materially affect the result."
+    : turkish
+      ? "Planning Mode: Kapalı; eksik kalan küçük detaylarda profesyonel varsayımlar yap ve üret."
+      : "Planning Mode: Off; make professional assumptions for minor gaps and build.";
 
   if (turkish) {
     return [
       `Goal: ${inferredTitle} için üretime hazır, modern ve mobil uyumlu bir web sayfası oluştur.`,
       `Inferred Context: Sektör=${inferredProfile.sector}, tasarım yönü=${inferredProfile.layout}, ana CTA=${inferredProfile.primary}.`,
+      planningLine,
       "Audience: Hizmet veya ürün arayan son kullanıcılar.",
       "UI/UX Direction: Prompt'a özel, güven veren, net hiyerarşili, premium ve dönüşüm odaklı bir landing page.",
       "Required Pages/Sections: Sektöre özel hero, güven unsurları, hizmetler/özellikler, süreç, sosyal kanıt, SSS ve iletişim CTA.",
@@ -1464,6 +1603,7 @@ function createLocalPlannerBrief(userMessage: string): string {
   return [
     `Goal: Build a production-ready, modern, mobile-responsive web page for ${inferredTitle}.`,
     `Inferred Context: Sector=${inferredProfile.sector}, design direction=${inferredProfile.layout}, primary CTA=${inferredProfile.primary}.`,
+    planningLine,
     "Audience: End users evaluating the service or product.",
     "UI/UX Direction: Prompt-specific, trustworthy, premium, conversion-focused landing page with clear hierarchy.",
     "Required Pages/Sections: Sector-specific hero, trust strip, services/features, process, social proof, FAQ, and contact CTA.",
@@ -1475,9 +1615,10 @@ function createLocalPlannerBrief(userMessage: string): string {
 async function createBuilderResponse(
   input: string,
   provider: AiProviderConfig,
-  userMessage?: string
+  userMessage?: string,
+  options: BuildOptions = {}
 ): Promise<string> {
-  if (userMessage && isBuildRequest(userMessage)) {
+  if (userMessage && hasBuildIntent(userMessage, options)) {
     return createAiChatText({
       provider,
       system: input,
@@ -1489,6 +1630,10 @@ async function createBuilderResponse(
         "Use executable edit tags only.",
         "Rewrite src/app/page.tsx completely.",
         "The result must be specific to this prompt, not a reused generic template.",
+        options.planMode
+          ? "Plan mode is enabled and the clarification gate has already passed: include a concise implementation plan inside the <dec-code> block, then implement decisively."
+          : "Plan mode is disabled: infer professional defaults for missing minor details and implement directly.",
+        "Raise the UI quality bar: build polished navigation, rich sections, responsive behavior, strong typography, deliberate color, and product-specific copy. Avoid simple toy layouts.",
       ].join("\n"),
       temperature: Math.max(aiTemperature, 0.22),
     });
@@ -1552,6 +1697,7 @@ async function improveWithCriticLoop(params: {
   recentMessages: string;
   draft: string;
   provider: AiProviderConfig;
+  options?: BuildOptions;
 }): Promise<string> {
   let currentDraft = params.draft;
 
@@ -1613,7 +1759,8 @@ ${params.codeContext}
     currentDraft = await createBuilderResponse(
       revisionInput,
       params.provider,
-      params.userMessage
+      params.userMessage,
+      params.options
     );
   }
 
@@ -1626,8 +1773,9 @@ async function repairMissingExecutableEdits(params: {
   codeContext: string;
   draft: string;
   provider: AiProviderConfig;
+  options?: BuildOptions;
 }): Promise<string> {
-  if (!shouldForceFallbackPage(params.userMessage, params.draft)) {
+  if (!shouldForceFallbackPage(params.userMessage, params.draft, params.options)) {
     return params.draft;
   }
 
@@ -1663,7 +1811,8 @@ ${clipText(params.codeContext, 80_000)}
     const repaired = await createBuilderResponse(
       repairInput,
       params.provider,
-      params.userMessage
+      params.userMessage,
+      params.options
     );
     if (hasExecutableCodeOperations(repaired)) {
       return repaired;
@@ -1787,7 +1936,8 @@ async function buildAssistantMessageFromSession(
   containerId: string,
   userMessage: string,
   workloadEstimate?: AiWorkloadEstimate,
-  progress?: ProgressReporter
+  progress?: ProgressReporter,
+  options: BuildOptions = {}
 ): Promise<{ assistantMessage: Message }> {
   await progress?.(getBuildProgressCopy(userMessage, "scan", 8));
   const fileContentTree = await fileService.getFileContentTree(
@@ -1825,13 +1975,14 @@ async function buildAssistantMessageFromSession(
       .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
       .join("\n");
 
-    let plannerBrief = createLocalPlannerBrief(userMessage);
+    let plannerBrief = createLocalPlannerBrief(userMessage, options);
     await progress?.(getBuildProgressCopy(userMessage, "plan", 18));
     try {
       plannerBrief = await createPlannerBrief(
         userMessage,
         recentMessages,
-        provider
+        provider,
+        options
       );
     } catch (error) {
       console.warn(
@@ -1846,6 +1997,10 @@ async function buildAssistantMessageFromSession(
     const systemPrompt = `${prompt}
 
 ${BUILDER_SYSTEM_PROMPT}
+
+BUILD OPTIONS:
+- Plan mode: ${options.planMode ? "enabled" : "disabled"}
+- Quality target: polished Klawpen/Replit-style product prototype, not a basic template
 
 PLANNER BRIEF:
 ${plannerBrief}
@@ -1870,7 +2025,8 @@ ${codeContext}`;
       assistantContent = await createBuilderResponse(
         flattenedInput,
         provider,
-        userMessage
+        userMessage,
+        options
       );
 
       await progress?.(getBuildProgressCopy(userMessage, "review", 62));
@@ -1881,6 +2037,7 @@ ${codeContext}`;
         recentMessages: clipText(recentMessages, 10_000),
         draft: assistantContent,
         provider,
+        options,
       });
 
       await progress?.(getBuildProgressCopy(userMessage, "repair", 72));
@@ -1890,6 +2047,7 @@ ${codeContext}`;
         codeContext,
         draft: assistantContent,
         provider,
+        options,
       });
     } catch (error) {
       console.error(
@@ -1921,7 +2079,8 @@ ${codeContext}`;
     containerId,
     assistantContent,
     userMessage,
-    progress
+    progress,
+    options
   );
 
   if (applyResult.failed.length > 0) {
@@ -1962,7 +2121,8 @@ export async function sendMessage(
   containerId: string,
   userMessage: string,
   attachments: Attachment[] = [],
-  workloadEstimate?: AiWorkloadEstimate
+  workloadEstimate?: AiWorkloadEstimate,
+  options: BuildOptions = {}
 ): Promise<{ userMessage: Message; assistantMessage: Message }> {
   const session = getOrCreateChatSession(containerId);
   removeTrailingUnansweredUserMessage(session, userMessage);
@@ -1981,7 +2141,9 @@ export async function sendMessage(
     session,
     containerId,
     userMessage,
-    workloadEstimate
+    workloadEstimate,
+    undefined,
+    options
   );
 
   return {
@@ -1994,7 +2156,8 @@ export async function* sendMessageStream(
   containerId: string,
   userMessage: string,
   attachments: Attachment[] = [],
-  workloadEstimate?: AiWorkloadEstimate
+  workloadEstimate?: AiWorkloadEstimate,
+  options: BuildOptions = {}
 ): AsyncGenerator<{ type: "user" | "assistant" | "progress" | "done"; data: any }> {
   const session = getOrCreateChatSession(containerId);
   removeTrailingUnansweredUserMessage(session, userMessage);
@@ -2023,7 +2186,8 @@ export async function* sendMessageStream(
       progressQueue.push(progress);
       wakeProgressReader?.();
       wakeProgressReader = null;
-    }
+    },
+    options
   ).finally(() => {
     buildFinished = true;
     wakeProgressReader?.();

@@ -24,8 +24,8 @@ export type UiLanguage = "en" | "tr";
 export type UiSection = "home" | "projects" | "published";
 
 const fallbackAccountName = "kaichen";
-const UI_THEME_STORAGE_KEY = "december:ui-theme";
-const UI_LANGUAGE_STORAGE_KEY = "december:ui-language";
+const UI_THEME_STORAGE_KEY = "klawpen:ui-theme";
+const UI_LANGUAGE_STORAGE_KEY = "klawpen:ui-language";
 
 const isUiTheme = (value: string | null): value is UiTheme => value === "light" || value === "dark";
 const isUiLanguage = (value: string | null): value is UiLanguage => value === "en" || value === "tr";
@@ -132,7 +132,7 @@ const generateSharedProjects = (): SharedProject[] => {
       likes: randomLikeBase,
       category: preset.category,
       sharedAt: new Date(now - randomHoursAgo * 60 * 60 * 1000).toISOString(),
-      previewUrl: `https://picsum.photos/seed/december-shared-${index + 1}/900/900`,
+      previewUrl: `https://picsum.photos/seed/klawpen-shared-${index + 1}/900/900`,
     };
   });
 

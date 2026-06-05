@@ -56,12 +56,12 @@ type SettingsPanelSection =
   | "accountUsage"
   | "accountSeats"
   | "advanced";
-const ACCOUNT_PLAN_STORAGE_KEY = "december:account-plan";
-const UI_THEME_STORAGE_KEY = "december:ui-theme";
-const UI_LANGUAGE_STORAGE_KEY = "december:ui-language";
-const PROJECTS_NOTIFICATIONS_STORAGE_KEY = "december:projects:notifications";
-const PROJECTS_TWO_FACTOR_STORAGE_KEY = "december:projects:two-factor";
-const PROJECTS_LOGIN_ALERTS_STORAGE_KEY = "december:projects:login-alerts";
+const ACCOUNT_PLAN_STORAGE_KEY = "klawpen:account-plan";
+const UI_THEME_STORAGE_KEY = "klawpen:ui-theme";
+const UI_LANGUAGE_STORAGE_KEY = "klawpen:ui-language";
+const PROJECTS_NOTIFICATIONS_STORAGE_KEY = "klawpen:projects:notifications";
+const PROJECTS_TWO_FACTOR_STORAGE_KEY = "klawpen:projects:two-factor";
+const PROJECTS_LOGIN_ALERTS_STORAGE_KEY = "klawpen:projects:login-alerts";
 
 const isAccountPlan = (value: string | null): value is AccountPlan =>
   value === "starter" || value === "core" || value === "pro" || value === "enterprise";
@@ -149,8 +149,8 @@ export const ProjectsLayout = ({
     .join("")
     .slice(0, 2)
     .toUpperCase();
-  const profileStoragePrefix = `december:prefs:${accountName}`;
-  const legacyProfileStoragePrefix = `december:profile:${accountName}`;
+  const profileStoragePrefix = `klawpen:prefs:${accountName}`;
+  const legacyProfileStoragePrefix = `klawpen:profile:${accountName}`;
   const profileUsername = accountName.toLowerCase().replace(/\s+/g, "");
   const profileEmail = accountSnapshot?.profile.email || `${profileUsername}@icloud.com`;
   const displayedProfileAvatarUrl = profileAvatarDataUrl || accountSnapshot?.profile.avatarUrl || null;

@@ -121,7 +121,17 @@ function isLikelyTurkishMessage(message: string) {
 //@ts-ignore
 router.post("/:containerId/messages", async (req, res) => {
   const { containerId } = req.params;
-  const { message, attachments = [], stream = false } = req.body;
+  const { message, attachments = [], stream = false, options = {} } = req.body;
+  const buildOptions = {
+    planMode:
+      !!options &&
+      typeof options === "object" &&
+      (options.planMode === true || options.mode === "plan"),
+    forceBuild:
+      !!options &&
+      typeof options === "object" &&
+      options.forceBuild === true,
+  };
 
   if (!message || typeof message !== "string") {
     return res.status(400).json({
@@ -191,7 +201,10 @@ router.post("/:containerId/messages", async (req, res) => {
       });
     }
 
-    const clarificationReply = llmService.getBuildClarificationReply(message);
+    const clarificationReply = llmService.getBuildClarificationReply(
+      message,
+      buildOptions
+    );
 
     if (clarificationReply) {
       const { userMessage, assistantMessage } =
@@ -271,7 +284,13 @@ router.post("/:containerId/messages", async (req, res) => {
       });
     }
 
-    if (llmService.shouldUseConversationOnlyMode(message, safeAttachments.length)) {
+    if (
+      llmService.shouldUseConversationOnlyMode(
+        message,
+        safeAttachments.length,
+        buildOptions
+      )
+    ) {
       const { userMessage, assistantMessage } =
         await llmService.answerConversationOnlyMessage(
           containerId,
@@ -313,7 +332,8 @@ router.post("/:containerId/messages", async (req, res) => {
         containerId,
         message,
         safeAttachments,
-        workload
+        workload,
+        buildOptions
       );
 
       for await (const chunk of messageStream) {
@@ -327,7 +347,8 @@ router.post("/:containerId/messages", async (req, res) => {
         containerId,
         message,
         safeAttachments,
-        workload
+        workload,
+        buildOptions
       );
 
       res.json({

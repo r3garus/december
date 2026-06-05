@@ -450,7 +450,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
   ): Directory => {
     const rootDir: Directory = {
       id: parentId || "root",
-      name: "my-nextjs-app",
+      name: "Klawpen Workspace",
       type: Type.DIRECTORY,
       parentId: undefined,
       depth: 0,
