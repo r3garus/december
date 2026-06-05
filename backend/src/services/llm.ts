@@ -121,6 +121,8 @@ const ARCHITECT_SPEC_ENABLED =
 const BUILD_GATE_ENABLED = process.env.KLAWPEN_ENABLE_BUILD_GATE === "true";
 const PREVIEW_CHECK_ENABLED = process.env.KLAWPEN_ENABLE_PREVIEW_CHECK === "true";
 const CROSS_REVIEW_ENABLED = process.env.KLAWPEN_ENABLE_CROSS_REVIEW !== "false";
+const DETERMINISTIC_RUNTIME_FALLBACK_ENABLED =
+  process.env.KLAWPEN_DETERMINISTIC_RUNTIME_FALLBACK === "true";
 
 const VISUAL_ARCHETYPES: VisualArchetype[] = [
   {
@@ -284,7 +286,9 @@ const QUESTION_PATTERN =
 const VERY_VAGUE_BUILD_PATTERN =
   /^(bir\s+)?(site|website|web sitesi|landing|landing page|sayfa|dashboard|panel|app|uygulama)\s*(yap|olu[sş]tur|tasarla|build|create|make|design)?$/i;
 const RUNTIME_REPAIR_PATTERN =
-  /\b(runtime|referenceerror|server-side exception|application error|hata|hatasi|hatası|bozuk|calismiyor|çalışmıyor|duzelt|düzelt|onar|repair|fix|çalışır hale getir|calisir hale getir)\b/i;
+  /\b(runtime|referenceerror|typeerror|syntaxerror|rangeerror|server-side exception|application error|digest:|stack trace|module not found|cannot find module|hydration|build failed|compile error|compilation failed|next\.js error|react error|white screen|blank preview|preview blank|preview.*bomboş|preview.*bos|önizleme.*bomboş|onizleme.*bos|açılmıyor|acilmiyor|çalışmıyor|calismiyor)\b/i;
+const DESIGN_REVISION_PATTERN =
+  /\b(tasar[ıi]m|design|gör[üu]n[üu]m|gorunum|ayn[ıi]|same|template|şablon|sablon|renk|color|font|layout|sil[üu]et|hero|kart|card|animasyon|animation|profesyonel|modern|previewde görünen|previewde gorunen|önizlemede görünen|onizlemede gorunen)\b/i;
 const BUILD_DETAIL_PATTERN =
   /\b(premium|minimal|kurumsal|corporate|luxury|editorial|brutal|bold|modern|renk|color|style|tarz|hedef|audience|kitle|cta|sat[ıi][sş]|sales|randevu|booking|demo|portfolio|portfolyo|fiyat|pricing|sss|faq|dashboard|auth|login|register|blog|about|hakk[ıi]nda|contact|iletisim|ileti[sş]im|sayfa|pages|routes|route|section|b[öo]l[üu]m)\b/i;
 const GENERIC_BUILD_WORDS = new Set([
@@ -375,7 +379,18 @@ function hasBuildIntent(message: string, options: BuildOptions = {}): boolean {
 }
 
 function isRuntimeRepairRequest(message: string): boolean {
-  return RUNTIME_REPAIR_PATTERN.test(message);
+  if (!RUNTIME_REPAIR_PATTERN.test(message)) return false;
+
+  const explicitRuntimeError =
+    /\b(referenceerror|typeerror|syntaxerror|rangeerror|server-side exception|application error|digest:|stack trace|module not found|cannot find module|hydration|build failed|compile error|compilation failed|next\.js error|react error)\b/i.test(
+      message
+    );
+
+  if (!explicitRuntimeError && DESIGN_REVISION_PATTERN.test(message)) {
+    return false;
+  }
+
+  return true;
 }
 
 function isQuestion(message: string): boolean {
@@ -1257,15 +1272,24 @@ function extractCodeOperations(assistantContent: string): CodeOperation[] {
 
 function extractMarkdownCodeOperations(assistantContent: string): CodeOperation[] {
   const operations: CodeOperation[] = [];
-  const fencePattern =
-    /(?:^|\n)(?:file|path|filename)?\s*:?\s*`?((?:src|app|components|lib|styles|public)\/[^`\n]+\.(?:tsx|ts|jsx|js|css|json|mdx?))`?\s*\n```[a-zA-Z0-9_-]*\n([\s\S]*?)```/gi;
+  const filePathPattern =
+    "(?:src|app|components|lib|styles|public)/[^`\\n]+\\.(?:tsx|ts|jsx|js|css|json|mdx?)";
+  const fencePattern = new RegExp(
+    `(?:^|\\n)\\s*(?:[-*]\\s*)?(?:(?:file|path|filename)\\s*:?\\s*)?[\\\`"']?(${filePathPattern})[\\\`"']?\\s*:?\\s*\\n\\s*\\\`\\\`\\\`[a-zA-Z0-9_-]*\\n([\\s\\S]*?)\\\`\\\`\\\``,
+    "gi"
+  );
+  const headingFencePattern = new RegExp(
+    `(?:^|\\n)\\s{0,3}(?:#{1,6}\\s*)?[\\\`"']?(${filePathPattern})[\\\`"']?\\s*\\n\\s*\\\`\\\`\\\`[a-zA-Z0-9_-]*\\n([\\s\\S]*?)\\\`\\\`\\\``,
+    "gi"
+  );
   let match: RegExpExecArray | null;
 
-  while ((match = fencePattern.exec(assistantContent)) !== null) {
+  const pushMatch = (match: RegExpExecArray) => {
     const filePath = match[1]?.trim();
     const content = match[2];
 
     if (filePath && content !== undefined) {
+      if (operations.some((operation) => operation.path === filePath)) return;
       operations.push({
         type: "write",
         index: match.index,
@@ -1273,9 +1297,17 @@ function extractMarkdownCodeOperations(assistantContent: string): CodeOperation[
         content: content.trim(),
       });
     }
+  };
+
+  while ((match = fencePattern.exec(assistantContent)) !== null) {
+    pushMatch(match);
   }
 
-  return operations;
+  while ((match = headingFencePattern.exec(assistantContent)) !== null) {
+    pushMatch(match);
+  }
+
+  return operations.sort((left, right) => left.index - right.index);
 }
 
 function shouldForceFallbackPage(
@@ -1866,6 +1898,7 @@ function chooseFallbackProfile(userMessage: string): FallbackProfile {
 function buildFallbackSiteContent(userMessage: string) {
   const businessName = inferBusinessTitle(userMessage);
   const profile = chooseFallbackProfile(userMessage);
+  const visualArchetype = selectVisualArchetype(userMessage);
   const isTurkish = isLikelyTurkish(userMessage);
 
   const stats = isTurkish
@@ -1976,6 +2009,7 @@ function buildFallbackSiteContent(userMessage: string) {
   return {
     businessName,
     profile,
+    visualArchetype,
     nav,
     stats,
     signals,
@@ -1991,296 +2025,446 @@ function buildFallbackContentFile(content: ReturnType<typeof buildFallbackSiteCo
 }
 
 function buildFallbackGeneratedSiteComponent(): string {
-  return `import { siteContent } from "../lib/klawpen-generated-content";
+  return `import { siteContent } from "../lib/generated-site-content";
 
-export function GeneratedLandingPage() {
+const sectionPad = "px-4 sm:px-6 lg:px-10";
+
+function ShellNav() {
   const content = siteContent;
   const profile = content.profile;
 
   return (
-    <main
-      className="min-h-screen overflow-hidden"
-      style={{ background: profile.palette.bg, color: profile.palette.text }}
+    <nav
+      className="relative z-20 mx-auto flex max-w-7xl items-center justify-between gap-4 border-b py-5"
+      style={{ borderColor: profile.palette.border }}
     >
-      <section className="relative px-4 py-5 sm:px-6 lg:px-10">
-        <div
-          className="pointer-events-none absolute inset-0 opacity-90"
-          style={{
-            background:
-              "radial-gradient(circle at 12% 8%, " +
-              profile.palette.soft +
-              ", transparent 28%), radial-gradient(circle at 86% 10%, " +
-              profile.palette.accent +
-              "33, transparent 24%), linear-gradient(135deg, transparent, " +
-              profile.palette.border +
-              "55)",
-          }}
-        />
-
-        <nav
-          className="relative z-10 mx-auto flex max-w-7xl items-center justify-between rounded-[1.7rem] border px-4 py-3 shadow-sm backdrop-blur-xl sm:px-5"
-          style={{ borderColor: profile.palette.border, background: profile.palette.bg + "e6" }}
-        >
-          <a href="#top" className="text-lg font-black tracking-[-0.04em] sm:text-xl">
-            {content.businessName}
-          </a>
-          <div className="hidden items-center gap-1 md:flex">
-            {content.nav.map(([label, href]) => (
-              <a
-                key={href}
-                href={href}
-                className="rounded-full px-4 py-2 text-sm font-bold transition hover:bg-white/55"
-                style={{ color: profile.palette.muted }}
-              >
-                {label}
-              </a>
-            ))}
-          </div>
+      <a href="#top" className="text-xl font-black tracking-[-0.06em]">
+        {content.businessName}
+      </a>
+      <div className="hidden items-center gap-1 md:flex">
+        {content.nav.map(([label, href]) => (
           <a
-            href="#contact"
-            className="rounded-full px-5 py-2.5 text-sm font-black shadow-[0_14px_34px_rgba(0,0,0,0.14)]"
-            style={{ background: profile.palette.primary, color: profile.palette.primaryText }}
+            key={href}
+            href={href}
+            className="px-3 py-2 text-sm font-bold transition hover:opacity-60"
+            style={{ color: profile.palette.muted }}
           >
-            {content.labels.primaryCta}
+            {label}
           </a>
-        </nav>
+        ))}
+      </div>
+      <a
+        href="#contact"
+        className="rounded-full px-5 py-2.5 text-sm font-black shadow-lg transition hover:-translate-y-0.5"
+        style={{ background: profile.palette.primary, color: profile.palette.primaryText }}
+      >
+        {content.labels.primaryCta}
+      </a>
+    </nav>
+  );
+}
 
-        <div id="top" className="relative z-10 mx-auto grid max-w-7xl gap-10 py-16 lg:grid-cols-[0.95fr_1.05fr] lg:items-center lg:py-24">
+function EditorialLayout() {
+  const content = siteContent;
+  const profile = content.profile;
+
+  return (
+    <main className="min-h-screen overflow-hidden" style={{ background: profile.palette.bg, color: profile.palette.text }}>
+      <div className={sectionPad}>
+        <ShellNav />
+      </div>
+
+      <section id="top" className={sectionPad + " relative py-14 sm:py-20"}>
+        <div className="absolute left-[8%] top-12 h-72 w-72 rounded-full opacity-40 blur-3xl" style={{ background: profile.palette.soft }} />
+        <div className="relative mx-auto grid max-w-7xl gap-10 lg:grid-cols-[1.15fr_0.85fr] lg:items-end">
           <div>
-            <p
-              className="mb-6 inline-flex rounded-full border bg-white/65 px-4 py-2 text-xs font-black uppercase tracking-[0.22em]"
-              style={{ borderColor: profile.palette.border, color: profile.palette.accent }}
-            >
+            <p className="mb-8 inline-flex border-b pb-2 text-xs font-black uppercase tracking-[0.32em]" style={{ borderColor: profile.palette.primary, color: profile.palette.primary }}>
               {profile.badge}
             </p>
-            <h1 className="max-w-4xl text-[clamp(3.2rem,8vw,6.8rem)] font-black leading-[0.86] tracking-[-0.085em]">
+            <h1 className="max-w-5xl text-[clamp(4rem,10vw,9rem)] font-black leading-[0.78] tracking-[-0.1em]">
               {profile.headline}
             </h1>
-            <p className="mt-7 max-w-2xl text-lg leading-8 sm:text-xl" style={{ color: profile.palette.muted }}>
-              {profile.intro}
-            </p>
-            <div className="mt-9 flex flex-col gap-3 sm:flex-row">
-              <a
-                href="#contact"
-                className="rounded-full px-7 py-4 text-center font-black shadow-[0_18px_42px_rgba(0,0,0,0.14)]"
-                style={{ background: profile.palette.primary, color: profile.palette.primaryText }}
-              >
-                {content.labels.primaryCta}
-              </a>
-              <a
-                href="#solution"
-                className="rounded-full border bg-white/70 px-7 py-4 text-center font-black"
-                style={{ borderColor: profile.palette.border }}
-              >
-                {content.labels.secondaryCta}
-              </a>
-            </div>
-            <div className="mt-10 grid max-w-2xl grid-cols-3 gap-3">
-              {content.stats.map(([value, label]) => (
-                <div key={label} className="rounded-3xl border bg-white/60 p-4" style={{ borderColor: profile.palette.border }}>
-                  <p className="text-3xl font-black tracking-[-0.06em]">{value}</p>
-                  <p className="mt-1 text-xs font-bold leading-5" style={{ color: profile.palette.muted }}>
-                    {label}
-                  </p>
-                </div>
-              ))}
-            </div>
           </div>
-
-          <aside
-            className="relative overflow-hidden rounded-[2.6rem] border p-4 shadow-[0_34px_100px_rgba(0,0,0,0.2)]"
-            style={{ background: profile.palette.panel, borderColor: profile.palette.border, color: profile.palette.panelText }}
-          >
-            <div className="absolute right-[-10%] top-[-10%] h-56 w-56 rounded-full opacity-30 blur-3xl" style={{ background: profile.palette.primary }} />
-            <div className="relative rounded-[2.1rem] bg-white/10 p-5 sm:p-6">
-              <div className="mb-7 flex items-center justify-between">
-                <div>
-                  <p className="text-xs font-black uppercase tracking-[0.3em]" style={{ color: profile.palette.primary }}>
-                    {content.labels.heroMeta}
-                  </p>
-                  <h2 className="mt-3 text-2xl font-black tracking-[-0.04em]">{content.labels.dashboardTitle}</h2>
-                  <p className="mt-1 text-sm opacity-70">{content.labels.dashboardSubtitle}</p>
-                </div>
-                <div className="flex gap-1.5">
-                  {["", "", ""].map((_, index) => (
-                    <span key={index} className="h-3 w-3 rounded-full bg-white/30" />
-                  ))}
-                </div>
-              </div>
-
-              <div className="grid gap-3 sm:grid-cols-3">
-                {content.stats.map(([value, label]) => (
-                  <div key={label} className="rounded-3xl bg-white/10 p-4">
-                    <p className="text-2xl font-black">{value}</p>
-                    <p className="mt-1 text-xs leading-5 opacity-70">{label}</p>
-                  </div>
-                ))}
-              </div>
-
-              <div className="mt-5 rounded-[1.8rem] bg-black/12 p-4">
-                <div className="flex h-40 items-end gap-2">
-                  {[46, 72, 54, 88, 68, 94, 82].map((height, index) => (
-                    <div key={index} className="flex flex-1 items-end rounded-full bg-white/10 p-1">
-                      <span
-                        className="block w-full rounded-full"
-                        style={{ height: height + "%", background: profile.palette.primary }}
-                      />
-                    </div>
-                  ))}
-                </div>
-              </div>
+          <aside className="rounded-none border-l-4 p-7" style={{ borderColor: profile.palette.primary }}>
+            <p className="text-xl leading-9" style={{ color: profile.palette.muted }}>{profile.intro}</p>
+            <div className="mt-8 flex flex-wrap gap-3">
+              {profile.trust.map((item) => (
+                <span key={item} className="rounded-full border px-4 py-2 text-xs font-bold" style={{ borderColor: profile.palette.border }}>
+                  {item}
+                </span>
+              ))}
             </div>
           </aside>
         </div>
       </section>
 
-      <section id="solution" className="mx-auto max-w-7xl px-4 py-20 sm:px-6 lg:px-10">
-        <div className="mb-10 grid gap-6 lg:grid-cols-[0.8fr_1.2fr] lg:items-end">
-          <div>
-            <p className="text-sm font-black uppercase tracking-[0.28em]" style={{ color: profile.palette.primary }}>
-              {profile.servicesTitle}
-            </p>
-            <h2 className="mt-4 text-4xl font-black tracking-[-0.06em] sm:text-6xl">
-              {content.labels.signalTitle}
-            </h2>
-          </div>
-          <p className="max-w-2xl text-lg leading-8 lg:justify-self-end" style={{ color: profile.palette.muted }}>
-            {profile.intro}
-          </p>
-        </div>
-
-        <div className="grid gap-4 md:grid-cols-3">
-          {content.signals.map((item) => (
-            <article
-              key={item.title}
-              className="group rounded-[2rem] border bg-white/68 p-6 shadow-sm transition hover:-translate-y-1 hover:shadow-xl"
-              style={{ borderColor: profile.palette.border }}
-            >
-              <p className="text-xs font-black uppercase tracking-[0.24em]" style={{ color: profile.palette.primary }}>
-                {item.eyebrow}
-              </p>
-              <h3 className="mt-8 text-2xl font-black tracking-[-0.04em]">{item.title}</h3>
-              <p className="mt-4 leading-7" style={{ color: profile.palette.muted }}>{item.text}</p>
+      <section id="solution" className={sectionPad + " py-16"}>
+        <div className="mx-auto grid max-w-7xl gap-px overflow-hidden rounded-[2rem] border" style={{ borderColor: profile.palette.border, background: profile.palette.border }}>
+          {content.signals.map((item, index) => (
+            <article key={item.title} className="grid gap-5 bg-white/70 p-7 md:grid-cols-[0.22fr_0.78fr] md:p-10" style={{ backgroundColor: index % 2 ? profile.palette.bg : profile.palette.soft }}>
+              <p className="text-5xl font-black tracking-[-0.09em]" style={{ color: profile.palette.primary }}>0{index + 1}</p>
+              <div>
+                <p className="text-xs font-black uppercase tracking-[0.28em]" style={{ color: profile.palette.accent }}>{item.eyebrow}</p>
+                <h2 className="mt-4 text-4xl font-black tracking-[-0.06em]">{item.title}</h2>
+                <p className="mt-4 max-w-3xl text-lg leading-8" style={{ color: profile.palette.muted }}>{item.text}</p>
+              </div>
             </article>
           ))}
         </div>
       </section>
 
-      <section id="workflow" className="mx-auto max-w-7xl px-4 pb-20 sm:px-6 lg:px-10">
-        <div className="grid gap-5 lg:grid-cols-[0.9fr_1.1fr]">
-          <div className="rounded-[2.6rem] p-8 text-white sm:p-12" style={{ background: profile.palette.panel }}>
-            <p className="text-sm font-black uppercase tracking-[0.28em]" style={{ color: profile.palette.primary }}>
-              {content.labels.workflowTitle}
-            </p>
-            <h2 className="mt-5 text-4xl font-black tracking-[-0.06em] sm:text-6xl">
-              {content.labels.outcomesTitle}
-            </h2>
-            <p className="mt-5 max-w-xl leading-8 opacity-72">{content.labels.workflowIntro}</p>
+      <section id="workflow" className={sectionPad + " py-16"}>
+        <div className="mx-auto grid max-w-7xl gap-6 lg:grid-cols-[0.8fr_1.2fr]">
+          <div className="sticky top-6 h-fit">
+            <p className="text-sm font-black uppercase tracking-[0.3em]" style={{ color: profile.palette.primary }}>{content.labels.workflowTitle}</p>
+            <h2 className="mt-5 text-5xl font-black leading-none tracking-[-0.08em]">{content.labels.outcomesTitle}</h2>
           </div>
-          <div className="grid gap-4">
-            {content.workflow.map((item, index) => (
-              <article key={item.step} className="rounded-[2rem] border bg-white/72 p-6" style={{ borderColor: profile.palette.border }}>
-                <div className="flex gap-5">
-                  <span className="text-3xl font-black tracking-[-0.06em]" style={{ color: profile.palette.primary }}>
-                    0{index + 1}
-                  </span>
-                  <div>
-                    <h3 className="text-2xl font-black tracking-[-0.04em]">{item.step}</h3>
-                    <p className="mt-2 leading-7" style={{ color: profile.palette.muted }}>{item.text}</p>
-                  </div>
-                </div>
+          <div className="grid gap-5">
+            {content.workflow.map((item) => (
+              <article key={item.step} className="border-b pb-8" style={{ borderColor: profile.palette.border }}>
+                <h3 className="text-3xl font-black tracking-[-0.05em]">{item.step}</h3>
+                <p className="mt-3 text-lg leading-8" style={{ color: profile.palette.muted }}>{item.text}</p>
               </article>
             ))}
           </div>
         </div>
       </section>
 
-      <section id="proof" className="mx-auto max-w-7xl px-4 pb-20 sm:px-6 lg:px-10">
-        <div className="grid gap-5 lg:grid-cols-3">
-          {content.outcomes.map(([title, text]) => (
-            <article key={title} className="rounded-[2rem] border bg-white/72 p-7" style={{ borderColor: profile.palette.border }}>
-              <h3 className="text-2xl font-black tracking-[-0.04em]">{title}</h3>
-              <p className="mt-4 leading-7" style={{ color: profile.palette.muted }}>{text}</p>
-            </article>
-          ))}
-        </div>
-
-        <div className="mt-5 grid gap-5 lg:grid-cols-[1.1fr_0.9fr]">
-          <article className="rounded-[2.6rem] border bg-white/72 p-8 sm:p-12" style={{ borderColor: profile.palette.border }}>
-            <p className="text-sm font-black uppercase tracking-[0.28em]" style={{ color: profile.palette.primary }}>
-              {content.caseStudy.label}
-            </p>
-            <h2 className="mt-5 text-4xl font-black tracking-[-0.06em] sm:text-6xl">
-              {content.caseStudy.title}
-            </h2>
-            <p className="mt-5 max-w-2xl text-lg leading-8" style={{ color: profile.palette.muted }}>
-              {content.caseStudy.text}
-            </p>
-          </article>
-          <article className="rounded-[2.6rem] p-8 text-white sm:p-10" style={{ background: profile.palette.panel }}>
-            <p className="text-sm font-black uppercase tracking-[0.28em]" style={{ color: profile.palette.primary }}>
-              {content.labels.proofTitle}
-            </p>
-            <p className="mt-8 text-3xl font-black leading-tight tracking-[-0.05em]">“{profile.testimonial}”</p>
-            <div className="mt-8 space-y-3">
-              {profile.trust.map((item) => (
-                <div key={item} className="rounded-2xl bg-white/10 px-4 py-3 text-sm font-bold">
-                  {item}
-                </div>
-              ))}
-            </div>
-          </article>
-        </div>
-      </section>
-
-      <section id="faq" className="mx-auto max-w-7xl px-4 pb-20 sm:px-6 lg:px-10">
-        <div className="mb-8 flex items-end justify-between gap-6">
-          <h2 className="text-4xl font-black tracking-[-0.06em] sm:text-6xl">{content.labels.faqTitle}</h2>
-          <p className="hidden max-w-sm leading-7 md:block" style={{ color: profile.palette.muted }}>
-            {content.labels.finalText}
-          </p>
-        </div>
-        <div className="grid gap-4 md:grid-cols-2">
-          {profile.faq.map(([question, answer]) => (
-            <article key={question} className="rounded-[2rem] border bg-white/72 p-6" style={{ borderColor: profile.palette.border }}>
-              <h3 className="text-xl font-black tracking-[-0.03em]">{question}</h3>
-              <p className="mt-3 leading-7" style={{ color: profile.palette.muted }}>{answer}</p>
-            </article>
-          ))}
-        </div>
-      </section>
-
-      <section id="contact" className="px-4 pb-24 sm:px-6 lg:px-10">
-        <div className="mx-auto max-w-6xl overflow-hidden rounded-[2.8rem] p-8 text-center text-white sm:p-14" style={{ background: profile.palette.panel }}>
-          <p className="text-xs font-black uppercase tracking-[0.3em]" style={{ color: profile.palette.primary }}>
-            {content.labels.builtBy}
-          </p>
-          <h2 className="mx-auto mt-5 max-w-4xl text-4xl font-black tracking-[-0.07em] sm:text-7xl">
-            {content.labels.finalTitle}
-          </h2>
-          <p className="mx-auto mt-5 max-w-2xl leading-8 opacity-75">{content.labels.finalText}</p>
-          <a
-            href="mailto:hello@example.com"
-            className="mt-9 inline-flex rounded-full px-8 py-4 font-black"
-            style={{ background: profile.palette.primary, color: profile.palette.primaryText }}
-          >
-            {content.labels.primaryCta}
-          </a>
-        </div>
-      </section>
+      <ProofAndFaq />
+      <FinalCta />
     </main>
   );
 }
-`;
+
+function DashboardLayout() {
+  const content = siteContent;
+  const profile = content.profile;
+
+  return (
+    <main className="min-h-screen overflow-hidden" style={{ background: profile.palette.panel, color: profile.palette.panelText }}>
+      <section id="top" className={sectionPad + " py-5"}>
+        <ShellNav />
+        <div className="mx-auto mt-10 grid max-w-7xl gap-5 lg:grid-cols-[280px_1fr]">
+          <aside className="rounded-[2rem] border bg-white/8 p-5" style={{ borderColor: profile.palette.primary + "55" }}>
+            <p className="text-xs font-black uppercase tracking-[0.32em]" style={{ color: profile.palette.primary }}>{profile.badge}</p>
+            <div className="mt-7 space-y-3">
+              {content.nav.map(([label, href]) => (
+                <a key={href} href={href} className="block rounded-2xl bg-white/10 px-4 py-3 text-sm font-bold transition hover:bg-white/15">
+                  {label}
+                </a>
+              ))}
+            </div>
+          </aside>
+          <div className="rounded-[2.4rem] border bg-white/8 p-5 sm:p-8" style={{ borderColor: profile.palette.primary + "55" }}>
+            <div className="grid gap-5 lg:grid-cols-[1fr_360px]">
+              <div>
+                <h1 className="text-[clamp(3rem,8vw,7.4rem)] font-black leading-[0.84] tracking-[-0.09em]">{profile.headline}</h1>
+                <p className="mt-6 max-w-3xl text-lg leading-8 opacity-75">{profile.intro}</p>
+              </div>
+              <div className="grid gap-3">
+                {content.stats.map(([value, label]) => (
+                  <div key={label} className="rounded-[1.5rem] bg-black/20 p-5">
+                    <p className="text-4xl font-black" style={{ color: profile.palette.primary }}>{value}</p>
+                    <p className="mt-1 text-sm opacity-70">{label}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="mt-7 rounded-[2rem] bg-black/25 p-5">
+              <div className="mb-4 flex items-center justify-between">
+                <p className="font-black">{content.labels.dashboardTitle}</p>
+                <span className="rounded-full px-3 py-1 text-xs font-black" style={{ background: profile.palette.primary, color: profile.palette.primaryText }}>LIVE</span>
+              </div>
+              <div className="grid gap-3 md:grid-cols-3">
+                {content.signals.map((item) => (
+                  <div key={item.title} className="rounded-2xl border border-white/10 bg-white/7 p-4">
+                    <p className="text-xs uppercase tracking-[0.22em] opacity-50">{item.eyebrow}</p>
+                    <h3 className="mt-6 text-xl font-black">{item.title}</h3>
+                    <p className="mt-2 text-sm leading-6 opacity-65">{item.text}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+      <DashboardSections />
+      <FinalCta dark />
+    </main>
+  );
 }
 
+function CommerceLayout() {
+  const content = siteContent;
+  const profile = content.profile;
+
+  return (
+    <main className="min-h-screen" style={{ background: profile.palette.bg, color: profile.palette.text }}>
+      <div className={sectionPad}>
+        <ShellNav />
+      </div>
+      <section id="top" className={sectionPad + " py-12"}>
+        <div className="mx-auto grid max-w-7xl gap-8 lg:grid-cols-[0.85fr_1.15fr] lg:items-center">
+          <div>
+            <p className="rounded-full border px-4 py-2 text-xs font-black uppercase tracking-[0.28em]" style={{ borderColor: profile.palette.border, color: profile.palette.primary }}>{profile.badge}</p>
+            <h1 className="mt-7 text-[clamp(3.4rem,8vw,7rem)] font-black leading-[0.85] tracking-[-0.09em]">{profile.headline}</h1>
+            <p className="mt-6 text-lg leading-8" style={{ color: profile.palette.muted }}>{profile.intro}</p>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            {content.signals.concat(content.outcomes.map(([title, text]) => ({ title, text, eyebrow: content.labels.proofTitle }))).slice(0, 4).map((item, index) => (
+              <article key={item.title} className="group rounded-[2rem] border bg-white p-5 shadow-sm transition hover:-translate-y-1 hover:shadow-2xl" style={{ borderColor: profile.palette.border }}>
+                <div className="aspect-[4/3] rounded-[1.5rem]" style={{ background: index % 2 ? profile.palette.soft : profile.palette.panel }} />
+                <p className="mt-5 text-xs font-black uppercase tracking-[0.22em]" style={{ color: profile.palette.primary }}>{item.eyebrow}</p>
+                <h3 className="mt-3 text-2xl font-black tracking-[-0.04em]">{item.title}</h3>
+                <p className="mt-2 leading-7" style={{ color: profile.palette.muted }}>{item.text}</p>
+              </article>
+            ))}
+          </div>
+        </div>
+      </section>
+      <ProofAndFaq />
+      <FinalCta />
+    </main>
+  );
+}
+
+function ClinicLayout() {
+  const content = siteContent;
+  const profile = content.profile;
+
+  return (
+    <main className="min-h-screen overflow-hidden" style={{ background: profile.palette.panel, color: profile.palette.panelText }}>
+      <section id="top" className={sectionPad + " relative py-5"}>
+        <div className="pointer-events-none absolute inset-0 opacity-70" style={{ background: "radial-gradient(circle at 18% 20%," + profile.palette.primary + "55,transparent 28%), radial-gradient(circle at 82% 12%," + profile.palette.accent + "33,transparent 24%), linear-gradient(160deg," + profile.palette.panel + " 0%," + profile.palette.text + " 120%)" }} />
+        <div className="relative mx-auto flex max-w-7xl items-center justify-between border-b border-white/10 py-5">
+          <a href="#top" className="text-xl font-black tracking-[-0.06em]">{content.businessName}</a>
+          <div className="hidden items-center gap-6 md:flex">
+            {content.nav.map(([label, href]) => (
+              <a key={href} href={href} className="text-sm font-bold text-white/58 transition hover:text-white">{label}</a>
+            ))}
+          </div>
+          <a href="#contact" className="rounded-full px-5 py-2.5 text-sm font-black" style={{ background: profile.palette.primary, color: profile.palette.primaryText }}>{content.labels.primaryCta}</a>
+        </div>
+        <div className="relative mx-auto grid max-w-7xl gap-6 py-14 lg:grid-cols-[360px_1fr] lg:py-20">
+          <aside className="order-2 rounded-[2.2rem] border border-white/10 bg-white/[0.08] p-5 backdrop-blur lg:order-1">
+            <p className="text-xs font-black uppercase tracking-[0.3em]" style={{ color: profile.palette.primary }}>{content.labels.heroMeta}</p>
+            <h2 className="mt-5 text-3xl font-black tracking-[-0.05em]">{content.labels.dashboardTitle}</h2>
+            <div className="mt-7 space-y-3">
+              {profile.trust.map((item, index) => (
+                <div key={item} className="flex items-center justify-between rounded-2xl bg-black/20 px-4 py-3">
+                  <span className="text-sm font-bold text-white/78">{item}</span>
+                  <span className="text-xs font-black" style={{ color: profile.palette.primary }}>0{index + 1}</span>
+                </div>
+              ))}
+            </div>
+            <div className="mt-6 rounded-[1.5rem] p-4" style={{ background: profile.palette.primary, color: profile.palette.primaryText }}>
+              <p className="text-sm font-black">{content.labels.primaryCta}</p>
+              <p className="mt-2 text-sm opacity-75">{content.labels.dashboardSubtitle}</p>
+            </div>
+          </aside>
+          <div className="order-1 lg:order-2">
+            <p className="inline-flex rounded-full border border-white/12 px-4 py-2 text-xs font-black uppercase tracking-[0.26em]" style={{ color: profile.palette.accent }}>{profile.badge}</p>
+            <h1 className="mt-8 max-w-5xl text-[clamp(3.4rem,9vw,8.5rem)] font-black leading-[0.8] tracking-[-0.1em]">{profile.headline}</h1>
+            <p className="mt-8 max-w-3xl text-xl leading-9 text-white/68">{profile.intro}</p>
+            <div className="mt-10 grid gap-3 sm:grid-cols-3">
+              {content.stats.map(([value, label]) => (
+                <div key={label} className="border-t border-white/14 pt-4">
+                  <p className="text-4xl font-black" style={{ color: profile.palette.primary }}>{value}</p>
+                  <p className="mt-2 text-sm text-white/58">{label}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </section>
+      <section id="solution" className={sectionPad + " py-16"} style={{ background: profile.palette.bg, color: profile.palette.text }}>
+        <div className="mx-auto max-w-7xl">
+          <div className="grid gap-5 lg:grid-cols-[0.8fr_1.2fr]">
+            <div>
+              <p className="text-sm font-black uppercase tracking-[0.3em]" style={{ color: profile.palette.primary }}>{profile.servicesTitle}</p>
+              <h2 className="mt-5 text-5xl font-black leading-none tracking-[-0.08em]">{content.labels.signalTitle}</h2>
+            </div>
+            <div className="grid gap-4 md:grid-cols-3">
+              {content.signals.map((item) => (
+                <article key={item.title} className="rounded-[2rem] border bg-white p-6 shadow-sm transition hover:-translate-y-1" style={{ borderColor: profile.palette.border }}>
+                  <p className="text-xs font-black uppercase tracking-[0.22em]" style={{ color: profile.palette.accent }}>{item.eyebrow}</p>
+                  <h3 className="mt-8 text-2xl font-black tracking-[-0.04em]">{item.title}</h3>
+                  <p className="mt-4 leading-7" style={{ color: profile.palette.muted }}>{item.text}</p>
+                </article>
+              ))}
+            </div>
+          </div>
+        </div>
+      </section>
+      <section id="workflow" className={sectionPad + " py-16"} style={{ background: profile.palette.bg, color: profile.palette.text }}>
+        <div className="mx-auto max-w-7xl rounded-[2.5rem] border p-6 md:p-10" style={{ borderColor: profile.palette.border, background: profile.palette.soft }}>
+          <h2 className="text-5xl font-black tracking-[-0.08em]">{content.labels.workflowTitle}</h2>
+          <div className="mt-8 grid gap-4 md:grid-cols-3">
+            {content.workflow.map((item, index) => (
+              <article key={item.step} className="rounded-[1.7rem] bg-white/80 p-5">
+                <span className="text-5xl font-black tracking-[-0.1em]" style={{ color: profile.palette.primary }}>0{index + 1}</span>
+                <h3 className="mt-5 text-2xl font-black">{item.step}</h3>
+                <p className="mt-3 leading-7" style={{ color: profile.palette.muted }}>{item.text}</p>
+              </article>
+            ))}
+          </div>
+        </div>
+      </section>
+      <ProofAndFaq />
+      <FinalCta />
+    </main>
+  );
+}
+
+function ServiceLayout() {
+  const content = siteContent;
+  const profile = content.profile;
+
+  return (
+    <main className="min-h-screen overflow-hidden" style={{ background: profile.palette.bg, color: profile.palette.text }}>
+      <section id="top" className={sectionPad + " relative py-5"}>
+        <div className="absolute inset-0 opacity-80" style={{ background: "linear-gradient(135deg," + profile.palette.soft + ",transparent 55%), radial-gradient(circle at 88% 12%," + profile.palette.accent + "44,transparent 26%)" }} />
+        <div className="relative"><ShellNav /></div>
+        <div className="relative mx-auto mt-12 grid max-w-7xl gap-8 lg:grid-cols-[0.9fr_1.1fr] lg:items-center">
+          <div>
+            <p className="mb-6 inline-flex rounded-full border bg-white/60 px-4 py-2 text-xs font-black uppercase tracking-[0.24em]" style={{ borderColor: profile.palette.border, color: profile.palette.accent }}>{profile.badge}</p>
+            <h1 className="max-w-4xl text-[clamp(3.2rem,8vw,7rem)] font-black leading-[0.84] tracking-[-0.09em]">{profile.headline}</h1>
+            <p className="mt-7 max-w-2xl text-lg leading-8" style={{ color: profile.palette.muted }}>{profile.intro}</p>
+            <div className="mt-8 flex flex-wrap gap-3">
+              <a href="#contact" className="rounded-full px-7 py-4 font-black" style={{ background: profile.palette.primary, color: profile.palette.primaryText }}>{content.labels.primaryCta}</a>
+              <a href="#solution" className="rounded-full border bg-white/70 px-7 py-4 font-black" style={{ borderColor: profile.palette.border }}>{content.labels.secondaryCta}</a>
+            </div>
+          </div>
+          <div className="rounded-[2.4rem] border bg-white/70 p-5 shadow-2xl" style={{ borderColor: profile.palette.border }}>
+            <div className="rounded-[1.8rem] p-5" style={{ background: profile.palette.panel, color: profile.palette.panelText }}>
+              <p className="text-xs font-black uppercase tracking-[0.28em]" style={{ color: profile.palette.primary }}>{content.labels.heroMeta}</p>
+              <h2 className="mt-4 text-3xl font-black tracking-[-0.05em]">{content.labels.dashboardTitle}</h2>
+              <div className="mt-6 space-y-3">
+                {profile.trust.map((item) => <div key={item} className="rounded-2xl bg-white/10 px-4 py-3 text-sm font-bold">{item}</div>)}
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+      <ServiceSections />
+      <ProofAndFaq />
+      <FinalCta />
+    </main>
+  );
+}
+
+function ServiceSections() {
+  const content = siteContent;
+  const profile = content.profile;
+  return (
+    <section id="solution" className={sectionPad + " py-20"}>
+      <div className="mx-auto max-w-7xl">
+        <div className="mb-10 flex flex-col justify-between gap-4 md:flex-row md:items-end">
+          <h2 className="max-w-3xl text-5xl font-black tracking-[-0.07em]">{content.labels.signalTitle}</h2>
+          <p className="max-w-md leading-7" style={{ color: profile.palette.muted }}>{content.labels.workflowIntro}</p>
+        </div>
+        <div className="grid gap-4 md:grid-cols-3">
+          {content.signals.map((item) => (
+            <article key={item.title} className="rounded-[2rem] border bg-white/70 p-6 transition hover:-translate-y-1" style={{ borderColor: profile.palette.border }}>
+              <p className="text-xs font-black uppercase tracking-[0.22em]" style={{ color: profile.palette.primary }}>{item.eyebrow}</p>
+              <h3 className="mt-8 text-2xl font-black tracking-[-0.04em]">{item.title}</h3>
+              <p className="mt-4 leading-7" style={{ color: profile.palette.muted }}>{item.text}</p>
+            </article>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function DashboardSections() {
+  const content = siteContent;
+  const profile = content.profile;
+  return (
+    <section id="workflow" className={sectionPad + " py-16"}>
+      <div className="mx-auto grid max-w-7xl gap-5 lg:grid-cols-3">
+        {content.workflow.map((item, index) => (
+          <article key={item.step} className="rounded-[2rem] border border-white/10 bg-white/7 p-6">
+            <span className="text-4xl font-black" style={{ color: profile.palette.primary }}>0{index + 1}</span>
+            <h3 className="mt-6 text-2xl font-black">{item.step}</h3>
+            <p className="mt-3 leading-7 opacity-70">{item.text}</p>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function ProofAndFaq() {
+  const content = siteContent;
+  const profile = content.profile;
+  return (
+    <>
+      <section id="proof" className={sectionPad + " py-16"}>
+        <div className="mx-auto grid max-w-7xl gap-5 lg:grid-cols-[1.15fr_0.85fr]">
+          <article className="rounded-[2.4rem] border p-8 sm:p-12" style={{ borderColor: profile.palette.border, background: profile.palette.soft }}>
+            <p className="text-xs font-black uppercase tracking-[0.28em]" style={{ color: profile.palette.primary }}>{content.caseStudy.label}</p>
+            <h2 className="mt-5 text-4xl font-black tracking-[-0.06em] sm:text-6xl">{content.caseStudy.title}</h2>
+            <p className="mt-5 max-w-2xl text-lg leading-8" style={{ color: profile.palette.muted }}>{content.caseStudy.text}</p>
+          </article>
+          <article className="rounded-[2.4rem] p-8 text-white" style={{ background: profile.palette.panel }}>
+            <p className="text-sm font-black uppercase tracking-[0.28em]" style={{ color: profile.palette.primary }}>{content.labels.proofTitle}</p>
+            <p className="mt-8 text-3xl font-black leading-tight tracking-[-0.05em]">“{profile.testimonial}”</p>
+          </article>
+        </div>
+      </section>
+      <section id="faq" className={sectionPad + " py-16"}>
+        <div className="mx-auto max-w-7xl">
+          <h2 className="text-5xl font-black tracking-[-0.07em]">{content.labels.faqTitle}</h2>
+          <div className="mt-8 grid gap-4 md:grid-cols-2">
+            {profile.faq.map(([question, answer]) => (
+              <article key={question} className="rounded-[1.6rem] border p-6" style={{ borderColor: profile.palette.border }}>
+                <h3 className="text-xl font-black">{question}</h3>
+                <p className="mt-3 leading-7" style={{ color: profile.palette.muted }}>{answer}</p>
+              </article>
+            ))}
+          </div>
+        </div>
+      </section>
+    </>
+  );
+}
+
+function FinalCta({ dark = false }: { dark?: boolean }) {
+  const content = siteContent;
+  const profile = content.profile;
+  return (
+    <section id="contact" className={sectionPad + " pb-24 pt-10"}>
+      <div className="mx-auto max-w-6xl rounded-[2.6rem] p-8 text-center sm:p-14" style={{ background: profile.palette.panel, color: profile.palette.panelText }}>
+        <p className="text-xs font-black uppercase tracking-[0.3em]" style={{ color: profile.palette.primary }}>{content.labels.builtBy}</p>
+        <h2 className="mx-auto mt-5 max-w-4xl text-4xl font-black tracking-[-0.07em] sm:text-7xl">{content.labels.finalTitle}</h2>
+        <p className="mx-auto mt-5 max-w-2xl leading-8 opacity-75">{content.labels.finalText}</p>
+        <a href="mailto:hello@example.com" className="mt-9 inline-flex rounded-full px-8 py-4 font-black" style={{ background: profile.palette.primary, color: profile.palette.primaryText }}>
+          {content.labels.primaryCta}
+        </a>
+      </div>
+    </section>
+  );
+}
+
+export function GeneratedLandingPage() {
+  const key = siteContent.visualArchetype.key;
+
+  if (siteContent.profile.sector === "dental") return <ClinicLayout />;
+  if (key === "operational-dashboard" || key === "technical-terminal") return <DashboardLayout />;
+  if (key === "commerce-catalog" || key === "immersive-event") return <CommerceLayout />;
+  if (key === "editorial-luxury" || key === "boutique-studio" || key === "neo-brutal-product") return <EditorialLayout />;
+  return <ServiceLayout />;
+}
+`;
+}
 function buildFallbackLandingPage(_userMessage: string): string {
   return `import type { Metadata } from "next";
-import { GeneratedLandingPage } from "../components/klawpen-generated-site";
-import { siteContent } from "../lib/klawpen-generated-content";
+import { GeneratedLandingPage } from "../components/generated-site";
+import { siteContent } from "../lib/generated-site-content";
 
 export const metadata: Metadata = {
-  title: siteContent.businessName + " | Klawpen Built Website",
+  title: siteContent.businessName,
   description: siteContent.profile.intro,
 };
 
@@ -2292,8 +2476,8 @@ export default function Home() {
 
 function buildFallbackServicesPage(_userMessage: string): string {
   return `import type { Metadata } from "next";
-import { GeneratedLandingPage } from "../../components/klawpen-generated-site";
-import { siteContent } from "../../lib/klawpen-generated-content";
+import { GeneratedLandingPage } from "../../components/generated-site";
+import { siteContent } from "../../lib/generated-site-content";
 
 export const metadata: Metadata = {
   title: siteContent.profile.servicesTitle + " | " + siteContent.businessName,
@@ -2308,8 +2492,8 @@ export default function ServicesPage() {
 
 function buildFallbackContactPage(_userMessage: string): string {
   return `import type { Metadata } from "next";
-import { GeneratedLandingPage } from "../../components/klawpen-generated-site";
-import { siteContent } from "../../lib/klawpen-generated-content";
+import { GeneratedLandingPage } from "../../components/generated-site";
+import { siteContent } from "../../lib/generated-site-content";
 
 export const metadata: Metadata = {
   title: siteContent.labels.finalTitle + " | " + siteContent.businessName,
@@ -2329,13 +2513,13 @@ function buildFallbackOperations(userMessage: string): CodeOperation[] {
     {
       type: "write",
       index: Number.MAX_SAFE_INTEGER - 4,
-      path: "src/lib/klawpen-generated-content.ts",
+      path: "src/lib/generated-site-content.ts",
       content: buildFallbackContentFile(content),
     },
     {
       type: "write",
       index: Number.MAX_SAFE_INTEGER - 3,
-      path: "src/components/klawpen-generated-site.tsx",
+      path: "src/components/generated-site.tsx",
       content: buildFallbackGeneratedSiteComponent(),
     },
     {
@@ -2369,12 +2553,12 @@ function buildFallbackAssistantContent(userMessage: string, reason: string): str
     "<dec-code>",
     "Plan:",
     "- " + reason,
-    "- Apply a structured Klawpen fallback with content, component, and page files.",
+    "- Build a structured multi-page version with content, component, and page files.",
     ...writes,
     "</dec-code>",
     isLikelyTurkish(userMessage)
-      ? "Klawpen Core güvenli ama çok bölümlü bir ilk sürüm uyguladı."
-      : "Klawpen Core applied a safe but multi-section first version.",
+      ? "Çok sayfalı ilk sürüm hazırlandı; tasarım yönünü promptuna göre daha da keskinleştirebilirsin."
+      : "A multi-page first version is ready; you can refine the design direction further from your prompt.",
   ].join("\n");
 }
 
@@ -3058,12 +3242,21 @@ ${clipText(params.codeContext, 80_000)}
       repairedValidation.issues
     );
 
-    return hasExecutableCodeOperations(repaired)
-      ? repaired
-      : buildFallbackAssistantContent(
-          params.userMessage,
-          "Architect/spec validation repair did not return executable edit tags."
-        );
+    if (hasExecutableCodeOperations(repaired)) {
+      return repaired;
+    }
+
+    if (hasExecutableCodeOperations(params.draft)) {
+      console.warn(
+        "Spec repair did not return executable edit tags; keeping the original executable AI draft instead of replacing it with fallback."
+      );
+      return params.draft;
+    }
+
+    return buildFallbackAssistantContent(
+      params.userMessage,
+      "Architect/spec validation repair did not return executable edit tags."
+    );
   } catch (error) {
     console.warn(
       "Spec validation repair failed; keeping previous draft:",
@@ -3433,13 +3626,20 @@ ${clipText(params.codeContext, 80_000)}
       }
 
       console.warn(
-        "AI repair response was executable but still too shallow, reused builder branding, or mixed visible UI language; falling back to structured local build."
+        "AI repair response was executable but still shallow, reused builder branding, or mixed visible UI language; keeping executable AI output instead of replacing it with fallback."
       );
+      return repaired;
     }
 
     console.warn(
       "AI repair response still did not meet executable/depth/branding requirements; falling back to generated landing page."
     );
+    if (hasExecutableCodeOperations(params.draft)) {
+      console.warn(
+        "AI repair response had no executable edit tags; keeping the original executable AI draft instead of replacing it with fallback."
+      );
+      return params.draft;
+    }
     return buildFallbackAssistantContent(
       params.userMessage,
       "AI repair response still had no executable edit tags."
@@ -3449,6 +3649,12 @@ ${clipText(params.codeContext, 80_000)}
       "AI repair pass failed; falling back to generated landing page:",
       error instanceof Error ? error.message : error
     );
+    if (hasExecutableCodeOperations(params.draft)) {
+      console.warn(
+        "AI repair pass failed; keeping the original executable AI draft instead of replacing it with fallback."
+      );
+      return params.draft;
+    }
     return buildFallbackAssistantContent(
       params.userMessage,
       "AI repair pass failed before returning executable edit tags."
@@ -3650,7 +3856,10 @@ async function buildAssistantMessageFromSession(
   const codeContext = clipText(rawContext, 120_000);
   let assistantContent: string;
 
-  if (isRuntimeRepairRequest(userMessage)) {
+  if (
+    DETERMINISTIC_RUNTIME_FALLBACK_ENABLED &&
+    isRuntimeRepairRequest(userMessage)
+  ) {
     await progress?.(getBuildProgressCopy(userMessage, "repair", 28, [
       "src/app/page.tsx",
     ]));
