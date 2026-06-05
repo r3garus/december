@@ -882,9 +882,11 @@ function buildFallbackLandingPage(userMessage: string): string {
 
   return `import type { Metadata } from "next";
 
+const businessName = ${JSON.stringify(title)};
+
 export const metadata: Metadata = {
-  title: "${title} | Modern Service Landing Page",
-  description: "${copy.intro}",
+  title: ${JSON.stringify(`${title} | Modern Service Landing Page`)},
+  description: ${JSON.stringify(copy.intro)},
 };
 
 const services = ${
@@ -921,7 +923,7 @@ export default function Home() {
       <section className="relative overflow-hidden px-6 py-8 sm:px-10 lg:px-16">
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_15%_20%,rgba(38,88,73,0.22),transparent_28%),radial-gradient(circle_at_80%_0%,rgba(224,139,72,0.28),transparent_30%)]" />
         <nav className="relative z-10 mx-auto flex max-w-7xl items-center justify-between rounded-full border border-[#17201a]/10 bg-white/55 px-5 py-3 backdrop-blur">
-          <div className="text-lg font-black tracking-[-0.04em]">{title}</div>
+          <div className="text-lg font-black tracking-[-0.04em]">{businessName}</div>
           <a href="#contact" className="rounded-full bg-[#17201a] px-5 py-2 text-sm font-bold text-white">
             ${copy.primary}
           </a>
