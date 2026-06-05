@@ -25,6 +25,9 @@ const aiMaxRetries = aiSdkConfig.maxRetries ?? 2;
 const aiMinQualityScore = aiSdkConfig.minQualityScore ?? 88;
 const aiMaxCriticRounds = aiSdkConfig.maxCriticRounds ?? 3;
 const AI_REQUEST_TIMEOUT_MS = Number(process.env.AI_REQUEST_TIMEOUT_MS || "150000");
+const AI_BUILDER_TIMEOUT_MS = Number(
+  process.env.AI_BUILDER_TIMEOUT_MS || "300000"
+);
 
 function getAiClient(provider: AiProviderConfig) {
   const cacheKey = `${provider.key}:${provider.baseUrl}`;
@@ -881,10 +884,12 @@ async function createAiChatText(params: {
   user: string | any[];
   temperature?: number;
   retries?: number;
+  timeoutMs?: number;
 }): Promise<string> {
   const client = getAiClient(params.provider);
   const temperature = params.temperature ?? aiTemperature;
   const retries = params.retries ?? aiMaxRetries;
+  const timeoutMs = params.timeoutMs ?? AI_REQUEST_TIMEOUT_MS;
 
   const response = await withRetries(
     () =>
@@ -898,7 +903,7 @@ async function createAiChatText(params: {
           // @ts-ignore
           temperature,
         }),
-        AI_REQUEST_TIMEOUT_MS,
+        timeoutMs,
         `${params.provider.key} structured chat completion`
       ),
     retries
@@ -1498,6 +1503,29 @@ function getVisualDiversityIssues(
     );
   }
 
+  if (
+    /\b(blog|magazin|magazine|haber|news|article|makale|yazar|icerik|içerik|publishing|yayin|yayın)\b/.test(
+      normalizedPrompt
+    )
+  ) {
+    const blogSignals = [
+      /\b(article|articles|blog|post|posts|story|stories|magazine|editor|author|newsletter|topic|category|reading time|read time)\b/i,
+      /\b(yaz[ıi]|makale|haber|dosya|edit[öo]r|yazar|b[üu]lten|kategori|konu|okuma s[üu]resi)\b/i,
+    ];
+
+    if (!blogSignals.some((pattern) => pattern.test(combined))) {
+      issues.push(
+        "Blog/editorial request lacks real publication modules: add featured story, article cards, categories, authors, reading-time metadata, and newsletter capture."
+      );
+    }
+
+    if (/\b(Anlaml[ıi] b[öo]l[üu]m|Net d[öo]n[üu][sş][üu]m ad[ıi]m[ıi]|First-value clarity|Meaningful sections|Clear conversion steps)\b/i.test(combined)) {
+      issues.push(
+        "Blog/editorial request contains generic landing-page stats; replace them with editorial metrics, article metadata, or topic/author details."
+      );
+    }
+  }
+
   const archetypePatternMap: Record<string, RegExp[]> = {
     "editorial-luxury": [/pull|quote|story|magazine|editorial|serif|prose/i, /grid-cols-\[|asym|span-2|col-span/i],
     "neo-brutal-product": [/border-2|border-4|shadow-\[|uppercase|tracking-\[/i, /rotate-|translate-|offset|sticker/i],
@@ -1520,12 +1548,12 @@ function getVisualDiversityIssues(
   }
 
   const domainSpecificSignals = [
-    /\b(menu|reservation|booking|randevu|tedavi|implant|clinic|klinik|case|dava|contract|s[öo]zle[sş]me|ticket|bilet|schedule|speaker|catalog|cart|checkout|sepet|api|sdk|terminal|metric|analytics|dashboard)\b/i,
-    /\b(service area|practice area|treatment|product catalog|appointment|availability|location|integration|workflow|timeline|pricing table)\b/i,
+    /\b(menu|reservation|booking|randevu|tedavi|implant|clinic|klinik|case|dava|contract|s[öo]zle[sş]me|ticket|bilet|schedule|speaker|catalog|cart|checkout|sepet|api|sdk|terminal|metric|analytics|dashboard|article|post|story|author|editor|newsletter|topic|category)\b/i,
+    /\b(service area|practice area|treatment|product catalog|appointment|availability|location|integration|workflow|timeline|pricing table|reading time|editor picks|featured story)\b/i,
   ];
 
   if (
-    /\b(restoran|restaurant|cafe|klinik|clinic|dental|hukuk|law|legal|event|ecommerce|dashboard|api|developer|hotel|otel|fitness|gym)\b/.test(
+    /\b(restoran|restaurant|cafe|klinik|clinic|dental|hukuk|law|legal|event|ecommerce|dashboard|api|developer|hotel|otel|fitness|gym|blog|magazin|magazine|haber|news|article|makale)\b/.test(
       normalizedPrompt
     ) &&
     !domainSpecificSignals.some((pattern) => pattern.test(combined))
@@ -1679,6 +1707,10 @@ function selectVisualArchetype(userMessage: string): VisualArchetype {
     return VISUAL_ARCHETYPES.find((item) => item.key === "immersive-event")!;
   }
 
+  if (/\b(blog|magazin|magazine|haber|news|article|makale|yazar|icerik|içerik|publishing|yayin|yayın)\b/.test(normalized)) {
+    return VISUAL_ARCHETYPES.find((item) => item.key === "editorial-luxury")!;
+  }
+
   if (/\b(api|developer|docs|sdk|devtool|terminal|database|backend|integration|entegrasyon)\b/.test(normalized)) {
     return VISUAL_ARCHETYPES.find((item) => item.key === "technical-terminal")!;
   }
@@ -1708,6 +1740,9 @@ function inferBusinessTitle(userMessage: string) {
   const normalized = userMessage.replace(/\s+/g, " ").replace(/[.!?]+$/g, "").trim();
   const plain = normalizePromptText(userMessage);
 
+  if (/blog|magazin|magazine|haber|news|article|makale|yazar|icerik|içerik/.test(plain)) {
+    return isLikelyTurkish(userMessage) ? "Fikir Atlası" : "Field Notes Magazine";
+  }
   if (/dis|dent|ortodont|klinik|implant/.test(plain)) return "DentaNova Clinic";
   if (/tesisat|plumb|su kacagi|komb|petek/.test(plain)) return "Vurkany Tesisat";
   if (/avukat|hukuk|law|legal/.test(plain)) return "Lexora Hukuk";
@@ -1727,7 +1762,7 @@ function inferBusinessTitle(userMessage: string) {
 }
 
 type FallbackProfile = {
-  sector: "dental" | "plumbing" | "legal" | "restaurant" | "fitness" | "saas" | "studio";
+  sector: "blog" | "dental" | "plumbing" | "legal" | "restaurant" | "fitness" | "saas" | "studio";
   layout: "split" | "editorial" | "cards" | "magazine";
   palette: {
     bg: string;
@@ -1765,6 +1800,7 @@ function chooseFallbackProfile(userMessage: string): FallbackProfile {
     plumbing: { bg: "#f5f1e8", text: "#17201a", muted: "#667168", primary: "#e08b48", primaryText: "#17201a", panel: "#17201a", panelText: "#fffaf0", accent: "#265849", soft: "#e7ddcc", border: "#ddd1bd" },
     legal: { bg: "#f6f1e9", text: "#17110d", muted: "#766a5f", primary: "#b58b4a", primaryText: "#17110d", panel: "#211a16", panelText: "#fff7ec", accent: "#6d1f1a", soft: "#eadfce", border: "#ded0bc" },
     restaurant: { bg: "#fff5ea", text: "#22120b", muted: "#7c5d4c", primary: "#ef6b3a", primaryText: "#fff8ef", panel: "#34150d", panelText: "#fff8ef", accent: "#1f7a5b", soft: "#f7dfc8", border: "#efcfb4" },
+    blog: { bg: "#fbf4ea", text: "#1c1712", muted: "#75675c", primary: "#c94f32", primaryText: "#fffaf2", panel: "#241611", panelText: "#fff9ef", accent: "#2e6f62", soft: "#efe2d0", border: "#decdb8" },
     fitness: { bg: "#f2f4ef", text: "#10140f", muted: "#616b5c", primary: "#b8ff4d", primaryText: "#11160d", panel: "#121812", panelText: "#f8ffe9", accent: "#4d70ff", soft: "#dde8d7", border: "#ccd9c4" },
     saas: { bg: "#f3f7ff", text: "#0e1729", muted: "#61708a", primary: "#4d8bff", primaryText: "#ffffff", panel: "#111c33", panelText: "#f7fbff", accent: "#6ee7d8", soft: "#dce8ff", border: "#c8d7f3" },
     studio: { bg: "#f7f1ff", text: "#1d1428", muted: "#75677f", primary: "#ff7a59", primaryText: "#1d1428", panel: "#241433", panelText: "#fff8ff", accent: "#7cc7ff", soft: "#eadcf8", border: "#dac8ee" },
@@ -1773,6 +1809,58 @@ function chooseFallbackProfile(userMessage: string): FallbackProfile {
   const layoutSeed = Array.from(plain).reduce((total, char) => total + char.charCodeAt(0), 0);
   const layouts: FallbackProfile["layout"][] = ["split", "editorial", "cards", "magazine"];
   const layout = layouts[layoutSeed % layouts.length] || "split";
+
+  if (/blog|magazin|magazine|haber|news|article|makale|yazar|icerik|içerik|publishing|yayin|yayın/.test(plain)) {
+    return {
+      sector: "blog",
+      layout: "magazine",
+      palette: palettes.blog,
+      badge: isTurkish ? "Bağımsız dijital yayın deneyimi" : "Independent digital publishing experience",
+      headline: isTurkish
+        ? "Okunmaya değer fikirleri derinlikli bir yayın akışına dönüştürün"
+        : "Turn thoughtful ideas into a premium editorial experience",
+      intro: isTurkish
+        ? "Yazar profilleri, öne çıkan dosyalar, kategori akışları ve bülten dönüşümüyle profesyonel bir blog/magazin sitesi."
+        : "A professional blog and magazine site with featured stories, author profiles, category flows, and newsletter conversion.",
+      primary: isTurkish ? "Bültene katıl" : "Join the newsletter",
+      secondary: isTurkish ? "Yazıları keşfet" : "Explore articles",
+      trust: isTurkish
+        ? ["Haftalık editör seçkisi", "Uzman yazar profilleri", "Okuma süresi ve kategori filtreleri"]
+        : ["Weekly editor picks", "Expert author profiles", "Reading time and topic filters"],
+      servicesTitle: isTurkish ? "Yayın bölümleri" : "Editorial sections",
+      services: isTurkish
+        ? [
+            ["Öne çıkan dosya", "Haftanın ana fikrini güçlü görsel hiyerarşiyle öne çıkaran kapak alanı."],
+            ["Kategori akışları", "Teknoloji, kültür, iş ve yaşam gibi konuları okunabilir koleksiyonlara ayırır."],
+            ["Bülten ve topluluk", "Sadık okuyucu kitlesi için e-posta yakalama ve editör notu alanı."],
+          ]
+        : [
+            ["Featured dossier", "A cover-style area that gives the week’s main idea strong hierarchy."],
+            ["Topic streams", "Readable collections for technology, culture, work, and life."],
+            ["Newsletter community", "Email capture and editor notes for loyal readers."],
+          ],
+      processTitle: isTurkish ? "Yayın akışı" : "Publishing flow",
+      steps: isTurkish
+        ? ["Konuları kürate et", "Yazıları öne çıkar", "Okuyucuyu aboneye dönüştür"]
+        : ["Curate topics", "Feature strong stories", "Convert readers to subscribers"],
+      testimonial: isTurkish
+        ? "Bu yayın düzeni okuru sadece gezdirmiyor; doğru yazıya, doğru ritimde götürüyor."
+        : "This editorial system does not just display posts; it guides readers into the right story at the right rhythm.",
+      faq: isTurkish
+        ? [
+            ["Yazar sayfaları eklenebilir mi?", "Evet, yazar kartları ve profil sayfaları için ölçeklenebilir yapı hazırdır."],
+            ["Kategoriler düzenlenebilir mi?", "Evet, konu başlıkları içerik dosyasından hızlıca değiştirilebilir."],
+          ]
+        : [
+            ["Can author pages be added?", "Yes, the structure is ready for scalable author cards and profile pages."],
+            ["Can topics be edited?", "Yes, category names can be changed quickly from the content file."],
+          ],
+      ctaTitle: isTurkish ? "Okuyucuyu geri getiren bir yayın ritmi kurun" : "Build an editorial rhythm readers return to",
+      ctaText: isTurkish
+        ? "Öne çıkan yazılar, kategoriler ve bülten akışı tek bir premium yayın deneyiminde birleşir."
+        : "Featured articles, topics, and newsletter flow come together in one premium publishing experience.",
+    };
+  }
 
   if (/dis|dent|ortodont|klinik|implant/.test(plain)) {
     return {
@@ -1902,108 +1990,176 @@ function buildFallbackSiteContent(userMessage: string) {
   const isTurkish = isLikelyTurkish(userMessage);
 
   const stats = isTurkish
-    ? [
-        ["7+", "Anlamlı bölüm"],
-        ["3", "Net dönüşüm adımı"],
-        ["24s", "İlk değer algısı"],
-      ]
-    : [
-        ["7+", "Meaningful sections"],
-        ["3", "Clear conversion steps"],
-        ["24s", "First-value clarity"],
-      ];
+    ? profile.sector === "blog"
+      ? [
+          ["12", "Öne çıkan yazı"],
+          ["6", "Editör kategorisi"],
+          ["8 dk", "Ortalama okuma"],
+        ]
+      : [
+          ["7+", "Anlamlı bölüm"],
+          ["3", "Net dönüşüm adımı"],
+          ["24s", "İlk değer algısı"],
+        ]
+    : profile.sector === "blog"
+      ? [
+          ["12", "Featured stories"],
+          ["6", "Editorial topics"],
+          ["8 min", "Average read"],
+        ]
+      : [
+          ["7+", "Meaningful sections"],
+          ["3", "Clear conversion steps"],
+          ["24s", "First-value clarity"],
+        ];
 
   const nav = isTurkish
-    ? [
-        ["Çözüm", "#solution"],
-        ["Akış", "#workflow"],
-        ["Kanıt", "#proof"],
-        ["SSS", "#faq"],
-      ]
-    : [
-        ["Solution", "#solution"],
-        ["Workflow", "#workflow"],
-        ["Proof", "#proof"],
-        ["FAQ", "#faq"],
-      ];
+    ? profile.sector === "blog"
+      ? [
+          ["Yazılar", "#solution"],
+          ["Kategoriler", "#workflow"],
+          ["Editör notu", "#proof"],
+          ["SSS", "#faq"],
+        ]
+      : [
+          ["Çözüm", "#solution"],
+          ["Akış", "#workflow"],
+          ["Kanıt", "#proof"],
+          ["SSS", "#faq"],
+        ]
+    : profile.sector === "blog"
+      ? [
+          ["Articles", "#solution"],
+          ["Topics", "#workflow"],
+          ["Editor's note", "#proof"],
+          ["FAQ", "#faq"],
+        ]
+      : [
+          ["Solution", "#solution"],
+          ["Workflow", "#workflow"],
+          ["Proof", "#proof"],
+          ["FAQ", "#faq"],
+        ];
 
   const signals = profile.services.map(([title, text], index) => ({
     title,
     text,
-    eyebrow: isTurkish ? `Sinyal 0${index + 1}` : `Signal 0${index + 1}`,
+    eyebrow: profile.sector === "blog"
+      ? isTurkish
+        ? `Dosya 0${index + 1}`
+        : `Issue 0${index + 1}`
+      : isTurkish
+        ? `Sinyal 0${index + 1}`
+        : `Signal 0${index + 1}`,
   }));
 
   const workflow = profile.steps.map((step, index) => ({
     step,
     text: isTurkish
-      ? [
-          "İhtiyaç ve hedef netleştirilir; kullanıcıyı durduran belirsizlikler çıkarılır.",
-          "Sayfa akışı, güven unsurları ve aksiyon noktaları birlikte tasarlanır.",
-          "Mobil ve masaüstü deneyim yayına hazır, net bir ilk sürüm haline getirilir.",
-        ][index] || "Deneyim ölçümlenebilir ve geliştirilebilir hale getirilir."
-      : [
-          "Need and objective are clarified; user doubts are surfaced early.",
-          "Page flow, trust proof, and action points are designed together.",
-          "Mobile and desktop experience becomes a launch-ready first version.",
-        ][index] || "The experience becomes measurable and easy to iterate.",
+      ? profile.sector === "blog"
+        ? [
+            "Editör gündemi, konu kümeleri ve yayın takvimi net bir ritme bağlanır.",
+            "Öne çıkan yazılar, kategori akışları ve okuma kartları hiyerarşik olarak kurgulanır.",
+            "Bülten, yazar profili ve konu filtreleriyle okuyucu tekrar ziyarete yönlendirilir.",
+          ][index] || "Yayın deneyimi ölçümlenebilir ve büyütülebilir hale getirilir."
+        : [
+            "İhtiyaç ve hedef netleştirilir; kullanıcıyı durduran belirsizlikler çıkarılır.",
+            "Sayfa akışı, güven unsurları ve aksiyon noktaları birlikte tasarlanır.",
+            "Mobil ve masaüstü deneyim yayına hazır, net bir ilk sürüm haline getirilir.",
+          ][index] || "Deneyim ölçümlenebilir ve geliştirilebilir hale getirilir."
+      : profile.sector === "blog"
+        ? [
+            "Editorial agenda, topic clusters, and publishing cadence are shaped into a clear rhythm.",
+            "Featured stories, category streams, and reading cards are arranged with strong hierarchy.",
+            "Newsletter, author profile, and topic filters guide readers back into the publication.",
+          ][index] || "The editorial experience becomes measurable and scalable."
+        : [
+            "Need and objective are clarified; user doubts are surfaced early.",
+            "Page flow, trust proof, and action points are designed together.",
+            "Mobile and desktop experience becomes a launch-ready first version.",
+          ][index] || "The experience becomes measurable and easy to iterate.",
   }));
 
   const outcomes = isTurkish
-    ? [
-        ["Daha net ilk izlenim", "Ziyaretçi ilk ekranda ne sunduğunuzu, neden güveneceğini ve sonraki adımı anlar."],
-        ["Sektöre özel anlatım", "Metinler genel ajans kalıbı yerine hedef kitleye, itiraza ve satın alma motivasyonuna göre yazılır."],
-        ["Yayına hazır yapı", "Responsive düzen, okunabilir hiyerarşi ve düzenlenebilir component yapısı birlikte gelir."],
-      ]
-    : [
-        ["Sharper first impression", "Visitors understand the offer, trust reason, and next step from the first screen."],
-        ["Sector-specific story", "Copy is shaped around audience, objections, and motivation instead of generic agency text."],
-        ["Launch-ready structure", "Responsive layout, readable hierarchy, and editable component structure ship together."],
-      ];
+    ? profile.sector === "blog"
+      ? [
+          ["Editoryal hiyerarşi", "Okuyucu hangi yazının kapak konusu, hangisinin hızlı okuma olduğunu ilk bakışta anlar."],
+          ["Konu keşfi", "Kategori rail'leri ve kart metadataları okuma akışını daha doğal hale getirir."],
+          ["Bülten dönüşümü", "Sadık okuyucu kazanmak için bülten ve editör notu net bir alanda birleşir."],
+        ]
+      : [
+          ["Daha net ilk izlenim", "Ziyaretçi ilk ekranda ne sunduğunuzu, neden güveneceğini ve sonraki adımı anlar."],
+          ["Sektöre özel anlatım", "Metinler genel ajans kalıbı yerine hedef kitleye, itiraza ve satın alma motivasyonuna göre yazılır."],
+          ["Yayına hazır yapı", "Responsive düzen, okunabilir hiyerarşi ve düzenlenebilir component yapısı birlikte gelir."],
+        ]
+    : profile.sector === "blog"
+      ? [
+          ["Editorial hierarchy", "Readers instantly understand the cover story, quick reads, and topic depth."],
+          ["Topic discovery", "Category rails and article metadata make browsing feel natural."],
+          ["Newsletter conversion", "A clear newsletter and editor note area helps build a returning audience."],
+        ]
+      : [
+          ["Sharper first impression", "Visitors understand the offer, trust reason, and next step from the first screen."],
+          ["Sector-specific story", "Copy is shaped around audience, objections, and motivation instead of generic agency text."],
+          ["Launch-ready structure", "Responsive layout, readable hierarchy, and editable component structure ship together."],
+        ];
 
   const caseStudy = isTurkish
-    ? {
-        label: "Örnek kullanım senaryosu",
-        title: "Kararsız ziyaretçiyi yönlendiren net bir akış",
-        text: "Sayfa, önce değeri anlatır; sonra güven unsurlarını, hizmet mimarisini ve karar vermeyi kolaylaştıran SSS alanını sırayla gösterir.",
-      }
-    : {
-        label: "Example use case",
-        title: "A clear flow that guides unsure visitors",
-        text: "The page explains value first, then reveals trust proof, service architecture, and FAQ content that makes decisions easier.",
-      };
+    ? profile.sector === "blog"
+      ? {
+          label: "Editör notu",
+          title: "Bir blog değil, geri dönülen bir yayın deneyimi",
+          text: "Kapak yazısı, kategori akışları, yazar güveni ve bülten alanı birlikte çalışarak okuru sadece gezdirmek yerine doğru yazıya taşır.",
+        }
+      : {
+          label: "Örnek kullanım senaryosu",
+          title: "Kararsız ziyaretçiyi yönlendiren net bir akış",
+          text: "Sayfa, önce değeri anlatır; sonra güven unsurlarını, hizmet mimarisini ve karar vermeyi kolaylaştıran SSS alanını sırayla gösterir.",
+        }
+    : profile.sector === "blog"
+      ? {
+          label: "Editor's note",
+          title: "Not just a blog, a publication readers return to",
+          text: "Cover story, topic streams, author trust, and newsletter capture work together to guide readers into the right piece.",
+        }
+      : {
+          label: "Example use case",
+          title: "A clear flow that guides unsure visitors",
+          text: "The page explains value first, then reveals trust proof, service architecture, and FAQ content that makes decisions easier.",
+        };
 
   const labels = isTurkish
     ? {
         primaryCta: profile.primary,
         secondaryCta: profile.secondary,
-        heroMeta: "Profesyonel ilk sürüm",
-        dashboardTitle: "Canlı deneyim haritası",
-        dashboardSubtitle: "Mesaj, kanıt ve aksiyon noktaları tek akışta.",
-        signalTitle: "Ziyaretçinin karar vermesini kolaylaştıran yapı",
+        heroMeta: profile.sector === "blog" ? "Haftanın kapak yazısı" : "Profesyonel ilk sürüm",
+        dashboardTitle: profile.sector === "blog" ? "Editörün seçimi" : "Canlı deneyim haritası",
+        dashboardSubtitle: profile.sector === "blog" ? "Yeni yazılar, yazar notları ve kategori akışı tek yerde." : "Mesaj, kanıt ve aksiyon noktaları tek akışta.",
+        signalTitle: profile.sector === "blog" ? "Okuma ritmini güçlendiren yayın bölümleri" : "Ziyaretçinin karar vermesini kolaylaştıran yapı",
         workflowTitle: profile.processTitle,
-        workflowIntro: "Her bölüm bir sonraki aksiyonu daha doğal hissettirmek için kurgulanır.",
-        outcomesTitle: "Bu sayfa neyi iyileştirir?",
-        proofTitle: "Güven ve dönüşüm alanı",
+        workflowIntro: profile.sector === "blog" ? "Her bölüm okuyucuyu bir sonraki yazıya veya bültene doğal şekilde taşır." : "Her bölüm bir sonraki aksiyonu daha doğal hissettirmek için kurgulanır.",
+        outcomesTitle: profile.sector === "blog" ? "Yayın deneyimi neyi iyileştirir?" : "Bu sayfa neyi iyileştirir?",
+        proofTitle: profile.sector === "blog" ? "Editoryal güven" : "Güven ve dönüşüm alanı",
         faqTitle: "Sık sorulan sorular",
         finalTitle: profile.ctaTitle,
         finalText: profile.ctaText,
-        builtBy: "Yayına hazır ilk sürüm",
+        builtBy: profile.sector === "blog" ? "Yayın ritmi hazır" : "Yayına hazır ilk sürüm",
       }
     : {
         primaryCta: profile.primary,
         secondaryCta: profile.secondary,
-        heroMeta: "Professional first version",
-        dashboardTitle: "Live experience map",
-        dashboardSubtitle: "Message, proof, and action points in one flow.",
-        signalTitle: "A structure that makes decisions easier",
+        heroMeta: profile.sector === "blog" ? "This week's cover story" : "Professional first version",
+        dashboardTitle: profile.sector === "blog" ? "Editor's pick" : "Live experience map",
+        dashboardSubtitle: profile.sector === "blog" ? "New stories, author notes, and topic streams in one place." : "Message, proof, and action points in one flow.",
+        signalTitle: profile.sector === "blog" ? "Editorial sections that strengthen reading rhythm" : "A structure that makes decisions easier",
         workflowTitle: profile.processTitle,
-        workflowIntro: "Every section is shaped to make the next action feel natural.",
-        outcomesTitle: "What this page improves",
-        proofTitle: "Trust and conversion area",
+        workflowIntro: profile.sector === "blog" ? "Every section guides readers toward another story or the newsletter." : "Every section is shaped to make the next action feel natural.",
+        outcomesTitle: profile.sector === "blog" ? "What the publication improves" : "What this page improves",
+        proofTitle: profile.sector === "blog" ? "Editorial trust" : "Trust and conversion area",
         faqTitle: "Frequently asked questions",
         finalTitle: profile.ctaTitle,
         finalText: profile.ctaText,
-        builtBy: "Launch-ready first version",
+        builtBy: profile.sector === "blog" ? "Publication rhythm ready" : "Launch-ready first version",
       };
 
   return {
@@ -2222,6 +2378,124 @@ function CommerceLayout() {
           </div>
         </div>
       </section>
+      <ProofAndFaq />
+      <FinalCta />
+    </main>
+  );
+}
+
+function BlogEditorialLayout() {
+  const content = siteContent;
+  const profile = content.profile;
+  const articles = content.signals.concat(content.outcomes.map(([title, text]) => ({
+    title,
+    text,
+    eyebrow: content.labels.proofTitle,
+  })));
+
+  return (
+    <main className="min-h-screen overflow-hidden" style={{ background: profile.palette.bg, color: profile.palette.text }}>
+      <section id="top" className={sectionPad + " relative py-5"}>
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-[34rem] opacity-80" style={{ background: "radial-gradient(circle at 18% 12%," + profile.palette.soft + ",transparent 34%), radial-gradient(circle at 78% 0%," + profile.palette.accent + "33,transparent 28%)" }} />
+        <div className="relative mx-auto flex max-w-7xl items-center justify-between border-b py-5" style={{ borderColor: profile.palette.border }}>
+          <a href="#top" className="text-2xl font-black tracking-[-0.07em]">{content.businessName}</a>
+          <div className="hidden items-center gap-7 md:flex">
+            {content.nav.map(([label, href]) => (
+              <a key={href} href={href} className="text-sm font-black transition hover:opacity-55" style={{ color: profile.palette.muted }}>{label}</a>
+            ))}
+          </div>
+          <a href="#contact" className="rounded-full px-5 py-2.5 text-sm font-black shadow-sm transition hover:-translate-y-0.5" style={{ background: profile.palette.primary, color: profile.palette.primaryText }}>
+            {content.labels.primaryCta}
+          </a>
+        </div>
+
+        <div className="relative mx-auto grid max-w-7xl gap-8 py-12 lg:grid-cols-[1.05fr_0.95fr] lg:py-20">
+          <div>
+            <p className="inline-flex rounded-full border px-4 py-2 text-xs font-black uppercase tracking-[0.28em]" style={{ borderColor: profile.palette.border, color: profile.palette.primary }}>
+              {profile.badge}
+            </p>
+            <h1 className="mt-8 max-w-5xl text-[clamp(3.6rem,8vw,8rem)] font-black leading-[0.82] tracking-[-0.09em]">
+              {profile.headline}
+            </h1>
+            <p className="mt-7 max-w-2xl text-xl leading-9" style={{ color: profile.palette.muted }}>{profile.intro}</p>
+            <div className="mt-9 flex flex-wrap gap-3">
+              {profile.trust.map((item) => (
+                <span key={item} className="rounded-full border bg-white/55 px-4 py-2 text-xs font-bold" style={{ borderColor: profile.palette.border }}>
+                  {item}
+                </span>
+              ))}
+            </div>
+          </div>
+
+          <aside className="grid gap-4">
+            <article className="overflow-hidden rounded-[2.4rem] border bg-white shadow-[0_26px_80px_rgba(60,38,20,0.14)]" style={{ borderColor: profile.palette.border }}>
+              <div className="aspect-[16/9]" style={{ background: "linear-gradient(135deg," + profile.palette.panel + "," + profile.palette.accent + ")" }} />
+              <div className="p-6">
+                <p className="text-xs font-black uppercase tracking-[0.26em]" style={{ color: profile.palette.primary }}>{content.labels.heroMeta}</p>
+                <h2 className="mt-4 text-3xl font-black leading-tight tracking-[-0.05em]">{articles[0]?.title}</h2>
+                <p className="mt-3 leading-7" style={{ color: profile.palette.muted }}>{articles[0]?.text}</p>
+                <div className="mt-5 flex items-center justify-between border-t pt-4 text-xs font-bold" style={{ borderColor: profile.palette.border, color: profile.palette.muted }}>
+                  <span>{content.labels.dashboardTitle}</span>
+                  <span>8 dk okuma</span>
+                </div>
+              </div>
+            </article>
+            <div className="grid gap-3 sm:grid-cols-2">
+              {articles.slice(1, 3).map((item) => (
+                <article key={item.title} className="rounded-[1.5rem] border bg-white/70 p-5" style={{ borderColor: profile.palette.border }}>
+                  <p className="text-xs font-black uppercase tracking-[0.22em]" style={{ color: profile.palette.accent }}>{item.eyebrow}</p>
+                  <h3 className="mt-5 text-xl font-black tracking-[-0.04em]">{item.title}</h3>
+                  <p className="mt-3 text-sm leading-6" style={{ color: profile.palette.muted }}>{item.text}</p>
+                </article>
+              ))}
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section id="solution" className={sectionPad + " py-16"}>
+        <div className="mx-auto max-w-7xl">
+          <div className="mb-8 flex flex-col justify-between gap-4 border-b pb-6 md:flex-row md:items-end" style={{ borderColor: profile.palette.border }}>
+            <div>
+              <p className="text-sm font-black uppercase tracking-[0.28em]" style={{ color: profile.palette.primary }}>{profile.servicesTitle}</p>
+              <h2 className="mt-4 text-5xl font-black tracking-[-0.07em]">{content.labels.signalTitle}</h2>
+            </div>
+            <p className="max-w-md leading-7" style={{ color: profile.palette.muted }}>{content.labels.workflowIntro}</p>
+          </div>
+          <div className="grid gap-4 lg:grid-cols-3">
+            {content.signals.map((item, index) => (
+              <article key={item.title} className="group rounded-[2rem] border bg-white/70 p-6 transition duration-300 hover:-translate-y-1 hover:bg-white" style={{ borderColor: profile.palette.border }}>
+                <div className="mb-10 flex items-center justify-between">
+                  <span className="rounded-full px-3 py-1 text-xs font-black" style={{ background: profile.palette.soft, color: profile.palette.primary }}>{item.eyebrow}</span>
+                  <span className="text-xs font-bold" style={{ color: profile.palette.muted }}>{6 + index} dk</span>
+                </div>
+                <h3 className="text-3xl font-black leading-tight tracking-[-0.06em]">{item.title}</h3>
+                <p className="mt-4 leading-7" style={{ color: profile.palette.muted }}>{item.text}</p>
+              </article>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section id="workflow" className={sectionPad + " py-16"}>
+        <div className="mx-auto grid max-w-7xl gap-5 lg:grid-cols-[0.8fr_1.2fr]">
+          <aside className="rounded-[2.4rem] p-8 text-white" style={{ background: profile.palette.panel }}>
+            <p className="text-xs font-black uppercase tracking-[0.28em]" style={{ color: profile.palette.primary }}>{content.labels.workflowTitle}</p>
+            <h2 className="mt-5 text-5xl font-black leading-none tracking-[-0.08em]">{content.labels.outcomesTitle}</h2>
+            <p className="mt-5 leading-8 text-white/65">{profile.testimonial}</p>
+          </aside>
+          <div className="grid gap-4 md:grid-cols-3">
+            {content.workflow.map((item, index) => (
+              <article key={item.step} className="rounded-[1.8rem] border bg-white/75 p-6" style={{ borderColor: profile.palette.border }}>
+                <span className="text-4xl font-black tracking-[-0.08em]" style={{ color: profile.palette.primary }}>0{index + 1}</span>
+                <h3 className="mt-6 text-2xl font-black tracking-[-0.05em]">{item.step}</h3>
+                <p className="mt-3 leading-7" style={{ color: profile.palette.muted }}>{item.text}</p>
+              </article>
+            ))}
+          </div>
+        </div>
+      </section>
+
       <ProofAndFaq />
       <FinalCta />
     </main>
@@ -2450,6 +2724,7 @@ function FinalCta({ dark = false }: { dark?: boolean }) {
 export function GeneratedLandingPage() {
   const key = siteContent.visualArchetype.key;
 
+  if (siteContent.profile.sector === "blog") return <BlogEditorialLayout />;
   if (siteContent.profile.sector === "dental") return <ClinicLayout />;
   if (key === "operational-dashboard" || key === "technical-terminal") return <DashboardLayout />;
   if (key === "commerce-catalog" || key === "immersive-event") return <CommerceLayout />;
@@ -2508,6 +2783,10 @@ export default function ContactPage() {
 
 function buildFallbackOperations(userMessage: string): CodeOperation[] {
   const content = buildFallbackSiteContent(userMessage);
+  const supportRoutePath =
+    content.profile.sector === "blog" ? "src/app/articles/page.tsx" : "src/app/services/page.tsx";
+  const conversionRoutePath =
+    content.profile.sector === "blog" ? "src/app/newsletter/page.tsx" : "src/app/contact/page.tsx";
 
   return [
     {
@@ -2531,13 +2810,13 @@ function buildFallbackOperations(userMessage: string): CodeOperation[] {
     {
       type: "write",
       index: Number.MAX_SAFE_INTEGER - 1,
-      path: "src/app/services/page.tsx",
+      path: supportRoutePath,
       content: buildFallbackServicesPage(userMessage),
     },
     {
       type: "write",
       index: Number.MAX_SAFE_INTEGER,
-      path: "src/app/contact/page.tsx",
+      path: conversionRoutePath,
       content: buildFallbackContactPage(userMessage),
     },
   ];
@@ -2829,6 +3108,7 @@ function createLocalArchitectSpec(userMessage: string): ArchitectSpec {
   const isDental = /dis|dent|ortodont|klinik|implant/.test(plain);
   const isSaas = /saas|software|dashboard|crm|app|platform|urun|product/.test(plain);
   const isLegal = /avukat|hukuk|law|legal/.test(plain);
+  const isBlog = /blog|magazin|magazine|haber|news|article|makale|yazar|icerik|içerik|publishing|yayin|yayın/.test(plain);
 
   const routeLabels = turkish
     ? {
@@ -2839,11 +3119,13 @@ function createLocalArchitectSpec(userMessage: string): ArchitectSpec {
             ? "Tedaviler"
             : isLegal
               ? "Uzmanlıklar"
-              : isSaas
-                ? "Özellikler"
-                : "Hizmetler",
-        proof: isSaas ? "Fiyatlar" : "Süreç",
-        contact: "İletişim",
+              : isBlog
+                ? "Yazılar"
+                : isSaas
+                  ? "Özellikler"
+                  : "Hizmetler",
+        proof: isBlog ? "Kategoriler" : isSaas ? "Fiyatlar" : "Süreç",
+        contact: isBlog ? "Bülten" : "İletişim",
       }
     : {
         home: "Home",
@@ -2853,11 +3135,13 @@ function createLocalArchitectSpec(userMessage: string): ArchitectSpec {
             ? "Treatments"
             : isLegal
               ? "Practice Areas"
-              : isSaas
-                ? "Features"
-                : "Services",
-        proof: isSaas ? "Pricing" : "Process",
-        contact: "Contact",
+              : isBlog
+                ? "Articles"
+                : isSaas
+                  ? "Features"
+                  : "Services",
+        proof: isBlog ? "Topics" : isSaas ? "Pricing" : "Process",
+        contact: isBlog ? "Newsletter" : "Contact",
       };
 
   const servicePath = isRestaurant
@@ -2866,10 +3150,13 @@ function createLocalArchitectSpec(userMessage: string): ArchitectSpec {
       ? "/treatments"
       : isLegal
         ? "/practice-areas"
-        : isSaas
-          ? "/features"
-          : "/services";
-  const proofPath = isSaas ? "/pricing" : "/process";
+        : isBlog
+          ? "/articles"
+          : isSaas
+            ? "/features"
+            : "/services";
+  const proofPath = isBlog ? "/topics" : isSaas ? "/pricing" : "/process";
+  const contactPath = isBlog ? "/newsletter" : "/contact";
 
   return {
     projectType: `${profile.sector} ${isSaas ? "product" : "website"} prototype`,
@@ -2879,29 +3166,45 @@ function createLocalArchitectSpec(userMessage: string): ArchitectSpec {
       {
         path: "/",
         purpose: turkish
-          ? "Marka vaadini, güven unsurlarını ve ana dönüşüm aksiyonunu anlatır."
-          : "Explain the brand promise, trust proof, and primary conversion action.",
+          ? isBlog
+            ? "Yayının editoryal vaadini, kapak yazısını ve okuma yollarını güçlü biçimde sunar."
+            : "Marka vaadini, güven unsurlarını ve ana dönüşüm aksiyonunu anlatır."
+          : isBlog
+            ? "Present the publication promise, cover story, and reading paths with strong hierarchy."
+            : "Explain the brand promise, trust proof, and primary conversion action.",
         visibleTitle: routeLabels.home,
       },
       {
         path: servicePath,
         purpose: turkish
-          ? "Ana hizmet/ürün mimarisini sektöre özel ve karar vermeyi kolaylaştıracak şekilde detaylandırır."
-          : "Detail the service/product architecture in a domain-specific decision-friendly way.",
+          ? isBlog
+            ? "Yazı listesi, öne çıkan makaleler, okuma süresi ve yazar metadatalarını gösterir."
+            : "Ana hizmet/ürün mimarisini sektöre özel ve karar vermeyi kolaylaştıracak şekilde detaylandırır."
+          : isBlog
+            ? "Show article list, featured posts, reading time, and author metadata."
+            : "Detail the service/product architecture in a domain-specific decision-friendly way.",
         visibleTitle: routeLabels.services,
       },
       {
         path: proofPath,
         purpose: turkish
-          ? "Karar sürecini güçlendiren paket, süreç, kanıt veya karşılaştırma bilgilerini sunar."
-          : "Show package, process, proof, or comparison content that strengthens decision-making.",
+          ? isBlog
+            ? "Kategori, konu filtreleri, editör seçkileri ve keşif akışını sunar."
+            : "Karar sürecini güçlendiren paket, süreç, kanıt veya karşılaştırma bilgilerini sunar."
+          : isBlog
+            ? "Show categories, topic filters, editor picks, and discovery flow."
+            : "Show package, process, proof, or comparison content that strengthens decision-making.",
         visibleTitle: routeLabels.proof,
       },
       {
-        path: "/contact",
+        path: contactPath,
         purpose: turkish
-          ? "Form, iletişim bilgisi ve son CTA ile dönüşümü tamamlar."
-          : "Complete the conversion flow with a form, contact details, and final CTA.",
+          ? isBlog
+            ? "Bülten kayıt alanı, editör notu ve okuyucu topluluğu CTA'sı sunar."
+            : "Form, iletişim bilgisi ve son CTA ile dönüşümü tamamlar."
+          : isBlog
+            ? "Offer newsletter signup, editor note, and reader community CTA."
+            : "Complete the conversion flow with a form, contact details, and final CTA.",
         visibleTitle: routeLabels.contact,
       },
     ],
@@ -3253,6 +3556,18 @@ ${clipText(params.codeContext, 80_000)}
       return params.draft;
     }
 
+    const premiumAttempt = await createPremiumFallbackAttempt({
+      userMessage: params.userMessage,
+      plannerBrief: params.plannerBrief,
+      architectSpec: params.architectSpec,
+      codeContext: params.codeContext,
+      provider: params.provider,
+      options: params.options,
+      reason: "Architect/spec validation repair did not return executable edit tags.",
+    });
+
+    if (premiumAttempt) return premiumAttempt;
+
     return buildFallbackAssistantContent(
       params.userMessage,
       "Architect/spec validation repair did not return executable edit tags."
@@ -3299,16 +3614,19 @@ async function createBuilderResponse(
               "Create shared components for navigation/layout/sections and a content/config/data file to avoid hardcoded repetition.",
               "Navigation links must point to real routes or real anchors; do not fake pages with navbar labels only.",
               "Include purposeful modern motion: page/section reveal classes, hover transitions, animated visual details, or CSS keyframes.",
+              "If the prompt asks for a blog, magazine, news, article, content, writer, or publishing site: build a real editorial product with featured article, category rails, author cards, newsletter capture, article previews, reading-time metadata, topic filters, and at least one article/category route. Do not use SaaS stats cards.",
             ].join("\n")
           : "If the user explicitly requested a single-page result, keep it one route but still make it polished and componentized.",
         "Do not name the generated customer-facing brand Klawpen unless the user asks for Klawpen itself.",
         "The result must be specific to this prompt, not a reused generic template.",
+        "Hard design fail conditions: giant headline with empty cards, generic stats unrelated to the prompt, blank panels, nav + hero + three cards template, or generated-site fallback-style layout.",
         options.planMode
           ? "Plan mode is enabled and the clarification gate has already passed: include a concise implementation plan inside the <dec-code> block, then implement decisively."
           : "Plan mode is disabled: infer professional defaults for missing minor details and implement directly.",
         "Raise the UI quality bar: build polished navigation, rich routes, responsive behavior, strong typography, deliberate color, animations, states, and product-specific copy. Avoid simple toy layouts.",
       ].join("\n"),
       temperature: Math.max(aiTemperature, 0.22),
+      timeoutMs: AI_BUILDER_TIMEOUT_MS,
     });
   }
 
@@ -3317,6 +3635,92 @@ async function createBuilderResponse(
     input,
     temperature: aiTemperature,
   });
+}
+
+async function createPremiumFallbackAttempt(params: {
+  userMessage: string;
+  plannerBrief: string;
+  architectSpec?: ArchitectSpec | null;
+  codeContext: string;
+  provider: AiProviderConfig;
+  options?: BuildOptions;
+  reason: string;
+}): Promise<string | null> {
+  const turkish = isLikelyTurkish(params.userMessage);
+  const visualArchetype = selectVisualArchetype(params.userMessage);
+  const isBlogLike = /\b(blog|magazin|magazine|haber|news|article|makale|yazar|writer|content|i[cç]erik|publishing|yay[ıi]n)\b/i.test(
+    normalizePromptText(params.userMessage)
+  );
+
+  const system = `
+${prompt}
+
+${BUILDER_SYSTEM_PROMPT}
+
+You are in LAST-CHANCE PREMIUM BUILD MODE.
+The previous build attempt failed because: ${params.reason}
+
+This is not a place for a safe generic fallback. Produce a professional, prompt-specific, production-quality implementation now.
+Return exactly one <dec-code> block with executable tags. No markdown fences.
+
+QUALITY BAR:
+- Build for a polished Replit/Lovable-level preview, not a template.
+- Create real App Router pages, shared components, and a content/config file.
+- The visual concept must be distinct and complete: no empty panels, no unrelated generic stats, no oversized headline-only hero, no nav + hero + three cards skeleton.
+- Use real customer-visible copy in ${turkish ? "Turkish with correct Turkish characters" : "English"}.
+- Keep code maintainable and imports valid.
+
+${isBlogLike ? `
+BLOG / EDITORIAL SPEC:
+- Create an editorial/magazine product, not a generic startup landing page.
+- Required UI modules: featured story, editor picks, category rail, article cards with reading time/date/author, newsletter capture, author/editor card, topic filters, and a realistic footer.
+- Required routes: home, articles or blog, categories or topics, about/contact/newsletter route.
+- The hero should feel like a premium digital publication with strong imagery panels, issue metadata, article hierarchy, and tasteful motion.
+` : ""}
+
+VISUAL ARCHETYPE:
+${formatVisualArchetype(visualArchetype)}
+`;
+
+  const user = `
+USER REQUEST:
+${params.userMessage}
+
+PLANNER BRIEF:
+${params.plannerBrief}
+
+ARCHITECT SPEC:
+${formatArchitectSpec(params.architectSpec || null)}
+
+CURRENT CODEBASE SNAPSHOT:
+${clipText(params.codeContext, 45_000)}
+`;
+
+  try {
+    const response = await createAiChatText({
+      provider: params.provider,
+      system,
+      user,
+      temperature: Math.max(aiTemperature, 0.24),
+      retries: Math.max(aiMaxRetries, 2),
+      timeoutMs: AI_BUILDER_TIMEOUT_MS,
+    });
+
+    if (hasExecutableCodeOperations(response)) {
+      return response;
+    }
+
+    console.warn(
+      "Premium fallback attempt did not return executable edit tags; deterministic fallback may be used."
+    );
+    return null;
+  } catch (error) {
+    console.warn(
+      "Premium fallback attempt failed:",
+      error instanceof Error ? error.message : error
+    );
+    return null;
+  }
 }
 
 async function createCriticReview(
@@ -3640,6 +4044,19 @@ ${clipText(params.codeContext, 80_000)}
       );
       return params.draft;
     }
+
+    const premiumAttempt = await createPremiumFallbackAttempt({
+      userMessage: params.userMessage,
+      plannerBrief: params.plannerBrief,
+      architectSpec: params.architectSpec,
+      codeContext: params.codeContext,
+      provider: params.provider,
+      options: params.options,
+      reason: "AI repair response still had no executable edit tags.",
+    });
+
+    if (premiumAttempt) return premiumAttempt;
+
     return buildFallbackAssistantContent(
       params.userMessage,
       "AI repair response still had no executable edit tags."
@@ -3655,6 +4072,19 @@ ${clipText(params.codeContext, 80_000)}
       );
       return params.draft;
     }
+
+    const premiumAttempt = await createPremiumFallbackAttempt({
+      userMessage: params.userMessage,
+      plannerBrief: params.plannerBrief,
+      architectSpec: params.architectSpec,
+      codeContext: params.codeContext,
+      provider: params.provider,
+      options: params.options,
+      reason: "AI repair pass failed before returning executable edit tags.",
+    });
+
+    if (premiumAttempt) return premiumAttempt;
+
     return buildFallbackAssistantContent(
       params.userMessage,
       "AI repair pass failed before returning executable edit tags."
@@ -3990,13 +4420,24 @@ ${codeContext}`;
       });
     } catch (error) {
       console.error(
-        "AI builder generation failed; applying local fallback landing page:",
+        "AI builder generation failed; trying premium fallback attempt before local fallback:",
         error instanceof Error ? error.message : error
       );
-      assistantContent = buildFallbackAssistantContent(
-        userMessage,
-        "AI provider failed or timed out before returning a valid executable build."
-      );
+      assistantContent =
+        (await createPremiumFallbackAttempt({
+          userMessage,
+          plannerBrief,
+          architectSpec,
+          codeContext,
+          provider,
+          options: resolvedOptions,
+          reason:
+            "AI provider failed or timed out before returning a valid executable build.",
+        })) ||
+        buildFallbackAssistantContent(
+          userMessage,
+          "AI provider failed or timed out before returning a valid executable build."
+        );
     }
   }
 
