@@ -169,6 +169,11 @@ Before writing code, internally pick ONE distinct visual direction from these:
 3) Neo Brutal
 4) Clean SaaS Premium
 5) Boutique Studio
+6) Operational Dashboard
+7) Commerce Catalog
+8) Immersive Event
+9) Technical Terminal
+10) Local Service Premium
 
 Then enforce it consistently across:
 - typography scale
@@ -176,9 +181,13 @@ Then enforce it consistently across:
 - component shape language
 - color system
 - section composition
+- domain-specific modules/interactions
 
 Do NOT output repetitive template layouts.
 Do NOT use default safe styling patterns for every project.
+Do NOT reuse the same nav + centered hero + stat cards + three cards + FAQ skeleton across prompts.
+The visual silhouette must change by domain and selected direction, not only the copy and colors.
+For each build, include at least one prompt-specific module such as a booking widget, menu board, case timeline, catalog shelf, API console, ticket card, map strip, treatment planner, or dashboard state when relevant.
 
 For single-page landing pages explicitly requested by the user, minimum structure:
 - Hero (strong headline + CTA)

@@ -122,6 +122,113 @@ const BUILD_GATE_ENABLED = process.env.KLAWPEN_ENABLE_BUILD_GATE === "true";
 const PREVIEW_CHECK_ENABLED = process.env.KLAWPEN_ENABLE_PREVIEW_CHECK === "true";
 const CROSS_REVIEW_ENABLED = process.env.KLAWPEN_ENABLE_CROSS_REVIEW !== "false";
 
+const VISUAL_ARCHETYPES: VisualArchetype[] = [
+  {
+    key: "editorial-luxury",
+    name: "Editorial Luxury",
+    composition:
+      "asymmetric editorial grid, oversized serif-like display headings, story-led sections, magazine pull quotes, layered imagery panels",
+    palette:
+      "warm ivory, espresso, muted gold, charcoal, one restrained accent color",
+    typography:
+      "large expressive headlines paired with compact uppercase labels and calm readable body copy",
+    motion:
+      "slow reveal, image parallax feel, subtle mask/clip transitions, refined hover states",
+    forbidden: ["centered SaaS hero", "three identical feature cards", "blue gradient dashboard mockup"],
+  },
+  {
+    key: "neo-brutal-product",
+    name: "Neo Brutal Product",
+    composition:
+      "chunky border system, offset blocks, strong grid lines, sticker-like callouts, confident high-contrast sections",
+    palette:
+      "ink black, paper white, acid accent, one saturated support color",
+    typography:
+      "bold compressed headings, punchy labels, direct short copy",
+    motion:
+      "snappy hover lifts, marquee/rail details, blocky reveal transitions",
+    forbidden: ["soft glass cards everywhere", "generic rounded SaaS cards", "muted corporate sameness"],
+  },
+  {
+    key: "operational-dashboard",
+    name: "Operational Dashboard",
+    composition:
+      "split application shell, metric strips, workflow panels, data cards, realistic product states and empty states",
+    palette:
+      "deep slate, electric accent, calm surface colors, status colors used sparingly",
+    typography:
+      "precise product UI hierarchy with compact labels, readable dashboards, and clear data emphasis",
+    motion:
+      "panel transitions, status pulses, tab/segment interactions, lightweight data animation",
+    forbidden: ["marketing-only landing", "decorative hero with no product UI", "fake nav links"],
+  },
+  {
+    key: "boutique-studio",
+    name: "Boutique Studio",
+    composition:
+      "art-directed whitespace, floating cards, portfolio/case-study rhythm, diagonal or organic visual accents",
+    palette:
+      "soft tinted background, dark ink text, unusual accent pairing, tactile cards",
+    typography:
+      "stylish display scale with human editorial copy and generous spacing",
+    motion:
+      "staggered cards, soft drift accents, hover reveals for case details",
+    forbidden: ["template SaaS pricing hero", "identical rows", "stock corporate layout"],
+  },
+  {
+    key: "local-service-premium",
+    name: "Local Service Premium",
+    composition:
+      "trust-first hero, service map, booking/contact module, proof bands, location/availability details",
+    palette:
+      "grounded local colors, clean light surfaces, one strong CTA color",
+    typography:
+      "clear service-first hierarchy, reassuring labels, scannable benefit copy",
+    motion:
+      "soft section reveals, CTA hover, service cards with practical microinteractions",
+    forbidden: ["abstract SaaS dashboard", "generic agency copy", "fake tech startup stats"],
+  },
+  {
+    key: "commerce-catalog",
+    name: "Commerce Catalog",
+    composition:
+      "shop/catalog grid, product cards, category rails, comparison blocks, cart/checkout-style CTA areas",
+    palette:
+      "retail-ready neutral base, product-led accents, strong sale/CTA color used carefully",
+    typography:
+      "clear product names, price/benefit hierarchy, concise promotional copy",
+    motion:
+      "card hover, filter tab transitions, product spotlight reveal",
+    forbidden: ["service-agency section order", "dashboard chart hero", "generic B2B SaaS copy"],
+  },
+  {
+    key: "immersive-event",
+    name: "Immersive Event",
+    composition:
+      "cinematic hero, schedule/timeline, speaker/feature cards, ticket CTA, immersive atmospheric background",
+    palette:
+      "dark atmospheric base, luminous accent, gradient or glow details",
+    typography:
+      "dramatic headline scale, time/location metadata, energetic CTA copy",
+    motion:
+      "glow pulses, timeline reveals, ticket card hover, atmospheric gradients",
+    forbidden: ["quiet corporate layout", "plain white page", "static feature grid only"],
+  },
+  {
+    key: "technical-terminal",
+    name: "Technical Terminal",
+    composition:
+      "developer-console inspired layout, code/output panels, integration diagrams, API cards, docs-like sections",
+    palette:
+      "near-black, terminal green/cyan accents, muted code surfaces",
+    typography:
+      "monospace accents, precise product headings, technical but readable copy",
+    motion:
+      "typing-like status chips, terminal cursor pulse, panel transitions",
+    forbidden: ["consumer lifestyle styling", "luxury editorial layout", "generic white SaaS cards"],
+  },
+];
+
 interface ResolvedBuildOptions extends BuildOptions {
   qualityMode: "fast" | "standard" | "power";
   powerMode: boolean;
@@ -137,6 +244,7 @@ interface ArchitectSpec {
   projectType: string;
   language: "tr" | "en";
   routes: ArchitectSpecRoute[];
+  visualArchetype?: string;
   designDirection: string;
   animationPlan: string[];
   components: string[];
@@ -149,12 +257,24 @@ interface ValidationResult {
   issues: string[];
 }
 
+interface VisualArchetype {
+  key: string;
+  name: string;
+  composition: string;
+  palette: string;
+  typography: string;
+  motion: string;
+  forbidden: string[];
+}
+
 const BUILD_INTENT_PATTERN =
   /\b(yap|yapal[ıi]m|olu[sş]tur|haz[ıi]rla|kur|geli[sş]tir|ekle|de[gğ]i[sş]tir|d[üu]zelt|kald[ıi]r|sil|tasarla|kodla|g[üu]ncelle|ayarla|[çc][ıi]kar|koy|olsun|build|create|make|add|change|update|fix|remove|delete|design|implement|generate)\b/i;
 const BUILD_WANT_PATTERN =
   /\b(istiyorum|laz[ıi]m|ihtiyac[ıi]m|need|want)\b/i;
 const BUILD_SUBJECT_PATTERN =
-  /\b(site|website|web\s*sitesi|landing|landing\s*page|sayfa|dashboard|panel|app|uygulama|component|komponent|[öo]zellik|feature|tasar[ıi]m|design|page|route|form|login|register|blog|pricing|faq|sss|store|shop|api|backend|database|auth)\b/i;
+  /\b(site|website|web\s*sitesi|landing|landing\s*page|sayfa|dashboard|panel|app|uygulama|platform|product|[üu]r[üu]n|proje|project|component|komponent|[öo]zellik|feature|tasar[ıi]m|design|page|route|form|login|register|blog|pricing|faq|sss|store|shop|e-?commerce|marketplace|pazar\s*yeri|portfolio|portfolyo|api|backend|database|auth|klinik|clinic|restoran|restaurant|cafe|kafe|men[üu]|menu|randevu|booking|rezervasyon)\b/i;
+const BUILD_BRIEF_SIGNAL_PATTERN =
+  /\b(modern|premium|minimal|kurumsal|corporate|luxury|editorial|brutal|bold|creative|yarat[ıi]c[ıi]|animasyon|animated|responsive|mobil|desktop|landing|dashboard|auth|login|register|pricing|fiyat|faq|sss|contact|ileti[sş]im|reservation|rezervasyon|booking|randevu|menu|men[üu]|e-?commerce|portfolio|portfolyo|saas|crm|clinic|klinik|di[sş]|dental|avukat|hukuk|law|legal|hotel|otel|restaurant|restoran|fitness|gym|agency|ajans)\b/i;
 const TURKISH_HINT_PATTERN =
   /[çğıöşü]/i;
 const TURKISH_WORD_PATTERN =
@@ -215,10 +335,38 @@ function isLikelyTurkish(message: string): boolean {
   return TURKISH_HINT_PATTERN.test(message) || TURKISH_WORD_PATTERN.test(message);
 }
 
+function isImplicitBuildBrief(message: string): boolean {
+  const text = message.trim();
+  if (!text || text.length < 8) return false;
+  if (isQuestion(text)) return false;
+
+  const normalized = normalizePromptText(text);
+  const words = normalized.split(/\s+/).filter(Boolean);
+  const hasSubject = BUILD_SUBJECT_PATTERN.test(text);
+  const hasBriefSignal = BUILD_BRIEF_SIGNAL_PATTERN.test(text);
+  const hasRouteOrProductStructure =
+    /\b(home|ana sayfa|pricing|fiyat|faq|sss|contact|iletisim|features|ozellikler|services|hizmetler|about|hakkimizda|login|register|auth|dashboard|panel|blog|portfolio|menu|randevu|booking|reservation|rezervasyon)\b/.test(
+      normalized
+    );
+  const domainPhrase =
+    /\b(dis klinigi|dental clinic|hukuk ofisi|law firm|restoran|restaurant|cafe|fitness|gym|otel|hotel|emlak|real estate|kuafor|barber|agency|ajans|saas|crm|ecommerce|e commerce|marketplace)\b/.test(
+      normalized
+    );
+
+  return (
+    hasSubject &&
+    (hasBriefSignal ||
+      hasRouteOrProductStructure ||
+      domainPhrase ||
+      words.length >= 6)
+  );
+}
+
 function isBuildRequest(message: string): boolean {
   return (
     BUILD_INTENT_PATTERN.test(message) ||
-    (BUILD_WANT_PATTERN.test(message) && BUILD_SUBJECT_PATTERN.test(message))
+    (BUILD_WANT_PATTERN.test(message) && BUILD_SUBJECT_PATTERN.test(message)) ||
+    isImplicitBuildBrief(message)
   );
 }
 
@@ -452,6 +600,8 @@ conversation, explicitly say no implementation is required and recommend a
 plain conversational answer without code-edit tags.
 
 If a short request has clear build intent, infer missing details professionally.
+Treat compact product/design briefs as build requests even if the user does not say "build", "create", "make", "yap", or "oluştur".
+Examples that are build requests: "modern restaurant website with menu and reservation", "diş kliniği premium landing page", "SaaS dashboard with auth and pricing".
 Do not create a generic SaaS/agency brief unless the user's domain is actually SaaS/agency.
 If the user names a sector, make the brief sector-specific: page order, proof points,
 CTA logic, objections, copy tone, and visual direction must match that sector.
@@ -475,6 +625,9 @@ Deliver production-minded quality:
 - modern motion/animation by default unless the user explicitly asks for static/minimal
 - avoid generic repetitive template output
 - never produce the same landing page with only the logo/title changed
+- never reuse the same visual skeleton across unrelated prompts; the silhouette, section order, composition, card geometry, typography, palette, and motion must visibly change by domain and visual archetype
+- avoid the default "nav + centered hero + stat cards + three feature cards + FAQ" skeleton unless the prompt explicitly asks for a conventional SaaS landing page
+- use the ARCHITECT SPEC and VISUAL ARCHETYPE as hard product direction, not inspiration
 - infer the industry, audience, product promise, trust objections, and CTA from the prompt
 - make every generated page visibly prompt-specific through copy, layout, proof, section order, and visual language
 - choose a distinct design direction per request: editorial, luxury service, operational dashboard, boutique studio, local business, or clean SaaS when appropriate
@@ -494,6 +647,8 @@ Deliver production-minded quality:
 - for full website requests, build at least 7 meaningful sections across multiple routes unless the requested scope is smaller
 - generated sites must have a clear visual concept: color system, spacing rhythm, typography scale, card geometry, and section transitions
 - do not generate a centered hero followed by identical cards unless the user explicitly asks for a minimal template
+- if the visual archetype forbids a pattern, do not use that pattern
+- every build should include at least one prompt-specific visual metaphor or interaction: menu board, appointment flow, legal case timeline, product console, booking widget, catalog shelf, event ticket, map strip, ROI panel, etc.
 - when the user asks for pages such as pricing, FAQ, contact, dashboard, login, register, blog, or about, create those routes/files instead of only naming them in nav
 - keep copy in the user's language and make it specific enough that it cannot be reused for an unrelated sector
 - all customer-visible UI copy must match the user's prompt language: navigation, headings, CTA buttons, route page titles, form labels, FAQ, cards, status/empty/error text, and metadata
@@ -520,6 +675,7 @@ Scoring criteria:
 - Responsiveness expectations
 - Code quality / maintainability
 - Avoidance of generic template output
+- Visual diversity versus prior/common template silhouettes
 - Product-specific information architecture, not just a hero and generic cards
 - Professional visual craft: typography, spacing, palette, sections, motion, states, and conversion flow
 
@@ -531,6 +687,9 @@ Rules:
 - FAIL broad website/application builds with fewer than 3 real App Router page files.
 - FAIL outputs with fewer than 7 meaningful sections across the project for broad website/app requests unless the user asked for something intentionally small.
 - FAIL when the visual system is basic, repeated, or looks like a logo/title swap.
+- FAIL outputs that look like the same generated site skeleton with only copy/colors changed.
+- FAIL if the output uses the forbidden patterns from the visual archetype brief.
+- FAIL if a local service, restaurant, clinic, legal, commerce, event, dashboard, or developer tool prompt receives a generic SaaS/agency landing layout.
 - FAIL broad website/application builds that lack shared components/content/config structure.
 - FAIL broad website/application builds that have no purposeful animation, transition, hover state, or motion system unless the user requested static/minimal.
 - FAIL outputs where visible UI copy uses a different language than the user's prompt.
@@ -1156,7 +1315,8 @@ function isBroadBuildRequest(message: string, options: BuildOptions = {}) {
     (/\b(istiyorum|lazim|ihtiyacim|need|want)\b/.test(normalized) &&
       /\b(site|website|web sitesi|landing|landing page|sayfa|dashboard|panel|app|uygulama|platform|product|urun|proje)\b/.test(
         normalized
-      ));
+      )) ||
+    isImplicitBuildBrief(message);
 
   if (!hasCreationIntent && options.forceBuild !== true) return false;
 
@@ -1251,6 +1411,99 @@ function hasMotionSystem(writes: CodeOperation[]) {
   return /\b(animate-|transition-|duration-|ease-|hover:|group-hover:|motion-safe|@keyframes|animation:|framer-motion|whileHover|initial=|animate=)\b/.test(
     combined
   );
+}
+
+function getCombinedWrittenContent(assistantContent: string): string {
+  return getWriteOperations(assistantContent)
+    .map((operation) => operation.content || "")
+    .join("\n");
+}
+
+function hasGenericLandingSkeleton(assistantContent: string): boolean {
+  const combined = getCombinedWrittenContent(assistantContent);
+  if (!combined) return false;
+
+  const centeredHeroSignals = [
+    /text-center/g,
+    /mx-auto[^"\n]*(max-w-|text-)/g,
+    /justify-center/g,
+    /items-center/g,
+  ].reduce((count, pattern) => count + (combined.match(pattern) || []).length, 0);
+  const repeatedCardSignals = [
+    /\.map\(\(/g,
+    /grid[^"\n]*(md:grid-cols-3|lg:grid-cols-3)/g,
+    /rounded-\[?2/g,
+    /stats\.map|features\.map|services\.map/gi,
+  ].reduce((count, pattern) => count + (combined.match(pattern) || []).length, 0);
+  const genericSectionSignals = [
+    /\b(hero|features|services|stats|workflow|proof|faq|contact)\b/gi,
+    /\b(Feature|Service|Solution|Workflow|Proof|FAQ)\b/g,
+  ].reduce((count, pattern) => count + (combined.match(pattern) || []).length, 0);
+
+  return (
+    centeredHeroSignals >= 7 &&
+    repeatedCardSignals >= 8 &&
+    genericSectionSignals >= 14
+  );
+}
+
+function getVisualDiversityIssues(
+  userMessage: string,
+  assistantContent: string,
+  spec: ArchitectSpec | null
+): string[] {
+  const issues: string[] = [];
+  const archetype = selectVisualArchetype(userMessage);
+  const combined = getCombinedWrittenContent(assistantContent);
+  const normalizedContent = normalizePromptText(combined);
+  const normalizedPrompt = normalizePromptText(userMessage);
+
+  if (!combined) return issues;
+
+  if (hasGenericLandingSkeleton(assistantContent)) {
+    issues.push(
+      "The implementation appears to reuse a generic centered hero/stats/cards/FAQ skeleton; create a distinct page silhouette and section rhythm."
+    );
+  }
+
+  const archetypePatternMap: Record<string, RegExp[]> = {
+    "editorial-luxury": [/pull|quote|story|magazine|editorial|serif|prose/i, /grid-cols-\[|asym|span-2|col-span/i],
+    "neo-brutal-product": [/border-2|border-4|shadow-\[|uppercase|tracking-\[/i, /rotate-|translate-|offset|sticker/i],
+    "operational-dashboard": [/metric|analytics|status|workflow|dashboard|panel|empty state/i, /grid-cols-\[|tab|segment|chart|progress/i],
+    "boutique-studio": [/portfolio|case|studio|floating|drift|gallery/i, /blur-3xl|rotate-|absolute|organic/i],
+    "local-service-premium": [/booking|randevu|appointment|availability|location|service area|trust/i, /form|contact|phone|map|hours/i],
+    "commerce-catalog": [/catalog|product|cart|checkout|sepet|category|price/i, /filter|grid|sku|basket|compare/i],
+    "immersive-event": [/ticket|bilet|schedule|speaker|venue|program|timeline/i, /glow|radial-gradient|countdown|date/i],
+    "technical-terminal": [/api|sdk|terminal|console|integration|docs|endpoint/i, /font-mono|code|pre|status|cursor/i],
+  };
+  const archetypePatterns = archetypePatternMap[archetype.key] || [];
+  const archetypeHits = archetypePatterns.filter((pattern) =>
+    pattern.test(combined)
+  ).length;
+
+  if (archetypePatterns.length > 0 && archetypeHits === 0) {
+    issues.push(
+      `The implementation does not show enough structural evidence of the required visual archetype: ${spec?.visualArchetype || archetype.name}.`
+    );
+  }
+
+  const domainSpecificSignals = [
+    /\b(menu|reservation|booking|randevu|tedavi|implant|clinic|klinik|case|dava|contract|s[öo]zle[sş]me|ticket|bilet|schedule|speaker|catalog|cart|checkout|sepet|api|sdk|terminal|metric|analytics|dashboard)\b/i,
+    /\b(service area|practice area|treatment|product catalog|appointment|availability|location|integration|workflow|timeline|pricing table)\b/i,
+  ];
+
+  if (
+    /\b(restoran|restaurant|cafe|klinik|clinic|dental|hukuk|law|legal|event|ecommerce|dashboard|api|developer|hotel|otel|fitness|gym)\b/.test(
+      normalizedPrompt
+    ) &&
+    !domainSpecificSignals.some((pattern) => pattern.test(combined))
+  ) {
+    issues.push(
+      "The generated UI lacks domain-specific modules/interactions; add prompt-specific structures such as booking, menu, case timeline, catalog, dashboard states, API panels, or equivalent."
+    );
+  }
+
+  return issues;
 }
 
 function hasOnlySmallSinglePageBuild(assistantContent: string) {
@@ -1368,6 +1621,55 @@ function normalizePromptText(userMessage: string) {
     .replace(/ş/g, "s")
     .replace(/ö/g, "o")
     .replace(/ç/g, "c");
+}
+
+function hashPromptSeed(input: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < input.length; index++) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return Math.abs(hash >>> 0);
+}
+
+function selectVisualArchetype(userMessage: string): VisualArchetype {
+  const normalized = normalizePromptText(userMessage);
+
+  if (/\b(dashboard|panel|admin|crm|analytics|metric|rapor|report|workflow|operasyon|operation)\b/.test(normalized)) {
+    return VISUAL_ARCHETYPES.find((item) => item.key === "operational-dashboard")!;
+  }
+
+  if (/\b(ecommerce|e commerce|store|shop|marketplace|pazar|urun katalog|catalog|cart|checkout|sepet)\b/.test(normalized)) {
+    return VISUAL_ARCHETYPES.find((item) => item.key === "commerce-catalog")!;
+  }
+
+  if (/\b(event|festival|konferans|conference|summit|ticket|bilet|schedule|program|speaker)\b/.test(normalized)) {
+    return VISUAL_ARCHETYPES.find((item) => item.key === "immersive-event")!;
+  }
+
+  if (/\b(api|developer|docs|sdk|devtool|terminal|database|backend|integration|entegrasyon)\b/.test(normalized)) {
+    return VISUAL_ARCHETYPES.find((item) => item.key === "technical-terminal")!;
+  }
+
+  if (/\b(restoran|restaurant|cafe|kafe|dis|dental|klinik|clinic|tesisat|plumb|avukat|hukuk|law|legal|kuafor|barber|hotel|otel|emlak|real estate)\b/.test(normalized)) {
+    const localOptions = ["local-service-premium", "editorial-luxury", "boutique-studio"];
+    const key = localOptions[hashPromptSeed(normalized) % localOptions.length];
+    return VISUAL_ARCHETYPES.find((item) => item.key === key)!;
+  }
+
+  const index = hashPromptSeed(normalized) % VISUAL_ARCHETYPES.length;
+  return VISUAL_ARCHETYPES[index] || VISUAL_ARCHETYPES[0]!;
+}
+
+function formatVisualArchetype(archetype: VisualArchetype): string {
+  return [
+    `Name: ${archetype.name}`,
+    `Composition: ${archetype.composition}`,
+    `Palette: ${archetype.palette}`,
+    `Typography: ${archetype.typography}`,
+    `Motion: ${archetype.motion}`,
+    `Avoid: ${archetype.forbidden.join("; ")}`,
+  ].join("\n");
 }
 
 function inferBusinessTitle(userMessage: string) {
@@ -2213,12 +2515,16 @@ async function createPlannerBrief(
   provider: AiProviderConfig,
   options: BuildOptions = {}
 ): Promise<string> {
+  const visualArchetype = selectVisualArchetype(userMessage);
   const plannerInput = `
 SYSTEM:
 ${PLANNER_SYSTEM_PROMPT}
 
 PLAN_MODE:
 ${options.planMode ? "Enabled. Produce a stronger product plan and identify only the questions that materially affect the result." : "Disabled. Infer sensible defaults unless the request is materially underspecified."}
+
+VISUAL ARCHETYPE TO ENFORCE:
+${formatVisualArchetype(visualArchetype)}
 
 RECENT CONVERSATION:
 ${recentConversation || "No prior conversation."}
@@ -2241,6 +2547,10 @@ function createLocalPlannerBrief(
   const turkish = isLikelyTurkish(userMessage);
   const inferredTitle = inferBusinessTitle(userMessage);
   const inferredProfile = chooseFallbackProfile(userMessage);
+  const visualArchetype = selectVisualArchetype(userMessage);
+  const visualDirectionLine = turkish
+    ? `Visual Archetype: ${visualArchetype.name}. Kompozisyon=${visualArchetype.composition}. Palet=${visualArchetype.palette}. Tipografi=${visualArchetype.typography}. Kaçın=${visualArchetype.forbidden.join("; ")}.`
+    : `Visual Archetype: ${visualArchetype.name}. Composition=${visualArchetype.composition}. Palette=${visualArchetype.palette}. Typography=${visualArchetype.typography}. Avoid=${visualArchetype.forbidden.join("; ")}.`;
   const planningLine = options.planMode
     ? turkish
       ? "Planning Mode: Önce bilgi mimarisi, sayfa yapısı, tasarım yönü ve kritik belirsizlikleri netleştir; eksik ama kritik bilgi varsa en fazla 3 soru sor."
@@ -2253,6 +2563,7 @@ function createLocalPlannerBrief(
     return [
       `Goal: ${inferredTitle} için üretime hazır, modern, mobil uyumlu ve çok sayfalı bir web projesi oluştur.`,
       `Inferred Context: Sektör=${inferredProfile.sector}, tasarım yönü=${inferredProfile.layout}, ana CTA=${inferredProfile.primary}.`,
+      visualDirectionLine,
       planningLine,
       "Audience: Hizmet veya ürün arayan son kullanıcılar.",
       "UI/UX Direction: Prompt'a özel, güven veren, net hiyerarşili, premium, modern ve animasyonlu bir ürün/site deneyimi.",
@@ -2266,6 +2577,7 @@ function createLocalPlannerBrief(
   return [
     `Goal: Build a production-ready, modern, mobile-responsive multi-page web project for ${inferredTitle}.`,
     `Inferred Context: Sector=${inferredProfile.sector}, design direction=${inferredProfile.layout}, primary CTA=${inferredProfile.primary}.`,
+    visualDirectionLine,
     planningLine,
     "Audience: End users evaluating the service or product.",
     "UI/UX Direction: Prompt-specific, trustworthy, premium, modern, animated product/site experience with clear hierarchy.",
@@ -2328,6 +2640,7 @@ function createLocalArchitectSpec(userMessage: string): ArchitectSpec {
   const turkish = isLikelyTurkish(userMessage);
   const plain = normalizePromptText(userMessage);
   const profile = chooseFallbackProfile(userMessage);
+  const visualArchetype = selectVisualArchetype(userMessage);
   const isRestaurant = /restoran|restaurant|cafe|kahve|menu/.test(plain);
   const isDental = /dis|dent|ortodont|klinik|implant/.test(plain);
   const isSaas = /saas|software|dashboard|crm|app|platform|urun|product/.test(plain);
@@ -2377,6 +2690,7 @@ function createLocalArchitectSpec(userMessage: string): ArchitectSpec {
   return {
     projectType: `${profile.sector} ${isSaas ? "product" : "website"} prototype`,
     language: turkish ? "tr" : "en",
+    visualArchetype: visualArchetype.name,
     routes: [
       {
         path: "/",
@@ -2408,8 +2722,8 @@ function createLocalArchitectSpec(userMessage: string): ArchitectSpec {
       },
     ],
     designDirection: turkish
-      ? `Sektöre özel ${profile.layout} kompozisyon; güçlü tipografi, bilinçli renk paleti, modern kart geometrisi ve prompt'a özel görsel ritim.`
-      : `Domain-specific ${profile.layout} composition with strong typography, deliberate palette, modern card geometry, and prompt-specific visual rhythm.`,
+      ? `Sektöre özel ${profile.layout} kompozisyon. Zorunlu görsel yön: ${formatVisualArchetype(visualArchetype)}`
+      : `Domain-specific ${profile.layout} composition. Mandatory visual direction: ${formatVisualArchetype(visualArchetype)}`,
     animationPlan: turkish
       ? [
           "Sayfa yüklenirken yumuşak reveal geçişleri",
@@ -2472,9 +2786,13 @@ function sanitizeArchitectSpec(
       ? value.language
       : fallback.language,
     routes: mergedRoutes.length >= 3 ? mergedRoutes : fallback.routes,
+    visualArchetype: String(value?.visualArchetype || fallback.visualArchetype || "").slice(
+      0,
+      120
+    ),
     designDirection: String(value?.designDirection || fallback.designDirection).slice(
       0,
-      500
+      900
     ),
     animationPlan:
       Array.isArray(value?.animationPlan) && value.animationPlan.length
@@ -2529,6 +2847,7 @@ Schema:
   "projectType": "short type",
   "language": "tr" | "en",
   "routes": [{"path": "/", "purpose": "short", "visibleTitle": "label"}],
+  "visualArchetype": "selected visual archetype name",
   "designDirection": "specific visual direction",
   "animationPlan": ["short motion requirement"],
   "components": ["src/components/example.tsx"],
@@ -2539,6 +2858,8 @@ Rules:
 - Language must be ${turkish ? "tr" : "en"}.
 - Use 3-5 real routes. The home route must be "/".
 - Routes must match the user's domain, not a generic SaaS template.
+- Follow the visual archetype from LOCAL_FALLBACK_SPEC unless there is a clearly better domain-specific reason to choose a different one.
+- The designDirection must explicitly describe composition, palette, typography, motion, and forbidden template patterns.
 - Prefer reusable components and content/config files.
 - The spec must protect quality without making tiny edits slow; this is only for power builds.
 `;
@@ -2618,6 +2939,8 @@ function validateBuildAgainstSpec(params: {
         "Broad build is too shallow: it needs real routes, shared components, content/config structure, motion, and deeper implementation."
       );
     }
+
+    issues.push(...getVisualDiversityIssues(userMessage, assistantContent, spec));
 
     const writes = getWriteOperations(assistantContent);
     const writtenPaths = new Set(
@@ -2699,6 +3022,9 @@ ${params.plannerBrief}
 ARCHITECT_SPEC:
 ${formatArchitectSpec(params.architectSpec)}
 
+VISUAL_ARCHETYPE_CONTRACT:
+${formatVisualArchetype(selectVisualArchetype(params.userMessage))}
+
 VALIDATOR_ISSUES:
 ${validation.issues.map((issue) => `- ${issue}`).join("\n")}
 
@@ -2754,6 +3080,7 @@ async function createBuilderResponse(
   options: BuildOptions = {}
 ): Promise<string> {
   if (userMessage && hasBuildIntent(userMessage, options)) {
+    const visualArchetype = selectVisualArchetype(userMessage);
     return createAiChatText({
       provider,
       system: input,
@@ -2764,6 +3091,10 @@ async function createBuilderResponse(
         "Return exactly one <dec-code> block.",
         "Use executable edit tags only.",
         "Rewrite src/app/page.tsx completely.",
+        "VISUAL ARCHETYPE CONTRACT:",
+        formatVisualArchetype(visualArchetype),
+        "The preview must visibly follow this archetype. Change the page silhouette, section rhythm, component geometry, palette, typography, and motion accordingly.",
+        "Do not reuse the same nav/hero/stats/cards/FAQ skeleton across different prompts.",
         isLikelyTurkish(userMessage)
           ? "VISIBLE UI LANGUAGE: Turkish. Every preview-visible label, heading, CTA, form label, FAQ, route title, metadata title/description, empty state, and error/status text must be Turkish with correct Turkish characters. Do not leave English UI labels like Home, Services, Contact, Get Started, Learn More, Features, Pricing, or FAQ."
           : "VISIBLE UI LANGUAGE: English. Every preview-visible label, heading, CTA, form label, FAQ, route title, metadata title/description, empty state, and error/status text must be English.",
@@ -2895,6 +3226,9 @@ ${params.plannerBrief}
 ARCHITECT_SPEC:
 ${formatArchitectSpec(params.architectSpec || null)}
 
+VISUAL_ARCHETYPE_CONTRACT:
+${formatVisualArchetype(selectVisualArchetype(params.userMessage))}
+
 RECENT_CONVERSATION:
 ${params.recentMessages || "No recent conversation."}
 
@@ -2937,6 +3271,9 @@ ${params.plannerBrief}
 
 ARCHITECT_SPEC:
 ${formatArchitectSpec(params.architectSpec || null)}
+
+VISUAL_ARCHETYPE_CONTRACT:
+${formatVisualArchetype(selectVisualArchetype(params.userMessage))}
 
 QUALITY_FEEDBACK:
 ${critic.feedback}
@@ -3052,6 +3389,9 @@ For this build request, rewrite src/app/page.tsx and create a real multi-page Ap
 - a content/config/data file so copy and page metadata are organized instead of hardcoded repeatedly
 - real links between pages and meaningful CTAs
 - purposeful modern motion: transitions, hover states, reveal animations, or CSS keyframes
+Visual archetype contract:
+${formatVisualArchetype(selectVisualArchetype(params.userMessage))}
+Do not reuse the generic centered hero + stat cards + three cards + FAQ skeleton. Change the silhouette, section order, geometry, and domain-specific modules.
 The implementation must feel prompt-specific, visually polished, responsive, and complete enough to preview as a professional first version.
 Visible UI language requirement:
 - The user's prompt language is ${isLikelyTurkish(params.userMessage) ? "Turkish" : "English"}.
@@ -3355,6 +3695,7 @@ async function buildAssistantMessageFromSession(
         provider,
       });
     }
+    const visualArchetype = selectVisualArchetype(userMessage);
 
     await progress?.(getBuildProgressCopy(userMessage, "draft", 36, [
       "src/app/page.tsx",
@@ -3375,6 +3716,9 @@ ${plannerBrief}
 
 ARCHITECT SPEC:
 ${formatArchitectSpec(architectSpec)}
+
+VISUAL ARCHETYPE:
+${formatVisualArchetype(visualArchetype)}
 
 CURRENT CODEBASE SNAPSHOT:
 ${codeContext}`;
