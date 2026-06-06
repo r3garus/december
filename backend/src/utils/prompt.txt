@@ -224,8 +224,8 @@ If the request asks for a website, dashboard, application, or full product:
 - Build a complete public-facing experience with navigation, real pages/routes, meaningful sections, responsive states, motion, and polished visual hierarchy.
 - If the user asks for multiple pages, implement those pages with real routes.
 - If the user does not list pages, infer the strongest sensible multi-page information architecture and implement it.
-- For broad builds, create at least 4 real page files: src/app/page.tsx plus 3+ supporting routes.
-- For broad builds, create at least 8 meaningful write operations, 3+ shared component files, and 2+ content/config/data files.
+- For broad builds, create at least 5 real page files: src/app/page.tsx plus 4+ supporting routes.
+- For broad builds, create at least 14 meaningful write operations, 6+ shared component files, and 4+ content/config/data files.
 - Never use a generic generated-site scaffold: do not create src/components/generated-site.tsx, src/lib/generated-site-content.ts, GeneratedLandingPage, or route files that only wrap the same shared page component.
 - Quality should feel closer to a strong Replit/Lovable prototype than a basic template.
 
@@ -233,9 +233,9 @@ If the request asks for a website, dashboard, application, or full product:
 ROUTE + DEPTH REQUIREMENTS
 ========================
 For broad website/application requests:
-- Build at least 4 real App Router page routes unless the user asks for a smaller/single-page scope.
+- Build at least 5 real App Router page routes unless the user asks for a smaller/single-page scope.
 - Build route-specific content and sections; do not make every route a thin wrapper around the same component.
-- Build at least 7 meaningful sections across the project unless the user asks for a smaller scope.
+- Build at least 10 meaningful sections across the project unless the user asks for a smaller scope.
 - Include navigation that maps to real routes or real sections.
 - Include shared layout/navigation/section components and organized content/config data.
 - Include purposeful motion: route/section reveal, hover transitions, animated visual accents, or CSS keyframes.

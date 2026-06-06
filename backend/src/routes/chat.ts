@@ -131,6 +131,18 @@ router.post("/:containerId/messages", async (req, res) => {
       !!options &&
       typeof options === "object" &&
       options.forceBuild === true,
+    powerMode:
+      !!options &&
+      typeof options === "object" &&
+      options.powerMode === true,
+    qualityMode:
+      !!options &&
+      typeof options === "object" &&
+      (options.qualityMode === "fast" ||
+        options.qualityMode === "standard" ||
+        options.qualityMode === "power")
+        ? options.qualityMode
+        : undefined,
   };
 
   if (!message || typeof message !== "string") {

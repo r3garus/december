@@ -24,10 +24,48 @@ const aiTemperature = aiSdkConfig.temperature ?? 0.15;
 const aiMaxRetries = aiSdkConfig.maxRetries ?? 2;
 const aiMinQualityScore = aiSdkConfig.minQualityScore ?? 92;
 const aiMaxCriticRounds = aiSdkConfig.maxCriticRounds ?? 4;
-const AI_REQUEST_TIMEOUT_MS = Number(process.env.AI_REQUEST_TIMEOUT_MS || "150000");
-const AI_BUILDER_TIMEOUT_MS = Number(
-  process.env.AI_BUILDER_TIMEOUT_MS || "420000"
+const AI_REQUEST_TIMEOUT_MS = readPositiveInt(
+  process.env.AI_REQUEST_TIMEOUT_MS,
+  240_000
 );
+const AI_BUILDER_TIMEOUT_MS = readPositiveInt(
+  process.env.AI_BUILDER_TIMEOUT_MS,
+  900_000
+);
+const AI_REQUEST_MAX_OUTPUT_TOKENS = readPositiveInt(
+  process.env.AI_REQUEST_MAX_OUTPUT_TOKENS,
+  8_000
+);
+const AI_BUILDER_MAX_OUTPUT_TOKENS = readPositiveInt(
+  process.env.AI_BUILDER_MAX_OUTPUT_TOKENS,
+  70_000
+);
+const AI_PLANNER_MAX_OUTPUT_TOKENS = readPositiveInt(
+  process.env.AI_PLANNER_MAX_OUTPUT_TOKENS,
+  8_000
+);
+const AI_ARCHITECT_MAX_OUTPUT_TOKENS = readPositiveInt(
+  process.env.AI_ARCHITECT_MAX_OUTPUT_TOKENS,
+  12_000
+);
+const AI_DEEP_BUILD_MODEL =
+  process.env.KLAWPEN_DEEP_BUILD_MODEL ||
+  process.env.AI_DEEP_BUILD_MODEL ||
+  process.env.AI_BUILDER_MODEL ||
+  "";
+const AI_CHAT_TOKEN_PARAMETER =
+  process.env.AI_CHAT_TOKEN_PARAMETER === "max_tokens"
+    ? "max_tokens"
+    : "max_completion_tokens";
+const AI_REASONING_EFFORT =
+  process.env.AI_REASONING_EFFORT ||
+  process.env.KLAWPEN_REASONING_EFFORT ||
+  "";
+
+function readPositiveInt(value: string | undefined, fallback: number) {
+  const parsed = Number.parseInt(value || "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
 
 function getAiClient(provider: AiProviderConfig) {
   const cacheKey = `${provider.key}:${provider.baseUrl}`;
@@ -119,6 +157,7 @@ interface BuildOptions {
 const chatSessions = new Map<string, ChatSession>();
 
 const POWER_BUILD_AUTO_ENABLED = process.env.KLAWPEN_POWER_BUILD_AUTO !== "false";
+const DEEP_BUILD_AUTO_ENABLED = process.env.KLAWPEN_DEEP_BUILD_AUTO !== "false";
 const ARCHITECT_SPEC_ENABLED =
   process.env.KLAWPEN_ENABLE_ARCHITECT_SPEC !== "false";
 const BUILD_GATE_ENABLED = process.env.KLAWPEN_ENABLE_BUILD_GATE === "true";
@@ -126,19 +165,53 @@ const PREVIEW_CHECK_ENABLED = process.env.KLAWPEN_ENABLE_PREVIEW_CHECK === "true
 const CROSS_REVIEW_ENABLED = process.env.KLAWPEN_ENABLE_CROSS_REVIEW !== "false";
 const DETERMINISTIC_RUNTIME_FALLBACK_ENABLED =
   process.env.KLAWPEN_DETERMINISTIC_RUNTIME_FALLBACK === "true";
-const BROAD_BUILD_MIN_WRITES = Number(process.env.KLAWPEN_MIN_BROAD_WRITES || "8");
-const BROAD_BUILD_MIN_ROUTES = Number(process.env.KLAWPEN_MIN_BROAD_ROUTES || "4");
-const BROAD_BUILD_MIN_SUPPORTING_ROUTES = Number(
-  process.env.KLAWPEN_MIN_BROAD_SUPPORTING_ROUTES || "3"
+const BROAD_BUILD_MIN_WRITES = readPositiveInt(
+  process.env.KLAWPEN_MIN_BROAD_WRITES,
+  8
 );
-const BROAD_BUILD_MIN_COMPONENTS = Number(
-  process.env.KLAWPEN_MIN_BROAD_COMPONENTS || "3"
+const BROAD_BUILD_MIN_ROUTES = readPositiveInt(
+  process.env.KLAWPEN_MIN_BROAD_ROUTES,
+  4
 );
-const BROAD_BUILD_MIN_CONTENT_FILES = Number(
-  process.env.KLAWPEN_MIN_BROAD_CONTENT_FILES || "2"
+const BROAD_BUILD_MIN_SUPPORTING_ROUTES = readPositiveInt(
+  process.env.KLAWPEN_MIN_BROAD_SUPPORTING_ROUTES,
+  3
 );
-const BROAD_BUILD_MIN_WRITTEN_BYTES = Number(
-  process.env.KLAWPEN_MIN_BROAD_WRITTEN_BYTES || "35000"
+const BROAD_BUILD_MIN_COMPONENTS = readPositiveInt(
+  process.env.KLAWPEN_MIN_BROAD_COMPONENTS,
+  3
+);
+const BROAD_BUILD_MIN_CONTENT_FILES = readPositiveInt(
+  process.env.KLAWPEN_MIN_BROAD_CONTENT_FILES,
+  2
+);
+const BROAD_BUILD_MIN_WRITTEN_BYTES = readPositiveInt(
+  process.env.KLAWPEN_MIN_BROAD_WRITTEN_BYTES,
+  35_000
+);
+const DEEP_BUILD_MIN_WRITES = readPositiveInt(
+  process.env.KLAWPEN_DEEP_BUILD_MIN_WRITES,
+  14
+);
+const DEEP_BUILD_MIN_ROUTES = readPositiveInt(
+  process.env.KLAWPEN_DEEP_BUILD_MIN_ROUTES,
+  5
+);
+const DEEP_BUILD_MIN_SUPPORTING_ROUTES = readPositiveInt(
+  process.env.KLAWPEN_DEEP_BUILD_MIN_SUPPORTING_ROUTES,
+  4
+);
+const DEEP_BUILD_MIN_COMPONENTS = readPositiveInt(
+  process.env.KLAWPEN_DEEP_BUILD_MIN_COMPONENTS,
+  6
+);
+const DEEP_BUILD_MIN_CONTENT_FILES = readPositiveInt(
+  process.env.KLAWPEN_DEEP_BUILD_MIN_CONTENT_FILES,
+  4
+);
+const DEEP_BUILD_MIN_WRITTEN_BYTES = readPositiveInt(
+  process.env.KLAWPEN_DEEP_BUILD_MIN_WRITTEN_BYTES,
+  75_000
 );
 
 const VISUAL_ARCHETYPES: VisualArchetype[] = [
@@ -251,6 +324,7 @@ const VISUAL_ARCHETYPES: VisualArchetype[] = [
 interface ResolvedBuildOptions extends BuildOptions {
   qualityMode: "fast" | "standard" | "power";
   powerMode: boolean;
+  deepMode: boolean;
 }
 
 interface ArchitectSpecRoute {
@@ -269,6 +343,23 @@ interface ArchitectSpec {
   components: string[];
   contentFiles: string[];
   acceptanceCriteria: string[];
+}
+
+interface ImplementationBlueprint {
+  routes: Array<{
+    path: string;
+    sections: string[];
+    uniqueModule: string;
+  }>;
+  components: string[];
+  contentFiles: string[];
+  visualSystem: {
+    palette: string;
+    typography: string;
+    layoutSignature: string;
+    motion: string;
+  };
+  qualityChecklist: string[];
 }
 
 interface ValidationResult {
@@ -642,9 +733,9 @@ The generated preview UI must use the user's prompt language for all visible cop
 - code identifiers may stay in English, but customer-visible text must not switch language
 - if the prompt is Turkish, use correct Turkish characters such as ç, ğ, ı, İ, ö, ş, ü
 For broad website/app requests, plan a real multi-route project by default:
-- Home route plus 3-4 supporting routes such as about, services/features, pricing/menu/treatments, FAQ, contact, dashboard, or blog when sensible.
+- Home route plus 4-6 supporting routes such as about, services/features, pricing/menu/treatments, FAQ, contact, dashboard, blog, or domain-specific equivalents when sensible.
 - Shared content/config data, reusable components, responsive navigation, and meaningful page transitions.
-- Broad builds must be deep enough to preview as a real product: ${BROAD_BUILD_MIN_WRITES}+ write operations, ${BROAD_BUILD_MIN_ROUTES}+ routes, ${BROAD_BUILD_MIN_COMPONENTS}+ components, and ${BROAD_BUILD_MIN_CONTENT_FILES}+ content/config/data files.
+- Broad builds must be deep enough to preview as a real product: ${DEEP_BUILD_MIN_WRITES}+ write operations, ${DEEP_BUILD_MIN_ROUTES}+ routes, ${DEEP_BUILD_MIN_COMPONENTS}+ components, and ${DEEP_BUILD_MIN_CONTENT_FILES}+ content/config/data files.
 - Use a modern animated visual system unless the user explicitly asks for static/minimal.
 `;
 
@@ -666,9 +757,9 @@ Deliver production-minded quality:
 - choose a distinct design direction per request: editorial, luxury service, operational dashboard, boutique studio, local business, or clean SaaS when appropriate
 - when implementing, output executable edit tags only; plain markdown code is not applied
 - for any new website/application, rewrite src/app/page.tsx at minimum
-- for broad website/application builds, create a real multi-page App Router project by default: home plus 3-4 supporting routes such as src/app/about/page.tsx, src/app/services/page.tsx, src/app/pricing/page.tsx, src/app/faq/page.tsx, src/app/contact/page.tsx, src/app/dashboard/page.tsx, or domain-specific equivalents
+- for broad website/application builds, create a real multi-page App Router project by default: home plus 4-6 supporting routes such as src/app/about/page.tsx, src/app/services/page.tsx, src/app/pricing/page.tsx, src/app/faq/page.tsx, src/app/contact/page.tsx, src/app/dashboard/page.tsx, src/app/blog/page.tsx, or domain-specific equivalents
 - only keep a broad build as one page when the user explicitly asks for a single-page/one-page/landing-only result
-- split the implementation into real files instead of dumping everything into one page: for broad builds write at least ${BROAD_BUILD_MIN_WRITES} meaningful files, ${BROAD_BUILD_MIN_ROUTES}+ page routes, ${BROAD_BUILD_MIN_COMPONENTS}+ shared components, and ${BROAD_BUILD_MIN_CONTENT_FILES}+ content/config/data files
+- split the implementation into real files instead of dumping everything into one page: for broad builds write at least ${DEEP_BUILD_MIN_WRITES} meaningful files, ${DEEP_BUILD_MIN_ROUTES}+ page routes, ${DEEP_BUILD_MIN_COMPONENTS}+ shared components, and ${DEEP_BUILD_MIN_CONTENT_FILES}+ content/config/data files
 - prefer a complete, polished implementation over shallow file count, but never use a tiny one-file toy page for a broad build
 - never use the deterministic fallback scaffold in normal AI output: no src/components/generated-site.tsx, no src/lib/generated-site-content.ts, no GeneratedLandingPage, and no route files that only return one shared generated page
 - do not use placeholder copy, fake generic stats, lorem ipsum, or repeated card names
@@ -678,7 +769,7 @@ Deliver production-minded quality:
 - make the result feel closer to a polished Replit/Lovable-quality prototype than a simple landing-page template
 - include thoughtful empty states, microcopy, responsive behavior, conversion logic, hover states, and page/section transitions where relevant
 - ask focused questions only when missing information would materially change the product; otherwise make professional defaults and build
-- for full website requests, build at least 7 meaningful sections across multiple routes unless the requested scope is smaller
+- for full website requests, build at least 10 meaningful sections across multiple routes unless the requested scope is smaller
 - generated sites must have a clear visual concept: color system, spacing rhythm, typography scale, card geometry, and section transitions
 - do not generate a centered hero followed by identical cards unless the user explicitly asks for a minimal template
 - if the visual archetype forbids a pattern, do not use that pattern
@@ -727,15 +818,15 @@ Rules:
 - FAIL generic/simple landing pages that could fit any industry after only changing the logo.
 - FAIL outputs that ignore requested pages or do not create routes for explicitly requested pages.
 - FAIL broad website/application builds that create only one page unless the user explicitly requested a one-page/landing-only result.
-- FAIL broad website/application builds with fewer than 4 real App Router page files.
-- FAIL outputs with fewer than 7 meaningful sections across the project for broad website/app requests unless the user asked for something intentionally small.
+- FAIL broad website/application builds with fewer than ${DEEP_BUILD_MIN_ROUTES} real App Router page files in deep/power builds.
+- FAIL outputs with fewer than 10 meaningful sections across the project for broad website/app requests unless the user asked for something intentionally small.
 - FAIL when the visual system is basic, repeated, or looks like a logo/title swap.
 - FAIL outputs that look like the same generated site skeleton with only copy/colors changed.
 - FAIL if the output uses the forbidden patterns from the visual archetype brief.
 - FAIL if a local service, restaurant, clinic, legal, commerce, event, dashboard, or developer tool prompt receives a generic SaaS/agency landing layout.
 - FAIL broad website/application builds that lack shared components/content/config structure.
 - FAIL broad website/application builds that have no purposeful animation, transition, hover state, or motion system unless the user requested static/minimal.
-- FAIL broad website/application builds with fewer than ${BROAD_BUILD_MIN_WRITES} meaningful write operations, fewer than ${BROAD_BUILD_MIN_ROUTES} route files, fewer than ${BROAD_BUILD_MIN_COMPONENTS} shared component files, or fewer than ${BROAD_BUILD_MIN_CONTENT_FILES} content/config/data files.
+- FAIL broad website/application builds with fewer than ${DEEP_BUILD_MIN_WRITES} meaningful write operations, fewer than ${DEEP_BUILD_MIN_ROUTES} route files, fewer than ${DEEP_BUILD_MIN_COMPONENTS} shared component files, or fewer than ${DEEP_BUILD_MIN_CONTENT_FILES} content/config/data files in deep/power builds.
 - FAIL outputs that use src/components/generated-site.tsx, src/lib/generated-site-content.ts, GeneratedLandingPage, generated-site-content, or route files that only wrap the same shared generated component.
 - FAIL outputs where visible UI copy uses a different language than the user's prompt.
 - FAIL Turkish-prompt outputs that leave common English UI labels visible, such as Home, Services, About, Contact, Get Started, Learn More, Features, Pricing, or FAQ.
@@ -825,6 +916,17 @@ function buildMessageContent(message: string, attachments: Attachment[] = []): a
   return content;
 }
 
+function getAlternateChatTokenParameter() {
+  return AI_CHAT_TOKEN_PARAMETER === "max_completion_tokens"
+    ? "max_tokens"
+    : "max_completion_tokens";
+}
+
+function shouldRetryWithAlternateTokenParameter(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /\b(max_completion_tokens|max_tokens)\b/i.test(message);
+}
+
 function extractResponseText(resp: any): string {
   if (typeof resp?.output_text === "string" && resp.output_text.trim()) {
     return resp.output_text;
@@ -855,26 +957,55 @@ async function createAiText(params: {
   input: string;
   temperature?: number;
   retries?: number;
+  timeoutMs?: number;
+  maxOutputTokens?: number;
+  modelOverride?: string;
 }): Promise<string> {
   const client = getAiClient(params.provider);
   const temperature = params.temperature ?? aiTemperature;
   const retries = params.retries ?? aiMaxRetries;
+  const timeoutMs = params.timeoutMs ?? AI_REQUEST_TIMEOUT_MS;
+  const maxOutputTokens =
+    params.maxOutputTokens ?? AI_REQUEST_MAX_OUTPUT_TOKENS;
+  const model = params.modelOverride || params.provider.model;
 
   const createChatCompletion = async () => {
-    const response = await withRetries(
-      () =>
-        withTimeout(
-          client.chat.completions.create({
-            model: params.provider.model,
-            messages: [{ role: "user", content: params.input }],
-            // @ts-ignore
-            temperature,
-          }),
-          AI_REQUEST_TIMEOUT_MS,
-          `${params.provider.key} chat completion`
-        ),
-      retries
-    );
+    const buildPayload = (tokenParameter: string): Record<string, unknown> => ({
+      model,
+      messages: [{ role: "user", content: params.input }],
+      temperature,
+      [tokenParameter]: maxOutputTokens,
+    });
+    const payload = buildPayload(AI_CHAT_TOKEN_PARAMETER);
+    if (AI_REASONING_EFFORT) payload.reasoning_effort = AI_REASONING_EFFORT;
+
+    let response: any;
+    try {
+      response = await withRetries(
+        () =>
+          withTimeout(
+            // @ts-ignore - provider-compatible model gateways vary in token/reasoning parameter support.
+            client.chat.completions.create(payload),
+            timeoutMs,
+            `${params.provider.key} chat completion`
+          ),
+        retries
+      );
+    } catch (error) {
+      if (!shouldRetryWithAlternateTokenParameter(error)) throw error;
+      const retryPayload = buildPayload(getAlternateChatTokenParameter());
+      if (AI_REASONING_EFFORT) retryPayload.reasoning_effort = AI_REASONING_EFFORT;
+      response = await withRetries(
+        () =>
+          withTimeout(
+            // @ts-ignore - provider-compatible model gateways vary in token/reasoning parameter support.
+            client.chat.completions.create(retryPayload),
+            timeoutMs,
+            `${params.provider.key} chat completion retry`
+          ),
+        retries
+      );
+    }
 
     recordProviderRequest(params.provider.key);
     return extractChatCompletionText(response);
@@ -885,16 +1016,22 @@ async function createAiText(params: {
   }
 
   try {
+    const payload: Record<string, unknown> = {
+      model,
+      input: params.input,
+      temperature,
+      max_output_tokens: maxOutputTokens,
+    };
+    if (AI_REASONING_EFFORT) {
+      payload.reasoning = { effort: AI_REASONING_EFFORT };
+    }
+
     const response = await withRetries(
       () =>
         withTimeout(
-          client.responses.create({
-            model: params.provider.model,
-            input: params.input,
-            // @ts-ignore
-            temperature,
-          }),
-          AI_REQUEST_TIMEOUT_MS,
+          // @ts-ignore - Responses API payload differs across model gateways.
+          client.responses.create(payload),
+          timeoutMs,
           `${params.provider.key} responses request`
         ),
       retries
@@ -919,29 +1056,55 @@ async function createAiChatText(params: {
   temperature?: number;
   retries?: number;
   timeoutMs?: number;
+  maxOutputTokens?: number;
+  modelOverride?: string;
 }): Promise<string> {
   const client = getAiClient(params.provider);
   const temperature = params.temperature ?? aiTemperature;
   const retries = params.retries ?? aiMaxRetries;
   const timeoutMs = params.timeoutMs ?? AI_REQUEST_TIMEOUT_MS;
+  const maxOutputTokens =
+    params.maxOutputTokens ?? AI_REQUEST_MAX_OUTPUT_TOKENS;
+  const model = params.modelOverride || params.provider.model;
+  const buildPayload = (tokenParameter: string): Record<string, unknown> => ({
+    model,
+    messages: [
+      { role: "system", content: params.system },
+      { role: "user", content: params.user },
+    ],
+    temperature,
+    [tokenParameter]: maxOutputTokens,
+  });
+  const payload = buildPayload(AI_CHAT_TOKEN_PARAMETER);
+  if (AI_REASONING_EFFORT) payload.reasoning_effort = AI_REASONING_EFFORT;
 
-  const response = await withRetries(
-    () =>
-      withTimeout(
-        client.chat.completions.create({
-          model: params.provider.model,
-          messages: [
-            { role: "system", content: params.system },
-            { role: "user", content: params.user },
-          ],
-          // @ts-ignore
-          temperature,
-        }),
-        timeoutMs,
-        `${params.provider.key} structured chat completion`
-      ),
-    retries
-  );
+  let response: any;
+  try {
+    response = await withRetries(
+      () =>
+        withTimeout(
+          // @ts-ignore - provider-compatible model gateways vary in token/reasoning parameter support.
+          client.chat.completions.create(payload),
+          timeoutMs,
+          `${params.provider.key} structured chat completion`
+        ),
+      retries
+    );
+  } catch (error) {
+    if (!shouldRetryWithAlternateTokenParameter(error)) throw error;
+    const retryPayload = buildPayload(getAlternateChatTokenParameter());
+    if (AI_REASONING_EFFORT) retryPayload.reasoning_effort = AI_REASONING_EFFORT;
+    response = await withRetries(
+      () =>
+        withTimeout(
+          // @ts-ignore - provider-compatible model gateways vary in token/reasoning parameter support.
+          client.chat.completions.create(retryPayload),
+          timeoutMs,
+          `${params.provider.key} structured chat completion retry`
+        ),
+      retries
+    );
+  }
 
   recordProviderRequest(params.provider.key);
   return extractChatCompletionText(response);
@@ -1416,6 +1579,11 @@ function resolveBuildOptions(
     (explicitlyPower ||
       (POWER_BUILD_AUTO_ENABLED &&
         (broadBuild || workloadIsHeavy || options.planMode === true)));
+  const deepMode =
+    !explicitlyFast &&
+    DEEP_BUILD_AUTO_ENABLED &&
+    broadBuild &&
+    (powerMode || workloadIsHeavy || explicitlyPower || options.planMode === true);
 
   const qualityMode: ResolvedBuildOptions["qualityMode"] = powerMode
     ? "power"
@@ -1427,11 +1595,43 @@ function resolveBuildOptions(
     ...options,
     qualityMode,
     powerMode,
+    deepMode,
   };
 }
 
 function shouldUsePowerBuildLayer(options: BuildOptions = {}) {
   return options.powerMode === true || options.qualityMode === "power";
+}
+
+function shouldUseDeepBuildLayer(options: BuildOptions = {}) {
+  return (
+    (options as Partial<ResolvedBuildOptions>).deepMode === true ||
+    (shouldUsePowerBuildLayer(options) && DEEP_BUILD_AUTO_ENABLED)
+  );
+}
+
+function getBroadBuildRequirements(options: BuildOptions = {}) {
+  const deep = shouldUseDeepBuildLayer(options);
+  return {
+    writes: deep ? DEEP_BUILD_MIN_WRITES : BROAD_BUILD_MIN_WRITES,
+    routes: deep ? DEEP_BUILD_MIN_ROUTES : BROAD_BUILD_MIN_ROUTES,
+    supportingRoutes: deep
+      ? DEEP_BUILD_MIN_SUPPORTING_ROUTES
+      : BROAD_BUILD_MIN_SUPPORTING_ROUTES,
+    components: deep ? DEEP_BUILD_MIN_COMPONENTS : BROAD_BUILD_MIN_COMPONENTS,
+    contentFiles: deep
+      ? DEEP_BUILD_MIN_CONTENT_FILES
+      : BROAD_BUILD_MIN_CONTENT_FILES,
+    writtenBytes: deep
+      ? DEEP_BUILD_MIN_WRITTEN_BYTES
+      : BROAD_BUILD_MIN_WRITTEN_BYTES,
+  };
+}
+
+function getBuilderModelOverride(options: BuildOptions = {}) {
+  return shouldUseDeepBuildLayer(options) && AI_DEEP_BUILD_MODEL
+    ? AI_DEEP_BUILD_MODEL
+    : undefined;
 }
 
 function getWriteOperations(assistantContent: string) {
@@ -1867,9 +2067,13 @@ function hasOnlySmallSinglePageBuild(assistantContent: string) {
   );
 }
 
-function hasShallowBroadBuildStructure(assistantContent: string) {
+function hasShallowBroadBuildStructure(
+  assistantContent: string,
+  options: BuildOptions = {}
+) {
   const writes = getWriteOperations(assistantContent);
   if (!writes.length) return false;
+  const requirements = getBroadBuildRequirements(options);
 
   const hasPageWrite = writes.some(
     (operation) => normalizeProjectPath(operation.path || "") === "src/app/page.tsx"
@@ -1890,16 +2094,16 @@ function hasShallowBroadBuildStructure(assistantContent: string) {
 
   return (
     !hasPageWrite ||
-    routeWriteCount < BROAD_BUILD_MIN_ROUTES ||
-    supportingRouteWriteCount < BROAD_BUILD_MIN_SUPPORTING_ROUTES ||
-    writes.length < BROAD_BUILD_MIN_WRITES ||
-    componentWriteCount < BROAD_BUILD_MIN_COMPONENTS ||
-    contentWriteCount < BROAD_BUILD_MIN_CONTENT_FILES ||
+    routeWriteCount < requirements.routes ||
+    supportingRouteWriteCount < requirements.supportingRoutes ||
+    writes.length < requirements.writes ||
+    componentWriteCount < requirements.components ||
+    contentWriteCount < requirements.contentFiles ||
     !hasSupportingStructure ||
     !hasComponentStructure(writes) ||
     !hasContentStructure(writes) ||
     !hasMotionSystem(writes) ||
-    totalWrittenBytes < BROAD_BUILD_MIN_WRITTEN_BYTES ||
+    totalWrittenBytes < requirements.writtenBytes ||
     hasGeneratedSiteScaffold(assistantContent) ||
     hasThinGeneratedRouteWrappers(writes) ||
     hasRepeatedSingleComponentRouteWrappers(writes) ||
@@ -1915,7 +2119,7 @@ function shouldRepairBuildDepth(
   return (
     isBroadBuildRequest(userMessage, options) &&
     !isExplicitSinglePageRequest(userMessage) &&
-    hasShallowBroadBuildStructure(assistantContent)
+    hasShallowBroadBuildStructure(assistantContent, options)
   );
 }
 
@@ -3508,6 +3712,9 @@ ${userMessage}
     provider,
     input: plannerInput,
     temperature: Math.min(aiTemperature, 0.2),
+    timeoutMs: Math.min(AI_BUILDER_TIMEOUT_MS, 300_000),
+    maxOutputTokens: AI_PLANNER_MAX_OUTPUT_TOKENS,
+    modelOverride: getBuilderModelOverride(options),
   });
 }
 
@@ -3538,10 +3745,10 @@ function createLocalPlannerBrief(
       planningLine,
       "Audience: Hizmet veya ürün arayan son kullanıcılar.",
       "UI/UX Direction: Prompt'a özel, güven veren, net hiyerarşili, premium, modern ve animasyonlu bir ürün/site deneyimi.",
-      "Information Architecture: Ana sayfa + 3-4 destek sayfası oluştur; örnek route'lar: hizmetler/özellikler, fiyatlar/menü/tedaviler, hakkımızda, SSS, iletişim veya sektöre uygun eşdeğerleri.",
+      "Information Architecture: Ana sayfa + 4-6 destek sayfası oluştur; örnek route'lar: hizmetler/özellikler, fiyatlar/menü/tedaviler, hakkımızda, SSS, iletişim veya sektöre uygun eşdeğerleri.",
       "Required Pages/Sections: Her route kendi amacına sahip olsun; hero, kanıt, hizmet mimarisi, süreç, sosyal kanıt, SSS, iletişim/dönüşüm CTA ve sektöre özel ek bölümler projeye yayılsın.",
-      "Technical Plan: Next.js App Router içinde src/app/page.tsx yanında gerçek route dosyaları, 3+ shared component dosyası, 2+ content/config dosyası ve modern transition/hover animasyonları oluştur.",
-      "Acceptance Checklist: En az 4 gerçek page route, 8+ anlamlı dosya, shared component/content yapısı, responsive tasarım, anlamlı sektörel metinler, erişilebilir HTML, bozuk import yok, tek sayfa/template hissi yok.",
+      "Technical Plan: Next.js App Router içinde src/app/page.tsx yanında gerçek route dosyaları, 6+ shared component dosyası, 4+ content/config dosyası ve modern transition/hover animasyonları oluştur.",
+      "Acceptance Checklist: En az 5 gerçek page route, 14+ anlamlı dosya, shared component/content yapısı, responsive tasarım, anlamlı sektörel metinler, erişilebilir HTML, bozuk import yok, tek sayfa/template hissi yok.",
     ].join("\n");
   }
 
@@ -3552,10 +3759,10 @@ function createLocalPlannerBrief(
     planningLine,
     "Audience: End users evaluating the service or product.",
     "UI/UX Direction: Prompt-specific, trustworthy, premium, modern, animated product/site experience with clear hierarchy.",
-    "Information Architecture: Build a homepage plus 3-4 supporting pages; sensible routes include services/features, pricing/menu/treatments, about, FAQ, contact, dashboard, blog, or domain-specific equivalents.",
+    "Information Architecture: Build a homepage plus 4-6 supporting pages; sensible routes include services/features, pricing/menu/treatments, about, FAQ, contact, dashboard, blog, or domain-specific equivalents.",
     "Required Pages/Sections: Each route should have a clear job; distribute hero, proof, service architecture, process, social proof, FAQ, contact/conversion CTA, and sector-specific sections across the project.",
-    "Technical Plan: Use Next.js App Router with src/app/page.tsx plus real route files, 3+ shared component files, 2+ content/config data files, and modern transition/hover animation patterns.",
-    "Acceptance Checklist: At least 4 real page routes, 8+ meaningful files, shared component/content structure, responsive layout, meaningful sector-specific copy, accessible HTML, no broken imports, no one-page/template feel.",
+    "Technical Plan: Use Next.js App Router with src/app/page.tsx plus real route files, 6+ shared component files, 4+ content/config data files, and modern transition/hover animation patterns.",
+    "Acceptance Checklist: At least 5 real page routes, 14+ meaningful files, shared component/content structure, responsive layout, meaningful sector-specific copy, accessible HTML, no broken imports, no one-page/template feel.",
   ].join("\n");
 }
 
@@ -3636,6 +3843,7 @@ function createLocalArchitectSpec(userMessage: string): ArchitectSpec {
                     ? "Özellikler"
                     : "Hizmetler",
         proof: isBlog ? "Kategoriler" : isCommerce ? "Kampanyalar" : isSaas ? "Fiyatlar" : "Süreç",
+        about: isBlog ? "Yayın" : isCommerce ? "Ziyaret Planı" : "Hakkımızda",
         contact: isBlog ? "Bülten" : "İletişim",
       }
     : {
@@ -3650,10 +3858,11 @@ function createLocalArchitectSpec(userMessage: string): ArchitectSpec {
                 ? "Articles"
                 : isCommerce
                   ? "Stores"
-                  : isSaas
-                    ? "Features"
-                    : "Services",
+                : isSaas
+                  ? "Features"
+                  : "Services",
         proof: isBlog ? "Topics" : isCommerce ? "Campaigns" : isSaas ? "Pricing" : "Process",
+        about: isBlog ? "Publication" : isCommerce ? "Visit Plan" : "About",
         contact: isBlog ? "Newsletter" : "Contact",
       };
 
@@ -3671,6 +3880,7 @@ function createLocalArchitectSpec(userMessage: string): ArchitectSpec {
               ? "/features"
               : "/services";
   const proofPath = isBlog ? "/topics" : isCommerce ? "/campaigns" : isSaas ? "/pricing" : "/process";
+  const aboutPath = isBlog ? "/publication" : isCommerce ? "/visit-plan" : "/about";
   const contactPath = isBlog ? "/newsletter" : "/contact";
 
   return {
@@ -3724,6 +3934,21 @@ function createLocalArchitectSpec(userMessage: string): ArchitectSpec {
         visibleTitle: routeLabels.proof,
       },
       {
+        path: aboutPath,
+        purpose: turkish
+          ? isBlog
+            ? "Yayın çizgisini, editör yaklaşımını, yazar güvenini ve topluluk ritmini anlatır."
+            : isCommerce
+              ? "Ziyaret planı, ulaşım, kat akışı, aile deneyimi ve merkez içi yönlendirmeyi netleştirir."
+              : "Marka hikayesini, ekip yaklaşımını, kalite standartlarını ve güven unsurlarını detaylandırır."
+          : isBlog
+            ? "Explain publication stance, editorial approach, author trust, and community rhythm."
+            : isCommerce
+              ? "Clarify visit planning, access, floor flow, family experience, and in-center guidance."
+            : "Detail the brand story, team approach, quality standards, and trust proof.",
+        visibleTitle: routeLabels.about,
+      },
+      {
         path: contactPath,
         purpose: turkish
           ? isBlog
@@ -3751,24 +3976,34 @@ function createLocalArchitectSpec(userMessage: string): ArchitectSpec {
         ],
     components: [
       "src/components/site-shell.tsx",
-      "src/components/site-sections.tsx",
-      "src/components/animated-card.tsx",
+      "src/components/hero-section.tsx",
+      "src/components/section-card.tsx",
+      "src/components/domain-modules.tsx",
+      "src/components/page-transition.tsx",
+      "src/components/conversion-panel.tsx",
     ],
-    contentFiles: ["src/lib/site-content.ts", "src/config/site-routes.ts"],
+    contentFiles: [
+      "src/lib/site-content.ts",
+      "src/lib/site-modules.ts",
+      "src/config/site-routes.ts",
+      "src/config/design-system.ts",
+    ],
     acceptanceCriteria: turkish
       ? [
-          "En az 4 gerçek App Router route dosyası oluşturulmalı.",
+          "En az 5 gerçek App Router route dosyası oluşturulmalı.",
           "Görünen tüm metinler Türkçe ve doğru Türkçe karakterlerle yazılmalı.",
           "Tek sayfalık jenerik template hissi olmamalı.",
-          "En az 3 ortak component ve en az 2 content/config/data dosyası kullanılmalı.",
+          "En az 6 ortak component ve en az 4 content/config/data dosyası kullanılmalı.",
           "Responsive, erişilebilir ve animasyonlu ilk sürüm olmalı.",
+          "Her route kendi özel modülünü ve sektöre özel içeriğini taşımalı.",
         ]
       : [
-          "Create at least 4 real App Router route files.",
+          "Create at least 5 real App Router route files.",
           "All preview-visible copy must be English.",
           "Avoid one-page generic template feel.",
-          "Use at least 3 shared components and at least 2 content/config/data files.",
+          "Use at least 6 shared components and at least 4 content/config/data files.",
           "Ship a responsive, accessible, animated first version.",
+          "Every route must carry its own route-specific module and domain-specific content.",
         ],
   };
 }
@@ -3792,14 +4027,14 @@ function sanitizeArchitectSpec(
     ...(routes.some((route) => route.path === "/") ? [] : fallback.routes.slice(0, 1)),
     ...routes,
     ...fallback.routes,
-  ]).slice(0, 5);
+  ]).slice(0, 7);
 
   return {
     projectType: String(value?.projectType || fallback.projectType).slice(0, 120),
     language: value?.language === "en" || value?.language === "tr"
       ? value.language
       : fallback.language,
-    routes: mergedRoutes.length >= 3 ? mergedRoutes : fallback.routes,
+    routes: mergedRoutes.length >= 5 ? mergedRoutes : fallback.routes,
     visualArchetype: String(value?.visualArchetype || fallback.visualArchetype || "").slice(
       0,
       120
@@ -3900,6 +4135,9 @@ ${JSON.stringify(fallback, null, 2)}
       user,
       temperature: 0.08,
       retries: 1,
+      timeoutMs: Math.min(AI_BUILDER_TIMEOUT_MS, 300_000),
+      maxOutputTokens: AI_ARCHITECT_MAX_OUTPUT_TOKENS,
+      modelOverride: getBuilderModelOverride({ qualityMode: "power", powerMode: true }),
     });
     const parsed = extractJsonObject<Partial<ArchitectSpec>>(raw);
     return sanitizeArchitectSpec(parsed, fallback);
@@ -3916,14 +4154,203 @@ function formatArchitectSpec(spec: ArchitectSpec | null): string {
   return spec ? JSON.stringify(spec, null, 2) : "No architect spec required.";
 }
 
+function createLocalImplementationBlueprint(
+  userMessage: string,
+  spec: ArchitectSpec | null
+): ImplementationBlueprint {
+  const fallbackSpec = spec || createLocalArchitectSpec(userMessage);
+  const visualArchetype = selectVisualArchetype(userMessage);
+  const requirements = getBroadBuildRequirements({ qualityMode: "power", powerMode: true } as BuildOptions);
+
+  return {
+    routes: fallbackSpec.routes.slice(0, Math.max(5, requirements.routes)).map((route) => ({
+      path: route.path,
+      sections: [
+        route.visibleTitle,
+        route.purpose,
+        "Domain-specific proof or interaction module",
+      ],
+      uniqueModule: `${route.visibleTitle} route-specific experience`,
+    })),
+    components: [
+      "src/components/site-shell.tsx",
+      "src/components/hero-section.tsx",
+      "src/components/domain-modules.tsx",
+      "src/components/section-card.tsx",
+      "src/components/page-transition.tsx",
+      "src/components/conversion-panel.tsx",
+    ],
+    contentFiles: [
+      "src/lib/site-content.ts",
+      "src/lib/site-modules.ts",
+      "src/config/site-routes.ts",
+      "src/config/design-system.ts",
+    ],
+    visualSystem: {
+      palette: visualArchetype.palette,
+      typography: visualArchetype.typography,
+      layoutSignature: visualArchetype.composition,
+      motion: visualArchetype.motion,
+    },
+    qualityChecklist: [
+      "5+ real App Router page routes with unique route content",
+      "6+ shared components and 4+ content/config/data modules",
+      "75k+ written characters for broad deep builds unless the user asked for a small scope",
+      "No generated-site scaffold, thin route wrappers, generic SaaS skeleton, or builder/meta copy",
+      "Visible UI language matches the user prompt",
+    ],
+  };
+}
+
+function sanitizeImplementationBlueprint(
+  value: Partial<ImplementationBlueprint> | null,
+  fallback: ImplementationBlueprint
+): ImplementationBlueprint {
+  const routes = Array.isArray(value?.routes)
+    ? value.routes
+        .filter(Boolean)
+        .map((route) => ({
+          path: normalizeArchitectRoutePath(String(route?.path || "/")),
+          sections: Array.isArray(route?.sections)
+            ? route.sections.map(String).filter(Boolean).slice(0, 8)
+            : [],
+          uniqueModule: String(route?.uniqueModule || "").slice(0, 180),
+        }))
+    : [];
+
+  const dedupedRoutes = routes.reduce<ImplementationBlueprint["routes"]>(
+    (acc, route) => {
+      if (acc.some((item) => item.path === route.path)) return acc;
+      acc.push({
+        ...route,
+        sections: route.sections.length ? route.sections : ["Route-specific story"],
+        uniqueModule: route.uniqueModule || "Route-specific experience module",
+      });
+      return acc;
+    },
+    []
+  );
+
+  const components = Array.isArray(value?.components)
+    ? value.components.map(String).filter(Boolean).slice(0, 12)
+    : [];
+  const contentFiles = Array.isArray(value?.contentFiles)
+    ? value.contentFiles.map(String).filter(Boolean).slice(0, 8)
+    : [];
+  const visualSystem = (value?.visualSystem || {}) as Partial<
+    ImplementationBlueprint["visualSystem"]
+  >;
+  const qualityChecklist = Array.isArray(value?.qualityChecklist)
+    ? value.qualityChecklist.map(String).filter(Boolean).slice(0, 12)
+    : [];
+
+  return {
+    routes: dedupedRoutes.length >= 5 ? dedupedRoutes.slice(0, 7) : fallback.routes,
+    components: components.length >= 6 ? components : fallback.components,
+    contentFiles: contentFiles.length >= 4 ? contentFiles : fallback.contentFiles,
+    visualSystem: {
+      palette: String(visualSystem.palette || fallback.visualSystem.palette).slice(0, 240),
+      typography: String(visualSystem.typography || fallback.visualSystem.typography).slice(0, 240),
+      layoutSignature: String(
+        visualSystem.layoutSignature || fallback.visualSystem.layoutSignature
+      ).slice(0, 300),
+      motion: String(visualSystem.motion || fallback.visualSystem.motion).slice(0, 240),
+    },
+    qualityChecklist: qualityChecklist.length
+      ? qualityChecklist
+      : fallback.qualityChecklist,
+  };
+}
+
+function formatImplementationBlueprint(blueprint: ImplementationBlueprint | null): string {
+  return blueprint
+    ? JSON.stringify(blueprint, null, 2)
+    : "No implementation blueprint required.";
+}
+
+async function createImplementationBlueprint(params: {
+  userMessage: string;
+  plannerBrief: string;
+  architectSpec: ArchitectSpec | null;
+  recentMessages: string;
+  provider: AiProviderConfig;
+  options?: BuildOptions;
+}): Promise<ImplementationBlueprint> {
+  const fallback = createLocalImplementationBlueprint(
+    params.userMessage,
+    params.architectSpec
+  );
+  const requirements = getBroadBuildRequirements(params.options);
+  const turkish = isLikelyTurkish(params.userMessage);
+  const system = `
+You are Klawpen Core's implementation architect.
+Create a production-grade JSON blueprint for a deep multi-page Next.js App Router build.
+Return JSON only. No markdown.
+Schema:
+{
+  "routes": [{"path": "/", "sections": ["section names"], "uniqueModule": "route-specific module"}],
+  "components": ["src/components/example.tsx"],
+  "contentFiles": ["src/lib/site-content.ts"],
+  "visualSystem": {"palette": "...", "typography": "...", "layoutSignature": "...", "motion": "..."},
+  "qualityChecklist": ["testable item"]
+}
+Rules:
+- Visible UI language must be ${turkish ? "Turkish with correct Turkish characters" : "English"}.
+- Plan ${requirements.routes}-7 real routes. Home must be "/".
+- Plan at least ${requirements.components} shared component files and ${requirements.contentFiles} content/config/data files.
+- Every route needs a distinct job and a route-specific module; no thin wrappers around the same landing component.
+- The visual system must specify a screenshot-level layout signature, not generic words like modern/premium.
+- Avoid the repeated nav + centered hero + stats + three cards + FAQ skeleton.
+- Do not include generated-site files, GeneratedLandingPage, or builder/meta wording.
+`;
+  const user = `
+USER_REQUEST:
+${params.userMessage}
+
+RECENT_CONVERSATION:
+${clipText(params.recentMessages || "No recent conversation.", 8_000)}
+
+PLANNER_BRIEF:
+${clipText(params.plannerBrief, 12_000)}
+
+ARCHITECT_SPEC:
+${formatArchitectSpec(params.architectSpec)}
+
+LOCAL_BLUEPRINT_FALLBACK:
+${JSON.stringify(fallback, null, 2)}
+`;
+
+  try {
+    const raw = await createAiChatText({
+      provider: params.provider,
+      system,
+      user,
+      temperature: 0.1,
+      retries: 1,
+      timeoutMs: Math.min(AI_BUILDER_TIMEOUT_MS, 300_000),
+      maxOutputTokens: AI_ARCHITECT_MAX_OUTPUT_TOKENS,
+      modelOverride: getBuilderModelOverride(params.options),
+    });
+    const parsed = extractJsonObject<Partial<ImplementationBlueprint>>(raw);
+    return sanitizeImplementationBlueprint(parsed, fallback);
+  } catch (error) {
+    console.warn(
+      "AI implementation blueprint failed; continuing with local blueprint:",
+      error instanceof Error ? error.message : error
+    );
+    return fallback;
+  }
+}
+
 function validateBuildAgainstSpec(params: {
   userMessage: string;
   assistantContent: string;
   spec: ArchitectSpec | null;
+  blueprint?: ImplementationBlueprint | null;
   options?: BuildOptions;
 }): ValidationResult {
   const issues: string[] = [];
-  const { userMessage, assistantContent, spec } = params;
+  const { userMessage, assistantContent, spec, blueprint } = params;
   const options = params.options || {};
 
   if (!hasBuildIntent(userMessage, options)) {
@@ -3968,9 +4395,10 @@ function validateBuildAgainstSpec(params: {
     isBroadBuildRequest(userMessage, options) &&
     !isExplicitSinglePageRequest(userMessage)
   ) {
-    if (hasShallowBroadBuildStructure(assistantContent)) {
+    if (hasShallowBroadBuildStructure(assistantContent, options)) {
+      const requirements = getBroadBuildRequirements(options);
       issues.push(
-        `Broad build is too shallow: it must write at least ${BROAD_BUILD_MIN_WRITES} files, ${BROAD_BUILD_MIN_ROUTES} real page routes, ${BROAD_BUILD_MIN_COMPONENTS} component files, ${BROAD_BUILD_MIN_CONTENT_FILES} content/config/data files, purposeful motion, and deeper implementation.`
+        `Broad build is too shallow: it must write at least ${requirements.writes} files, ${requirements.routes} real page routes, ${requirements.components} component files, ${requirements.contentFiles} content/config/data files, purposeful motion, and deeper implementation.`
       );
     }
 
@@ -3987,8 +4415,11 @@ function validateBuildAgainstSpec(params: {
       writes.map((operation) => normalizeProjectPath(operation.path || ""))
     );
     const requiredRoutes = spec?.routes?.length
-      ? spec.routes.slice(0, 4)
-      : createLocalArchitectSpec(userMessage).routes.slice(0, 3);
+      ? spec.routes.slice(0, getBroadBuildRequirements(options).routes)
+      : createLocalArchitectSpec(userMessage).routes.slice(
+          0,
+          getBroadBuildRequirements(options).routes
+        );
 
     for (const route of requiredRoutes) {
       const routeFile = routePathToPageFile(route.path);
@@ -3996,6 +4427,15 @@ function validateBuildAgainstSpec(params: {
         issues.push(
           `Architect spec route "${route.path}" is missing; write ${routeFile}.`
         );
+      }
+    }
+
+    if (blueprint?.routes?.length) {
+      for (const route of blueprint.routes.slice(0, getBroadBuildRequirements(options).routes)) {
+        const routeFile = routePathToPageFile(route.path);
+        if (!writtenPaths.has(routeFile)) {
+          issues.push(`Implementation blueprint route "${route.path}" is missing; write ${routeFile}.`);
+        }
       }
     }
 
@@ -4016,6 +4456,24 @@ function validateBuildAgainstSpec(params: {
         issues.push("Architect spec requires a shared content/config/data file.");
       }
     }
+
+    if (blueprint?.components?.length) {
+      const componentHits = blueprint.components.filter((filePath) =>
+        writtenPaths.has(normalizeProjectPath(filePath))
+      ).length;
+      if (componentHits < Math.min(3, blueprint.components.length)) {
+        issues.push("Implementation blueprint component structure is missing or too thin.");
+      }
+    }
+
+    if (blueprint?.contentFiles?.length) {
+      const contentHits = blueprint.contentFiles.filter((filePath) =>
+        writtenPaths.has(normalizeProjectPath(filePath))
+      ).length;
+      if (contentHits < Math.min(2, blueprint.contentFiles.length)) {
+        issues.push("Implementation blueprint content/config/data structure is missing or too thin.");
+      }
+    }
   }
 
   return { passed: issues.length === 0, issues };
@@ -4025,6 +4483,7 @@ async function repairSpecValidationIssues(params: {
   userMessage: string;
   plannerBrief: string;
   architectSpec: ArchitectSpec | null;
+  implementationBlueprint?: ImplementationBlueprint | null;
   codeContext: string;
   draft: string;
   provider: AiProviderConfig;
@@ -4036,12 +4495,14 @@ async function repairSpecValidationIssues(params: {
     userMessage: params.userMessage,
     assistantContent: params.draft,
     spec: params.architectSpec,
+    blueprint: params.implementationBlueprint,
     options: params.options,
   });
 
   if (validation.passed) return params.draft;
 
   console.warn("Architect/spec validation failed; requesting repair:", validation.issues);
+  const requirements = getBroadBuildRequirements(params.options);
 
   const repairInput = `
 SYSTEM:
@@ -4053,9 +4514,10 @@ You are repairing a draft that failed Klawpen's architect/spec validator.
 Return exactly one <dec-code> block with executable edit tags only.
 Do not explain outside the tags.
 Hard repair requirements for broad builds:
-- Write ${BROAD_BUILD_MIN_WRITES}-12 meaningful files.
-- Include ${BROAD_BUILD_MIN_ROUTES}+ real App Router page files with route-specific sections/content.
-- Include ${BROAD_BUILD_MIN_COMPONENTS}+ shared component files and ${BROAD_BUILD_MIN_CONTENT_FILES}+ content/config/data files.
+- Write at least ${requirements.writes} meaningful files.
+- Include ${requirements.routes}+ real App Router page files with route-specific sections/content.
+- Include ${requirements.components}+ shared component files and ${requirements.contentFiles}+ content/config/data files.
+- Target ${requirements.writtenBytes}+ written characters across the edit set for deep broad builds.
 - Do not use src/components/generated-site.tsx, src/lib/generated-site-content.ts, generated-site-content, GeneratedLandingPage, or thin route wrappers around one shared generated page.
 - If the previous draft used that scaffold, replace the architecture instead of patching it cosmetically.
 
@@ -4067,6 +4529,9 @@ ${params.plannerBrief}
 
 ARCHITECT_SPEC:
 ${formatArchitectSpec(params.architectSpec)}
+
+IMPLEMENTATION_BLUEPRINT:
+${formatImplementationBlueprint(params.implementationBlueprint || null)}
 
 VISUAL_ARCHETYPE_CONTRACT:
 ${formatVisualArchetype(selectVisualArchetype(params.userMessage))}
@@ -4092,6 +4557,7 @@ ${clipText(params.codeContext, 80_000)}
       userMessage: params.userMessage,
       assistantContent: repaired,
       spec: params.architectSpec,
+      blueprint: params.implementationBlueprint,
       options: params.options,
     });
 
@@ -4108,6 +4574,7 @@ ${clipText(params.codeContext, 80_000)}
       userMessage: params.userMessage,
       plannerBrief: params.plannerBrief,
       architectSpec: params.architectSpec,
+      implementationBlueprint: params.implementationBlueprint,
       codeContext: params.codeContext,
       provider: params.provider,
       options: params.options,
@@ -4119,6 +4586,7 @@ ${clipText(params.codeContext, 80_000)}
         userMessage: params.userMessage,
         assistantContent: premiumAttempt,
         spec: params.architectSpec,
+        blueprint: params.implementationBlueprint,
         options: params.options,
       });
 
@@ -4151,6 +4619,8 @@ async function createBuilderResponse(
 ): Promise<string> {
   if (userMessage && hasBuildIntent(userMessage, options)) {
     const visualArchetype = selectVisualArchetype(userMessage);
+    const requirements = getBroadBuildRequirements(options);
+    const modelOverride = getBuilderModelOverride(options);
     return createAiChatText({
       provider,
       system: input,
@@ -4178,7 +4648,8 @@ async function createBuilderResponse(
         !isExplicitSinglePageRequest(userMessage)
           ? [
               "This is a broad website/app build: create a multi-page project, not a one-page landing.",
-              `Minimum file contract: write ${BROAD_BUILD_MIN_WRITES}-12 meaningful files, including ${BROAD_BUILD_MIN_ROUTES}+ real App Router page files, ${BROAD_BUILD_MIN_COMPONENTS}+ shared component files, and ${BROAD_BUILD_MIN_CONTENT_FILES}+ content/config/data files.`,
+              `Minimum file contract: write at least ${requirements.writes} meaningful files, including ${requirements.routes}+ real App Router page files, ${requirements.components}+ shared component files, and ${requirements.contentFiles}+ content/config/data files.`,
+              `Depth contract: target ${requirements.writtenBytes}+ written characters across the edit set unless the user explicitly asked for a small scope.`,
               "Each route must have route-specific sections/content; do not make every route a thin wrapper around the same landing component.",
               "Create shared components for navigation/layout/sections, cards, route-specific modules, and reusable visual primitives.",
               "Create organized content/config/data files for copy, route metadata, domain modules, and navigation instead of hardcoding repeated arrays inside one page.",
@@ -4197,6 +4668,8 @@ async function createBuilderResponse(
       ].join("\n"),
       temperature: Math.max(aiTemperature, 0.22),
       timeoutMs: AI_BUILDER_TIMEOUT_MS,
+      maxOutputTokens: AI_BUILDER_MAX_OUTPUT_TOKENS,
+      modelOverride,
     });
   }
 
@@ -4211,6 +4684,7 @@ async function createPremiumFallbackAttempt(params: {
   userMessage: string;
   plannerBrief: string;
   architectSpec?: ArchitectSpec | null;
+  implementationBlueprint?: ImplementationBlueprint | null;
   codeContext: string;
   provider: AiProviderConfig;
   options?: BuildOptions;
@@ -4221,6 +4695,7 @@ async function createPremiumFallbackAttempt(params: {
   const isBlogLike = /\b(blog|magazin|magazine|haber|news|article|makale|yazar|writer|content|i[cç]erik|publishing|yay[ıi]n)\b/i.test(
     normalizePromptText(params.userMessage)
   );
+  const requirements = getBroadBuildRequirements(params.options);
 
   const system = `
 ${prompt}
@@ -4235,7 +4710,8 @@ Return exactly one <dec-code> block with executable tags. No markdown fences.
 
 QUALITY BAR:
 - Build for a polished Replit/Lovable-level preview, not a template.
-- Create ${BROAD_BUILD_MIN_ROUTES}+ real App Router pages, ${BROAD_BUILD_MIN_COMPONENTS}+ shared components, and ${BROAD_BUILD_MIN_CONTENT_FILES}+ content/config/data files; write ${BROAD_BUILD_MIN_WRITES}-12 meaningful files when the request is broad.
+- Create ${requirements.routes}+ real App Router pages, ${requirements.components}+ shared components, and ${requirements.contentFiles}+ content/config/data files; write at least ${requirements.writes} meaningful files when the request is broad.
+- The response should be large enough for a professional project: target ${requirements.writtenBytes}+ written characters when scope is broad.
 - Never use src/components/generated-site.tsx, src/lib/generated-site-content.ts, generated-site-content imports, GeneratedLandingPage, or route wrappers around one shared generated page.
 - The visual concept must be distinct and complete: no empty panels, no unrelated generic stats, no oversized headline-only hero, no nav + hero + three cards skeleton.
 - Use real customer-visible copy in ${turkish ? "Turkish with correct Turkish characters" : "English"}.
@@ -4268,6 +4744,9 @@ ${params.plannerBrief}
 ARCHITECT SPEC:
 ${formatArchitectSpec(params.architectSpec || null)}
 
+IMPLEMENTATION BLUEPRINT:
+${formatImplementationBlueprint(params.implementationBlueprint || null)}
+
 CURRENT CODEBASE SNAPSHOT:
 ${clipText(params.codeContext, 45_000)}
 `;
@@ -4280,6 +4759,8 @@ ${clipText(params.codeContext, 45_000)}
       temperature: Math.max(aiTemperature, 0.24),
       retries: Math.max(aiMaxRetries, 2),
       timeoutMs: AI_BUILDER_TIMEOUT_MS,
+      maxOutputTokens: AI_BUILDER_MAX_OUTPUT_TOKENS,
+      modelOverride: getBuilderModelOverride(params.options),
     });
 
     if (hasExecutableCodeOperations(response)) {
@@ -4370,6 +4851,7 @@ async function reviseBuildAfterLocalQualityGate(params: {
   userMessage: string;
   plannerBrief: string;
   architectSpec?: ArchitectSpec | null;
+  implementationBlueprint?: ImplementationBlueprint | null;
   codeContext: string;
   draft: string;
   provider: AiProviderConfig;
@@ -4396,6 +4878,9 @@ ${params.plannerBrief}
 
 ARCHITECT_SPEC:
 ${formatArchitectSpec(params.architectSpec || null)}
+
+IMPLEMENTATION_BLUEPRINT:
+${formatImplementationBlueprint(params.implementationBlueprint || null)}
 
 VISUAL_ARCHETYPE_CONTRACT:
 ${formatVisualArchetype(selectVisualArchetype(params.userMessage))}
@@ -4428,6 +4913,7 @@ async function improveWithCriticLoop(params: {
   userMessage: string;
   plannerBrief: string;
   architectSpec?: ArchitectSpec | null;
+  implementationBlueprint?: ImplementationBlueprint | null;
   codeContext: string;
   recentMessages: string;
   draft: string;
@@ -4457,6 +4943,9 @@ ${params.plannerBrief}
 ARCHITECT_SPEC:
 ${formatArchitectSpec(params.architectSpec || null)}
 
+IMPLEMENTATION_BLUEPRINT:
+${formatImplementationBlueprint(params.implementationBlueprint || null)}
+
 VISUAL_ARCHETYPE_CONTRACT:
 ${formatVisualArchetype(selectVisualArchetype(params.userMessage))}
 
@@ -4472,6 +4961,7 @@ ${currentDraft}
         userMessage: params.userMessage,
         plannerBrief: params.plannerBrief,
         architectSpec: params.architectSpec || null,
+        implementationBlueprint: params.implementationBlueprint || null,
         codeContext: params.codeContext,
         draft: currentDraft,
         provider: params.provider,
@@ -4487,6 +4977,7 @@ ${currentDraft}
         userMessage: params.userMessage,
         plannerBrief: params.plannerBrief,
         architectSpec: params.architectSpec || null,
+        implementationBlueprint: params.implementationBlueprint || null,
         codeContext: params.codeContext,
         draft: currentDraft,
         provider: params.provider,
@@ -4532,6 +5023,9 @@ ${params.plannerBrief}
 
 ARCHITECT_SPEC:
 ${formatArchitectSpec(params.architectSpec || null)}
+
+IMPLEMENTATION_BLUEPRINT:
+${formatImplementationBlueprint(params.implementationBlueprint || null)}
 
 VISUAL_ARCHETYPE_CONTRACT:
 ${formatVisualArchetype(selectVisualArchetype(params.userMessage))}
@@ -4585,6 +5079,7 @@ async function repairMissingExecutableEdits(params: {
   userMessage: string;
   plannerBrief: string;
   architectSpec?: ArchitectSpec | null;
+  implementationBlueprint?: ImplementationBlueprint | null;
   codeContext: string;
   draft: string;
   provider: AiProviderConfig;
@@ -4615,6 +5110,7 @@ async function repairMissingExecutableEdits(params: {
   const oversizedVisualSystem =
     isBroadBuildRequest(params.userMessage, params.options) &&
     hasOversizedCrudeVisualSystem(params.draft);
+  const requirements = getBroadBuildRequirements(params.options);
 
   if (
     !missingExecutableEdits &&
@@ -4660,10 +5156,11 @@ ${BUILDER_SYSTEM_PROMPT}
 ${repairReason}
 Return exactly one <dec-code> block with executable edit tags.
 For this build request, rewrite src/app/page.tsx and create a real multi-page App Router project:
-- write ${BROAD_BUILD_MIN_WRITES}-12 meaningful files, not a tiny patch
-- at least ${BROAD_BUILD_MIN_ROUTES} page files total, including src/app/page.tsx plus ${BROAD_BUILD_MIN_SUPPORTING_ROUTES}+ supporting routes that fit the user's domain
-- at least ${BROAD_BUILD_MIN_COMPONENTS} shared component files for navigation, layout, cards/sections, route-specific modules, and reusable visual primitives
-- at least ${BROAD_BUILD_MIN_CONTENT_FILES} content/config/data files so copy, page metadata, routes, and domain modules are organized instead of hardcoded repeatedly
+- write at least ${requirements.writes} meaningful files, not a tiny patch
+- at least ${requirements.routes} page files total, including src/app/page.tsx plus ${requirements.supportingRoutes}+ supporting routes that fit the user's domain
+- at least ${requirements.components} shared component files for navigation, layout, cards/sections, route-specific modules, and reusable visual primitives
+- at least ${requirements.contentFiles} content/config/data files so copy, page metadata, routes, and domain modules are organized instead of hardcoded repeatedly
+- target ${requirements.writtenBytes}+ written characters across all edited files for deep broad builds
 - real links between pages and meaningful CTAs
 - purposeful modern motion: transitions, hover states, reveal animations, or CSS keyframes
 Visual archetype contract:
@@ -4694,6 +5191,9 @@ ${params.plannerBrief}
 
 ARCHITECT_SPEC:
 ${formatArchitectSpec(params.architectSpec || null)}
+
+IMPLEMENTATION_BLUEPRINT:
+${formatImplementationBlueprint(params.implementationBlueprint || null)}
 
 PREVIOUS_INVALID_OUTPUT:
 ${params.draft}
@@ -4728,6 +5228,7 @@ ${clipText(params.codeContext, 80_000)}
         userMessage: params.userMessage,
         plannerBrief: params.plannerBrief,
         architectSpec: params.architectSpec,
+        implementationBlueprint: params.implementationBlueprint,
         codeContext: params.codeContext,
         provider: params.provider,
         options: params.options,
@@ -4760,6 +5261,7 @@ ${clipText(params.codeContext, 80_000)}
       userMessage: params.userMessage,
       plannerBrief: params.plannerBrief,
       architectSpec: params.architectSpec,
+      implementationBlueprint: params.implementationBlueprint,
       codeContext: params.codeContext,
       provider: params.provider,
       options: params.options,
@@ -4781,6 +5283,7 @@ ${clipText(params.codeContext, 80_000)}
       userMessage: params.userMessage,
       plannerBrief: params.plannerBrief,
       architectSpec: params.architectSpec,
+      implementationBlueprint: params.implementationBlueprint,
       codeContext: params.codeContext,
       provider: params.provider,
       options: params.options,
@@ -5014,6 +5517,7 @@ async function buildAssistantMessageFromSession(
 
     let plannerBrief = createLocalPlannerBrief(userMessage, options);
     let architectSpec: ArchitectSpec | null = null;
+    let implementationBlueprint: ImplementationBlueprint | null = null;
     await progress?.(getBuildProgressCopy(userMessage, "plan", 18));
     try {
       plannerBrief = await createPlannerBrief(
@@ -5037,8 +5541,17 @@ async function buildAssistantMessageFromSession(
         recentMessages,
         provider,
       });
+      implementationBlueprint = await createImplementationBlueprint({
+        userMessage,
+        plannerBrief,
+        architectSpec,
+        recentMessages,
+        provider,
+        options: resolvedOptions,
+      });
     }
     const visualArchetype = selectVisualArchetype(userMessage);
+    const requirements = getBroadBuildRequirements(resolvedOptions);
 
     await progress?.(getBuildProgressCopy(userMessage, "draft", 36, [
       "src/app/page.tsx",
@@ -5051,7 +5564,9 @@ BUILD OPTIONS:
 - Plan mode: ${resolvedOptions.planMode ? "enabled" : "disabled"}
 - Quality mode: ${resolvedOptions.qualityMode}
 - Power build: ${resolvedOptions.powerMode ? "enabled for this broad/heavy request" : "disabled for speed"}
+- Deep build: ${resolvedOptions.deepMode ? "enabled; prioritize a slower but deeper professional implementation" : "disabled"}
 - Quality target: polished Klawpen/Replit-style product prototype, not a basic template
+- Deep build file target: ${requirements.routes}+ routes, ${requirements.components}+ components, ${requirements.contentFiles}+ content/config/data files, ${requirements.writes}+ meaningful writes, ${requirements.writtenBytes}+ written characters for broad builds
 - Visible UI language: ${isLikelyTurkish(userMessage) ? "Turkish. All preview-visible copy must be Turkish with correct Turkish characters." : "English. All preview-visible copy must be English."}
 
 PLANNER BRIEF:
@@ -5059,6 +5574,9 @@ ${plannerBrief}
 
 ARCHITECT SPEC:
 ${formatArchitectSpec(architectSpec)}
+
+IMPLEMENTATION BLUEPRINT:
+${formatImplementationBlueprint(implementationBlueprint)}
 
 VISUAL ARCHETYPE:
 ${formatVisualArchetype(visualArchetype)}
@@ -5092,6 +5610,7 @@ ${codeContext}`;
         userMessage,
         plannerBrief,
         architectSpec,
+        implementationBlueprint,
         codeContext: clipText(codeContext, 80_000),
         recentMessages: clipText(recentMessages, 10_000),
         draft: assistantContent,
@@ -5105,6 +5624,7 @@ ${codeContext}`;
           userMessage,
           plannerBrief,
           architectSpec,
+          implementationBlueprint,
           codeContext,
           draft: assistantContent,
           provider,
@@ -5117,6 +5637,7 @@ ${codeContext}`;
         userMessage,
         plannerBrief,
         architectSpec,
+        implementationBlueprint,
         codeContext,
         draft: assistantContent,
         provider,
@@ -5132,6 +5653,7 @@ ${codeContext}`;
           userMessage,
           plannerBrief,
           architectSpec,
+          implementationBlueprint,
           codeContext,
           provider,
           options: resolvedOptions,
