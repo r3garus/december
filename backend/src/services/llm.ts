@@ -37,7 +37,7 @@ const AI_BUILDER_TIMEOUT_MS = readPositiveInt(
 const AI_PRIMARY_BUILD_TIMEOUT_MS = readPositiveInt(
   process.env.AI_PRIMARY_BUILD_TIMEOUT_MS ||
     process.env.AI_FIRST_PASS_TIMEOUT_MS,
-  Math.min(AI_BUILDER_TIMEOUT_MS, 300_000)
+  Math.min(AI_BUILDER_TIMEOUT_MS, 180_000)
 );
 const AI_REQUEST_MAX_OUTPUT_TOKENS = readPositiveInt(
   process.env.AI_REQUEST_MAX_OUTPUT_TOKENS,
@@ -49,11 +49,19 @@ const AI_BUILDER_MAX_OUTPUT_TOKENS = readPositiveInt(
 );
 const AI_RECOVERY_BUILD_TIMEOUT_MS = readPositiveInt(
   process.env.AI_RECOVERY_BUILD_TIMEOUT_MS,
-  300_000
+  180_000
 );
 const AI_RECOVERY_MAX_OUTPUT_TOKENS = readPositiveInt(
   process.env.AI_RECOVERY_MAX_OUTPUT_TOKENS,
-  32_000
+  28_000
+);
+const AI_PREMIUM_FALLBACK_TIMEOUT_MS = readPositiveInt(
+  process.env.AI_PREMIUM_FALLBACK_TIMEOUT_MS,
+  180_000
+);
+const AI_PREMIUM_FALLBACK_MAX_OUTPUT_TOKENS = readPositiveInt(
+  process.env.AI_PREMIUM_FALLBACK_MAX_OUTPUT_TOKENS,
+  28_000
 );
 const AI_PLANNER_MAX_OUTPUT_TOKENS = readPositiveInt(
   process.env.AI_PLANNER_MAX_OUTPUT_TOKENS,
@@ -62,6 +70,22 @@ const AI_PLANNER_MAX_OUTPUT_TOKENS = readPositiveInt(
 const AI_ARCHITECT_MAX_OUTPUT_TOKENS = readPositiveInt(
   process.env.AI_ARCHITECT_MAX_OUTPUT_TOKENS,
   12_000
+);
+const AI_PLANNER_TIMEOUT_MS = readPositiveInt(
+  process.env.AI_PLANNER_TIMEOUT_MS,
+  45_000
+);
+const AI_ARCHITECT_TIMEOUT_MS = readPositiveInt(
+  process.env.AI_ARCHITECT_TIMEOUT_MS,
+  75_000
+);
+const AI_REVIEW_TIMEOUT_MS = readPositiveInt(
+  process.env.AI_REVIEW_TIMEOUT_MS,
+  45_000
+);
+const AI_REVIEW_MAX_OUTPUT_TOKENS = readPositiveInt(
+  process.env.AI_REVIEW_MAX_OUTPUT_TOKENS,
+  2_500
 );
 const AI_DEEP_BUILD_MODEL =
   process.env.KLAWPEN_DEEP_BUILD_MODEL ||
@@ -186,7 +210,7 @@ const chatSessions = new Map<string, ChatSession>();
 const POWER_BUILD_AUTO_ENABLED = process.env.KLAWPEN_POWER_BUILD_AUTO !== "false";
 const DEEP_BUILD_AUTO_ENABLED = process.env.KLAWPEN_DEEP_BUILD_AUTO !== "false";
 const ARCHITECT_SPEC_ENABLED =
-  process.env.KLAWPEN_ENABLE_ARCHITECT_SPEC !== "false";
+  process.env.KLAWPEN_ENABLE_ARCHITECT_SPEC === "true";
 const BUILD_GATE_ENABLED = process.env.KLAWPEN_ENABLE_BUILD_GATE === "true";
 const PREVIEW_CHECK_ENABLED = process.env.KLAWPEN_ENABLE_PREVIEW_CHECK === "true";
 const CROSS_REVIEW_ENABLED = process.env.KLAWPEN_ENABLE_CROSS_REVIEW !== "false";
@@ -194,6 +218,8 @@ const DETERMINISTIC_RUNTIME_FALLBACK_ENABLED =
   process.env.KLAWPEN_DETERMINISTIC_RUNTIME_FALLBACK === "true";
 const TIMEOUT_RECOVERY_ENABLED =
   process.env.KLAWPEN_TIMEOUT_RECOVERY !== "false";
+const PREMIUM_FALLBACK_ENABLED =
+  process.env.KLAWPEN_ENABLE_PREMIUM_FALLBACK === "true";
 const BROAD_BUILD_MIN_WRITES = readPositiveInt(
   process.env.KLAWPEN_MIN_BROAD_WRITES,
   8
@@ -1002,9 +1028,26 @@ function shouldRetryWithAlternateTokenParameter(error: unknown) {
   return /\b(max_completion_tokens|max_tokens)\b/i.test(message);
 }
 
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function isTimeoutError(error: unknown) {
-  const message = error instanceof Error ? error.message : String(error);
-  return /timed out after \d+ms/i.test(message);
+  const message = getErrorMessage(error);
+  return /timed out after \d+ms|timeout|timed out|etimedout|abort|aborted/i.test(
+    message
+  );
+}
+
+function isTransientAiProviderError(error: unknown) {
+  const message = getErrorMessage(error);
+  return (
+    isTimeoutError(error) ||
+    /\b(408|409|429|500|502|503|504|529)\b/.test(message) ||
+    /gateway|overload|rate limit|temporar|unavailable|fetch failed|network|socket|econnreset|econnrefused|eai_again/i.test(
+      message
+    )
+  );
 }
 
 function extractResponseText(resp: any): string {
@@ -3887,8 +3930,9 @@ ${userMessage}
     provider,
     input: plannerInput,
     temperature: Math.min(aiTemperature, 0.2),
-    timeoutMs: Math.min(AI_BUILDER_TIMEOUT_MS, 300_000),
-    maxOutputTokens: AI_PLANNER_MAX_OUTPUT_TOKENS,
+    retries: 0,
+    timeoutMs: AI_PLANNER_TIMEOUT_MS,
+    maxOutputTokens: Math.min(AI_PLANNER_MAX_OUTPUT_TOKENS, 3_000),
     modelOverride: getBuilderModelOverride(options),
   });
 }
@@ -4309,8 +4353,8 @@ ${JSON.stringify(fallback, null, 2)}
       system,
       user,
       temperature: 0.08,
-      retries: 1,
-      timeoutMs: Math.min(AI_BUILDER_TIMEOUT_MS, 300_000),
+      retries: 0,
+      timeoutMs: AI_ARCHITECT_TIMEOUT_MS,
       maxOutputTokens: AI_ARCHITECT_MAX_OUTPUT_TOKENS,
       modelOverride: getBuilderModelOverride({ qualityMode: "power", powerMode: true }),
     });
@@ -4501,8 +4545,8 @@ ${JSON.stringify(fallback, null, 2)}
       system,
       user,
       temperature: 0.1,
-      retries: 1,
-      timeoutMs: Math.min(AI_BUILDER_TIMEOUT_MS, 300_000),
+      retries: 0,
+      timeoutMs: AI_ARCHITECT_TIMEOUT_MS,
       maxOutputTokens: AI_ARCHITECT_MAX_OUTPUT_TOKENS,
       modelOverride: getBuilderModelOverride(params.options),
     });
@@ -4730,7 +4774,7 @@ PREVIOUS_DRAFT:
 ${params.draft}
 
 CURRENT_CODEBASE_SNAPSHOT:
-${clipText(params.codeContext, 80_000)}
+${clipText(params.codeContext, 60_000)}
 `;
 
   try {
@@ -4738,7 +4782,11 @@ ${clipText(params.codeContext, 80_000)}
       repairInput,
       params.provider,
       params.userMessage,
-      params.options
+      params.options,
+      {
+        timeoutMs: AI_RECOVERY_BUILD_TIMEOUT_MS,
+        maxOutputTokens: AI_RECOVERY_MAX_OUTPUT_TOKENS,
+      }
     );
     const repairedValidation = validateBuildAgainstSpec({
       userMessage: params.userMessage,
@@ -4753,7 +4801,7 @@ ${clipText(params.codeContext, 80_000)}
     }
 
     console.warn(
-      "Spec repair remained incomplete; trying premium rebuild instead of accepting shallow executable output.",
+      "Spec repair remained incomplete; preserving executable output unless premium rebuild is enabled.",
       repairedValidation.issues
     );
 
@@ -4780,10 +4828,13 @@ ${clipText(params.codeContext, 80_000)}
       if (premiumValidation.passed) return premiumAttempt;
 
       console.warn(
-        "Premium rebuild also failed validation; returning a non-applied build failure instead of generic fallback.",
+        "Premium rebuild also failed validation; preserving the best executable draft.",
         premiumValidation.issues
       );
     }
+
+    if (hasExecutableCodeOperations(repaired)) return repaired;
+    if (hasExecutableCodeOperations(params.draft)) return params.draft;
 
     return buildFallbackAssistantContent(
       params.userMessage,
@@ -4880,6 +4931,8 @@ async function createPremiumFallbackAttempt(params: {
   options?: BuildOptions;
   reason: string;
 }): Promise<string | null> {
+  if (!PREMIUM_FALLBACK_ENABLED) return null;
+
   const turkish = isLikelyTurkish(params.userMessage);
   const visualArchetype = selectVisualArchetype(params.userMessage);
   const isBlogLike = /\b(blog|magazin|magazine|haber|news|article|makale|yazar|writer|content|i[cç]erik|publishing|yay[ıi]n)\b/i.test(
@@ -4948,8 +5001,8 @@ ${clipText(params.codeContext, 45_000)}
       user,
       temperature: Math.max(aiTemperature, 0.24),
       retries: 0,
-      timeoutMs: AI_BUILDER_TIMEOUT_MS,
-      maxOutputTokens: AI_BUILDER_MAX_OUTPUT_TOKENS,
+      timeoutMs: AI_PREMIUM_FALLBACK_TIMEOUT_MS,
+      maxOutputTokens: AI_PREMIUM_FALLBACK_MAX_OUTPUT_TOKENS,
       modelOverride: getBuilderModelOverride(params.options),
     });
 
@@ -5097,6 +5150,9 @@ async function createCriticReview(
     provider,
     input,
     temperature: 0.1,
+    retries: 0,
+    timeoutMs: AI_REVIEW_TIMEOUT_MS,
+    maxOutputTokens: AI_REVIEW_MAX_OUTPUT_TOKENS,
   });
   return parseCriticResult(text);
 }
@@ -5198,7 +5254,7 @@ PREVIOUS_DRAFT:
 ${params.draft}
 
 CURRENT_CODEBASE_SNAPSHOT:
-${clipText(params.codeContext, 80_000)}
+${clipText(params.codeContext, 60_000)}
 `;
 
   try {
@@ -5206,7 +5262,11 @@ ${clipText(params.codeContext, 80_000)}
       revisionInput,
       params.provider,
       params.userMessage,
-      params.options
+      params.options,
+      {
+        timeoutMs: AI_RECOVERY_BUILD_TIMEOUT_MS,
+        maxOutputTokens: AI_RECOVERY_MAX_OUTPUT_TOKENS,
+      }
     );
     return hasExecutableCodeOperations(revised) ? revised : params.draft;
   } catch (error) {
@@ -5346,7 +5406,7 @@ PREVIOUS_ASSISTANT_OUTPUT:
 ${currentDraft}
 
 CURRENT_CODEBASE_SNAPSHOT:
-${params.codeContext}
+${clipText(params.codeContext, 60_000)}
 `;
 
     let revised: string;
@@ -5355,7 +5415,11 @@ ${params.codeContext}
         revisionInput,
         params.provider,
         params.userMessage,
-        params.options
+        params.options,
+        {
+          timeoutMs: AI_RECOVERY_BUILD_TIMEOUT_MS,
+          maxOutputTokens: AI_RECOVERY_MAX_OUTPUT_TOKENS,
+        }
       );
     } catch (error) {
       console.warn(
@@ -5508,7 +5572,7 @@ PREVIOUS_INVALID_OUTPUT:
 ${params.draft}
 
 CURRENT_CODEBASE_SNAPSHOT:
-${clipText(params.codeContext, 80_000)}
+${clipText(params.codeContext, 60_000)}
 `;
 
   try {
@@ -5516,7 +5580,11 @@ ${clipText(params.codeContext, 80_000)}
       repairInput,
       params.provider,
       params.userMessage,
-      params.options
+      params.options,
+      {
+        timeoutMs: AI_RECOVERY_BUILD_TIMEOUT_MS,
+        maxOutputTokens: AI_RECOVERY_MAX_OUTPUT_TOKENS,
+      }
     );
     if (hasExecutableCodeOperations(repaired)) {
       if (
@@ -5530,7 +5598,7 @@ ${clipText(params.codeContext, 80_000)}
       }
 
       console.warn(
-        "AI repair response was executable but still shallow, meta-copy, oversized, reused builder branding, or mixed visible UI language; trying premium rebuild."
+        "AI repair response was executable but still imperfect; preserving it unless premium rebuild is enabled."
       );
 
       const premiumAttempt = await createPremiumFallbackAttempt({
@@ -5556,14 +5624,11 @@ ${clipText(params.codeContext, 80_000)}
         return premiumAttempt;
       }
 
-      return buildFallbackAssistantContent(
-        params.userMessage,
-        "AI repair could not produce a deep enough build."
-      );
+      return repaired;
     }
 
     console.warn(
-      "AI repair response still did not meet executable/depth/branding requirements; falling back to generated landing page."
+      "AI repair response still did not include executable edit tags; trying premium rebuild or preserving the previous executable draft."
     );
 
     const premiumAttempt = await createPremiumFallbackAttempt({
@@ -5578,6 +5643,7 @@ ${clipText(params.codeContext, 80_000)}
     });
 
     if (premiumAttempt) return premiumAttempt;
+    if (hasExecutableCodeOperations(params.draft)) return params.draft;
 
     return buildFallbackAssistantContent(
       params.userMessage,
@@ -5585,7 +5651,7 @@ ${clipText(params.codeContext, 80_000)}
     );
   } catch (error) {
     console.warn(
-      "AI repair pass failed; falling back to generated landing page:",
+      "AI repair pass failed; trying premium rebuild or preserving the previous executable draft:",
       error instanceof Error ? error.message : error
     );
     const premiumAttempt = await createPremiumFallbackAttempt({
@@ -5600,6 +5666,7 @@ ${clipText(params.codeContext, 80_000)}
     });
 
     if (premiumAttempt) return premiumAttempt;
+    if (hasExecutableCodeOperations(params.draft)) return params.draft;
 
     return buildFallbackAssistantContent(
       params.userMessage,
@@ -5805,8 +5872,24 @@ async function buildAssistantMessageFromSession(
     resolvedOptions
   );
   const rawContext = JSON.stringify(contextTree, null, 2);
-  const codeContext = clipText(rawContext, 120_000);
+  const codeContext = clipText(rawContext, 60_000);
   let assistantContent: string;
+  let lastExecutableDraft: string | null = null;
+  const preserveExecutableDraft = (candidate: string, label: string) => {
+    if (hasExecutableCodeOperations(candidate)) {
+      lastExecutableDraft = candidate;
+      return candidate;
+    }
+
+    if (lastExecutableDraft) {
+      console.warn(
+        `${label} returned no executable edit tags; preserving the last valid executable draft.`
+      );
+      return lastExecutableDraft;
+    }
+
+    return candidate;
+  };
 
   if (
     DETERMINISTIC_RUNTIME_FALLBACK_ENABLED &&
@@ -5830,7 +5913,7 @@ async function buildAssistantMessageFromSession(
       .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
       .join("\n");
 
-    let plannerBrief = createLocalPlannerBrief(userMessage, options);
+    let plannerBrief = createLocalPlannerBrief(userMessage, resolvedOptions);
     let architectSpec: ArchitectSpec | null = null;
     let implementationBlueprint: ImplementationBlueprint | null = null;
     await progress?.(getBuildProgressCopy(userMessage, "plan", 18));
@@ -5930,23 +6013,65 @@ ${codeContext}`;
         percents: [42, 46, 50, 54, 58, 61, 63, 65, 67, 68],
         intervalMs: 24_000,
       });
+      assistantContent = preserveExecutableDraft(
+        assistantContent,
+        "Primary AI build"
+      );
 
-      await progress?.(getBuildProgressCopy(userMessage, "review", 62));
-      assistantContent = await improveWithCriticLoop({
-        userMessage,
-        plannerBrief,
-        architectSpec,
-        implementationBlueprint,
-        codeContext: clipText(codeContext, 80_000),
-        recentMessages: clipText(recentMessages, 10_000),
-        draft: assistantContent,
-        provider,
-        options: resolvedOptions,
-      });
+      try {
+        await progress?.(getBuildProgressCopy(userMessage, "review", 62));
+        assistantContent = await improveWithCriticLoop({
+          userMessage,
+          plannerBrief,
+          architectSpec,
+          implementationBlueprint,
+          codeContext,
+          recentMessages: clipText(recentMessages, 10_000),
+          draft: assistantContent,
+          provider,
+          options: resolvedOptions,
+        });
+        assistantContent = preserveExecutableDraft(
+          assistantContent,
+          "AI critic/revision pass"
+        );
+      } catch (error) {
+        console.warn(
+          "AI critic/revision pass failed; preserving the current executable draft:",
+          getErrorMessage(error)
+        );
+        if (lastExecutableDraft) assistantContent = lastExecutableDraft;
+      }
 
       if (shouldUsePowerBuildLayer(resolvedOptions)) {
-        await progress?.(getBuildProgressCopy(userMessage, "validate", 70));
-        assistantContent = await repairSpecValidationIssues({
+        try {
+          await progress?.(getBuildProgressCopy(userMessage, "validate", 70));
+          assistantContent = await repairSpecValidationIssues({
+            userMessage,
+            plannerBrief,
+            architectSpec,
+            implementationBlueprint,
+            codeContext,
+            draft: assistantContent,
+            provider,
+            options: resolvedOptions,
+          });
+          assistantContent = preserveExecutableDraft(
+            assistantContent,
+            "Architect/spec validation repair"
+          );
+        } catch (error) {
+          console.warn(
+            "Architect/spec validation repair failed; preserving the current executable draft:",
+            getErrorMessage(error)
+          );
+          if (lastExecutableDraft) assistantContent = lastExecutableDraft;
+        }
+      }
+
+      try {
+        await progress?.(getBuildProgressCopy(userMessage, "repair", 76));
+        assistantContent = await repairMissingExecutableEdits({
           userMessage,
           plannerBrief,
           architectSpec,
@@ -5956,29 +6081,39 @@ ${codeContext}`;
           provider,
           options: resolvedOptions,
         });
+        assistantContent = preserveExecutableDraft(
+          assistantContent,
+          "Executable edit repair"
+        );
+      } catch (error) {
+        console.warn(
+          "Executable edit repair failed; preserving the current executable draft:",
+          getErrorMessage(error)
+        );
+        if (lastExecutableDraft) assistantContent = lastExecutableDraft;
       }
 
-      await progress?.(getBuildProgressCopy(userMessage, "repair", 76));
-      assistantContent = await repairMissingExecutableEdits({
-        userMessage,
-        plannerBrief,
-        architectSpec,
-        implementationBlueprint,
-        codeContext,
-        draft: assistantContent,
-        provider,
-        options: resolvedOptions,
-      });
+      if (!hasExecutableCodeOperations(assistantContent)) {
+        throw new Error(
+          "AI pipeline returned no executable edit operations after repair"
+        );
+      }
     } catch (error) {
       console.error(
-        "AI builder generation failed; trying premium fallback attempt before local fallback:",
-        error instanceof Error ? error.message : error
+        "AI builder generation failed; trying recovery build before local fallback:",
+        getErrorMessage(error)
       );
-      const failureReason = isTimeoutError(error)
-        ? "AI provider timed out during code generation; a compact prompt-specific recovery build was attempted."
+      const transientFailure = isTransientAiProviderError(error);
+      const failureReason = transientFailure
+        ? "AI provider timed out or returned a transient gateway error during code generation; a compact prompt-specific recovery build was attempted."
         : "AI provider failed before returning a valid executable build.";
 
-      if (isTimeoutError(error)) {
+      if (lastExecutableDraft) {
+        console.warn(
+          "Using the last valid executable draft instead of returning a non-applied fallback."
+        );
+        assistantContent = lastExecutableDraft;
+      } else {
         await progress?.(getBuildProgressCopy(userMessage, "repair", 74));
         assistantContent =
           (await withProgressPulse({
@@ -6017,25 +6152,10 @@ ${codeContext}`;
           })) ||
           buildFallbackAssistantContent(
             userMessage,
-            "AI provider timed out during code generation; timeout recovery also failed, so no generic fallback was applied."
+            transientFailure
+              ? "AI provider timed out or returned a transient gateway error; timeout recovery also failed, so no generic fallback was applied."
+              : "AI provider failed before returning a valid executable build; recovery also failed, so no generic fallback was applied."
           );
-      } else {
-      assistantContent =
-        (await createPremiumFallbackAttempt({
-          userMessage,
-          plannerBrief,
-          architectSpec,
-          implementationBlueprint,
-          codeContext,
-          provider,
-          options: resolvedOptions,
-          reason:
-            "AI provider failed or timed out before returning a valid executable build.",
-        })) ||
-        buildFallbackAssistantContent(
-          userMessage,
-          "AI provider failed or timed out before returning a valid executable build."
-        );
       }
     }
   }

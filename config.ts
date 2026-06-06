@@ -10,6 +10,6 @@ export const config = {
     temperature: Number(process.env.AI_TEMPERATURE || "0.15"),
     maxRetries: Number(process.env.AI_MAX_RETRIES || "0"),
     minQualityScore: Number(process.env.AI_MIN_QUALITY_SCORE || "92"),
-    maxCriticRounds: Number(process.env.AI_MAX_CRITIC_ROUNDS || "4"),
+    maxCriticRounds: Number(process.env.AI_MAX_CRITIC_ROUNDS || "1"),
   },
 } as const;
