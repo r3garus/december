@@ -126,6 +126,20 @@ const PREVIEW_CHECK_ENABLED = process.env.KLAWPEN_ENABLE_PREVIEW_CHECK === "true
 const CROSS_REVIEW_ENABLED = process.env.KLAWPEN_ENABLE_CROSS_REVIEW !== "false";
 const DETERMINISTIC_RUNTIME_FALLBACK_ENABLED =
   process.env.KLAWPEN_DETERMINISTIC_RUNTIME_FALLBACK === "true";
+const BROAD_BUILD_MIN_WRITES = Number(process.env.KLAWPEN_MIN_BROAD_WRITES || "8");
+const BROAD_BUILD_MIN_ROUTES = Number(process.env.KLAWPEN_MIN_BROAD_ROUTES || "4");
+const BROAD_BUILD_MIN_SUPPORTING_ROUTES = Number(
+  process.env.KLAWPEN_MIN_BROAD_SUPPORTING_ROUTES || "3"
+);
+const BROAD_BUILD_MIN_COMPONENTS = Number(
+  process.env.KLAWPEN_MIN_BROAD_COMPONENTS || "3"
+);
+const BROAD_BUILD_MIN_CONTENT_FILES = Number(
+  process.env.KLAWPEN_MIN_BROAD_CONTENT_FILES || "2"
+);
+const BROAD_BUILD_MIN_WRITTEN_BYTES = Number(
+  process.env.KLAWPEN_MIN_BROAD_WRITTEN_BYTES || "35000"
+);
 
 const VISUAL_ARCHETYPES: VisualArchetype[] = [
   {
@@ -628,8 +642,9 @@ The generated preview UI must use the user's prompt language for all visible cop
 - code identifiers may stay in English, but customer-visible text must not switch language
 - if the prompt is Turkish, use correct Turkish characters such as ç, ğ, ı, İ, ö, ş, ü
 For broad website/app requests, plan a real multi-route project by default:
-- Home route plus 2-4 supporting routes such as about, services/features, pricing/menu/treatments, FAQ, contact, dashboard, or blog when sensible.
+- Home route plus 3-4 supporting routes such as about, services/features, pricing/menu/treatments, FAQ, contact, dashboard, or blog when sensible.
 - Shared content/config data, reusable components, responsive navigation, and meaningful page transitions.
+- Broad builds must be deep enough to preview as a real product: ${BROAD_BUILD_MIN_WRITES}+ write operations, ${BROAD_BUILD_MIN_ROUTES}+ routes, ${BROAD_BUILD_MIN_COMPONENTS}+ components, and ${BROAD_BUILD_MIN_CONTENT_FILES}+ content/config/data files.
 - Use a modern animated visual system unless the user explicitly asks for static/minimal.
 `;
 
@@ -651,10 +666,11 @@ Deliver production-minded quality:
 - choose a distinct design direction per request: editorial, luxury service, operational dashboard, boutique studio, local business, or clean SaaS when appropriate
 - when implementing, output executable edit tags only; plain markdown code is not applied
 - for any new website/application, rewrite src/app/page.tsx at minimum
-- for broad website/application builds, create a real multi-page App Router project by default: home plus 2-4 supporting routes such as src/app/about/page.tsx, src/app/services/page.tsx, src/app/pricing/page.tsx, src/app/faq/page.tsx, src/app/contact/page.tsx, src/app/dashboard/page.tsx, or domain-specific equivalents
+- for broad website/application builds, create a real multi-page App Router project by default: home plus 3-4 supporting routes such as src/app/about/page.tsx, src/app/services/page.tsx, src/app/pricing/page.tsx, src/app/faq/page.tsx, src/app/contact/page.tsx, src/app/dashboard/page.tsx, or domain-specific equivalents
 - only keep a broad build as one page when the user explicitly asks for a single-page/one-page/landing-only result
-- split the implementation into real files instead of dumping everything into one page: page routes, at least one shared component file, and at least one content/config/data file
+- split the implementation into real files instead of dumping everything into one page: for broad builds write at least ${BROAD_BUILD_MIN_WRITES} meaningful files, ${BROAD_BUILD_MIN_ROUTES}+ page routes, ${BROAD_BUILD_MIN_COMPONENTS}+ shared components, and ${BROAD_BUILD_MIN_CONTENT_FILES}+ content/config/data files
 - prefer a complete, polished implementation over shallow file count, but never use a tiny one-file toy page for a broad build
+- never use the deterministic fallback scaffold in normal AI output: no src/components/generated-site.tsx, no src/lib/generated-site-content.ts, no GeneratedLandingPage, and no route files that only return one shared generated page
 - do not use placeholder copy, fake generic stats, lorem ipsum, or repeated card names
 - when the request implies a website, create a coherent site experience, not only a decorative hero section
 - if multiple pages are explicitly requested, create real App Router pages and navigation
@@ -711,7 +727,7 @@ Rules:
 - FAIL generic/simple landing pages that could fit any industry after only changing the logo.
 - FAIL outputs that ignore requested pages or do not create routes for explicitly requested pages.
 - FAIL broad website/application builds that create only one page unless the user explicitly requested a one-page/landing-only result.
-- FAIL broad website/application builds with fewer than 3 real App Router page files.
+- FAIL broad website/application builds with fewer than 4 real App Router page files.
 - FAIL outputs with fewer than 7 meaningful sections across the project for broad website/app requests unless the user asked for something intentionally small.
 - FAIL when the visual system is basic, repeated, or looks like a logo/title swap.
 - FAIL outputs that look like the same generated site skeleton with only copy/colors changed.
@@ -719,6 +735,8 @@ Rules:
 - FAIL if a local service, restaurant, clinic, legal, commerce, event, dashboard, or developer tool prompt receives a generic SaaS/agency landing layout.
 - FAIL broad website/application builds that lack shared components/content/config structure.
 - FAIL broad website/application builds that have no purposeful animation, transition, hover state, or motion system unless the user requested static/minimal.
+- FAIL broad website/application builds with fewer than ${BROAD_BUILD_MIN_WRITES} meaningful write operations, fewer than ${BROAD_BUILD_MIN_ROUTES} route files, fewer than ${BROAD_BUILD_MIN_COMPONENTS} shared component files, or fewer than ${BROAD_BUILD_MIN_CONTENT_FILES} content/config/data files.
+- FAIL outputs that use src/components/generated-site.tsx, src/lib/generated-site-content.ts, GeneratedLandingPage, generated-site-content, or route files that only wrap the same shared generated component.
 - FAIL outputs where visible UI copy uses a different language than the user's prompt.
 - FAIL Turkish-prompt outputs that leave common English UI labels visible, such as Home, Services, About, Contact, Get Started, Learn More, Features, Pricing, or FAQ.
 - FAIL outputs that use Klawpen, Klawpen Cloud, or Klawpen Studio as the generated customer brand unless the user explicitly requested Klawpen itself.
@@ -1446,6 +1464,22 @@ function getSupportingRouteWriteCount(writes: CodeOperation[]) {
   ).length;
 }
 
+function getComponentWriteCount(writes: CodeOperation[]) {
+  return writes.filter((operation) =>
+    /^src\/components\/.+\.(tsx|ts|jsx|js)$/.test(
+      normalizeProjectPath(operation.path || "")
+    )
+  ).length;
+}
+
+function getContentWriteCount(writes: CodeOperation[]) {
+  return writes.filter((operation) =>
+    /^src\/(?:lib|data|config)\/.+\.(ts|tsx|js|json)$/.test(
+      normalizeProjectPath(operation.path || "")
+    )
+  ).length;
+}
+
 function hasContentStructure(writes: CodeOperation[]) {
   return writes.some((operation) =>
     /^src\/(lib|data|config)\//.test(normalizeProjectPath(operation.path || ""))
@@ -1470,6 +1504,75 @@ function getCombinedWrittenContent(assistantContent: string): string {
   return getWriteOperations(assistantContent)
     .map((operation) => operation.content || "")
     .join("\n");
+}
+
+function isGeneratedSiteScaffoldRoute(content: string) {
+  const stripped = content
+    .replace(/import\s+[^;]+;?/g, "")
+    .replace(/export\s+const\s+metadata[\s\S]*?};/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return (
+    /\bGeneratedLandingPage\b/.test(content) &&
+    /return\s*\(?\s*<GeneratedLandingPage\s*\/>\s*\)?\s*;?/.test(stripped)
+  );
+}
+
+function getSingleReturnedComponentName(content: string): string | null {
+  const stripped = content
+    .replace(/import\s+[^;]+;?/g, "")
+    .replace(/export\s+const\s+metadata[\s\S]*?};/g, "")
+    .replace(/export\s+default\s+function\s+\w+\s*\([^)]*\)\s*{?/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const match = stripped.match(/return\s*\(?\s*<([A-Z][A-Za-z0-9_]*)\b[^>]*\/>\s*\)?\s*;?/);
+
+  if (!match) return null;
+  return stripped.length < 900 ? match[1] || null : null;
+}
+
+function hasGeneratedSiteScaffold(assistantContent: string) {
+  const writes = getWriteOperations(assistantContent);
+  const paths = new Set(
+    writes.map((operation) => normalizeProjectPath(operation.path || ""))
+  );
+  const combined = writes.map((operation) => operation.content || "").join("\n");
+
+  return (
+    paths.has("src/components/generated-site.tsx") ||
+    paths.has("src/lib/generated-site-content.ts") ||
+    /\bGeneratedLandingPage\b/.test(combined) ||
+    /\bgenerated-site-content\b/.test(combined)
+  );
+}
+
+function hasThinGeneratedRouteWrappers(writes: CodeOperation[]) {
+  return writes.some((operation) => {
+    const normalizedPath = normalizeProjectPath(operation.path || "");
+    if (!/^src\/app\/(?:page|[^/]+\/page)\.tsx$/.test(normalizedPath)) {
+      return false;
+    }
+
+    return isGeneratedSiteScaffoldRoute(operation.content || "");
+  });
+}
+
+function hasRepeatedSingleComponentRouteWrappers(writes: CodeOperation[]) {
+  const componentNames = new Map<string, number>();
+
+  for (const operation of writes) {
+    const normalizedPath = normalizeProjectPath(operation.path || "");
+    if (!/^src\/app\/(?:page|[^/]+\/page)\.tsx$/.test(normalizedPath)) {
+      continue;
+    }
+
+    const componentName = getSingleReturnedComponentName(operation.content || "");
+    if (!componentName) continue;
+    componentNames.set(componentName, (componentNames.get(componentName) || 0) + 1);
+  }
+
+  return Array.from(componentNames.values()).some((count) => count >= 2);
 }
 
 const BUILDER_META_VISIBLE_COPY_PATTERNS = [
@@ -1782,17 +1885,24 @@ function hasShallowBroadBuildStructure(assistantContent: string) {
   );
   const routeWriteCount = getRouteWriteCount(writes);
   const supportingRouteWriteCount = getSupportingRouteWriteCount(writes);
+  const componentWriteCount = getComponentWriteCount(writes);
+  const contentWriteCount = getContentWriteCount(writes);
 
   return (
     !hasPageWrite ||
-    routeWriteCount < 3 ||
-    supportingRouteWriteCount < 2 ||
-    writes.length < 3 ||
+    routeWriteCount < BROAD_BUILD_MIN_ROUTES ||
+    supportingRouteWriteCount < BROAD_BUILD_MIN_SUPPORTING_ROUTES ||
+    writes.length < BROAD_BUILD_MIN_WRITES ||
+    componentWriteCount < BROAD_BUILD_MIN_COMPONENTS ||
+    contentWriteCount < BROAD_BUILD_MIN_CONTENT_FILES ||
     !hasSupportingStructure ||
     !hasComponentStructure(writes) ||
     !hasContentStructure(writes) ||
     !hasMotionSystem(writes) ||
-    totalWrittenBytes < 20_000 ||
+    totalWrittenBytes < BROAD_BUILD_MIN_WRITTEN_BYTES ||
+    hasGeneratedSiteScaffold(assistantContent) ||
+    hasThinGeneratedRouteWrappers(writes) ||
+    hasRepeatedSingleComponentRouteWrappers(writes) ||
     hasOnlySmallSinglePageBuild(assistantContent)
   );
 }
@@ -2392,8 +2502,99 @@ function buildFallbackContentFile(content: ReturnType<typeof buildFallbackSiteCo
   return `export const siteContent = ${JSON.stringify(content, null, 2)} as const;\n`;
 }
 
+function routeFileToPublicPath(filePath: string) {
+  const normalized = normalizeProjectPath(filePath);
+  if (normalized === "src/app/page.tsx") return "/";
+  const match = normalized.match(/^src\/app\/(.+)\/page\.tsx$/);
+  return match ? `/${match[1]}` : "/";
+}
+
+function buildFallbackRouteConfig(
+  content: ReturnType<typeof buildFallbackSiteContent>,
+  paths: { support: string; proof: string; conversion: string }
+): string {
+  const routeMeta = {
+    home: {
+      path: "/",
+      label: content.businessName,
+      title: content.businessName,
+      description: content.profile.intro,
+    },
+    support: {
+      path: routeFileToPublicPath(paths.support),
+      label: content.profile.servicesTitle,
+      title: `${content.profile.servicesTitle} | ${content.businessName}`,
+      description: content.profile.intro,
+    },
+    proof: {
+      path: routeFileToPublicPath(paths.proof),
+      label: content.labels.proofTitle,
+      title: `${content.labels.proofTitle} | ${content.businessName}`,
+      description: content.caseStudy.text,
+    },
+    conversion: {
+      path: routeFileToPublicPath(paths.conversion),
+      label: content.labels.finalTitle,
+      title: `${content.labels.finalTitle} | ${content.businessName}`,
+      description: content.labels.finalText,
+    },
+  };
+
+  return `export const siteRouteMeta = ${JSON.stringify(routeMeta, null, 2)} as const;
+
+export const siteRoutes = [
+  siteRouteMeta.home,
+  siteRouteMeta.support,
+  siteRouteMeta.proof,
+  siteRouteMeta.conversion,
+] as const;
+`;
+}
+
+function buildFallbackMotionComponent(): string {
+  return `import type { ReactNode } from "react";
+
+export const motionClasses = {
+  page: "animate-[site-fade-in_700ms_ease-out_both]",
+  card: "transition duration-300 ease-out hover:-translate-y-1 hover:shadow-xl",
+  link: "transition duration-200 ease-out hover:-translate-y-0.5",
+} as const;
+
+export function MotionFrame({ children, className = "" }: { children: ReactNode; className?: string }) {
+  return <div className={[motionClasses.page, className].filter(Boolean).join(" ")}>{children}</div>;
+}
+`;
+}
+
+function buildFallbackCardComponent(): string {
+  return `import type { CSSProperties, ReactNode } from "react";
+
+export function SiteCard({
+  children,
+  className = "",
+  style,
+}: {
+  children: ReactNode;
+  className?: string;
+  style?: CSSProperties;
+}) {
+  return (
+    <article
+      className={["rounded-[1.75rem] border bg-white/75 p-6 shadow-sm", className].filter(Boolean).join(" ")}
+      style={style}
+    >
+      {children}
+    </article>
+  );
+}
+`;
+}
+
 function buildFallbackGeneratedSiteComponent(): string {
-  return `import { siteContent } from "../lib/generated-site-content";
+  return `import { siteContent } from "../lib/site-content";
+import { siteRoutes } from "../config/site-routes";
+import { SiteCard } from "./site-card";
+import { MotionFrame } from "./site-motion";
 
 const sectionPad = "px-4 sm:px-6 lg:px-10";
 
@@ -2410,14 +2611,14 @@ function ShellNav() {
         {content.businessName}
       </a>
       <div className="hidden items-center gap-1 md:flex">
-        {content.nav.map(([label, href]) => (
+        {siteRoutes.map((route) => (
           <a
-            key={href}
-            href={href}
+            key={route.path}
+            href={route.path}
             className="px-3 py-2 text-sm font-bold transition hover:opacity-60"
             style={{ color: profile.palette.muted }}
           >
-            {label}
+            {route.label}
           </a>
         ))}
       </div>
@@ -2516,11 +2717,11 @@ function DashboardLayout() {
           <aside className="rounded-[2rem] border bg-white/8 p-5" style={{ borderColor: profile.palette.primary + "55" }}>
             <p className="text-xs font-bold uppercase tracking-[0.32em]" style={{ color: profile.palette.primary }}>{profile.badge}</p>
             <div className="mt-7 space-y-3">
-              {content.nav.map(([label, href]) => (
-                <a key={href} href={href} className="block rounded-2xl bg-white/10 px-4 py-3 text-sm font-bold transition hover:bg-white/15">
-                  {label}
-                </a>
-              ))}
+                {siteRoutes.map((route) => (
+                  <a key={route.path} href={route.path} className="block rounded-2xl bg-white/10 px-4 py-3 text-sm font-bold transition hover:bg-white/15">
+                    {route.label}
+                  </a>
+                ))}
             </div>
           </aside>
           <div className="rounded-[2.4rem] border bg-white/8 p-5 sm:p-8" style={{ borderColor: profile.palette.primary + "55" }}>
@@ -2612,8 +2813,8 @@ function BlogEditorialLayout() {
         <div className="relative mx-auto flex max-w-7xl items-center justify-between border-b py-5" style={{ borderColor: profile.palette.border }}>
           <a href="#top" className="text-2xl font-bold tracking-[-0.03em]">{content.businessName}</a>
           <div className="hidden items-center gap-7 md:flex">
-            {content.nav.map(([label, href]) => (
-              <a key={href} href={href} className="text-sm font-bold transition hover:opacity-55" style={{ color: profile.palette.muted }}>{label}</a>
+            {siteRoutes.map((route) => (
+              <a key={route.path} href={route.path} className="text-sm font-bold transition hover:opacity-55" style={{ color: profile.palette.muted }}>{route.label}</a>
             ))}
           </div>
           <a href="#contact" className="rounded-full px-5 py-2.5 text-sm font-bold shadow-sm transition hover:-translate-y-0.5" style={{ background: profile.palette.primary, color: profile.palette.primaryText }}>
@@ -2725,9 +2926,9 @@ function ClinicLayout() {
         <div className="relative mx-auto flex max-w-7xl items-center justify-between border-b border-white/10 py-5">
           <a href="#top" className="text-xl font-bold tracking-[-0.025em]">{content.businessName}</a>
           <div className="hidden items-center gap-6 md:flex">
-            {content.nav.map(([label, href]) => (
-              <a key={href} href={href} className="text-sm font-bold text-white/58 transition hover:text-white">{label}</a>
-            ))}
+              {siteRoutes.map((route) => (
+                <a key={route.path} href={route.path} className="text-sm font-bold text-white/58 transition hover:text-white">{route.label}</a>
+              ))}
           </div>
           <a href="#contact" className="rounded-full px-5 py-2.5 text-sm font-bold" style={{ background: profile.palette.primary, color: profile.palette.primaryText }}>{content.labels.primaryCta}</a>
         </div>
@@ -2898,11 +3099,11 @@ function ProofAndFaq() {
     <>
       <section id="proof" className={sectionPad + " py-16"}>
         <div className="mx-auto grid max-w-7xl gap-5 lg:grid-cols-[1.15fr_0.85fr]">
-          <article className="rounded-[2.4rem] border p-8 sm:p-12" style={{ borderColor: profile.palette.border, background: profile.palette.soft }}>
+          <SiteCard className="rounded-[2.4rem] p-8 sm:p-12" style={{ borderColor: profile.palette.border, background: profile.palette.soft }}>
             <p className="text-xs font-bold uppercase tracking-[0.28em]" style={{ color: profile.palette.primary }}>{content.caseStudy.label}</p>
             <h2 className="mt-5 text-2xl font-bold tracking-[-0.02em] sm:text-5xl">{content.caseStudy.title}</h2>
             <p className="mt-5 max-w-2xl text-lg leading-8" style={{ color: profile.palette.muted }}>{content.caseStudy.text}</p>
-          </article>
+          </SiteCard>
           <article className="rounded-[2.4rem] p-8 text-white" style={{ background: profile.palette.panel }}>
             <p className="text-sm font-bold uppercase tracking-[0.28em]" style={{ color: profile.palette.primary }}>{content.labels.proofTitle}</p>
             <p className="mt-8 text-2xl font-bold leading-snug tracking-[-0.02em]">“{profile.testimonial}”</p>
@@ -2943,62 +3144,111 @@ function FinalCta({ dark = false }: { dark?: boolean }) {
   );
 }
 
-export function GeneratedLandingPage() {
+export function SiteHomePage() {
   const key = siteContent.visualArchetype.key;
 
-  if (siteContent.profile.sector === "blog") return <BlogEditorialLayout />;
-  if (siteContent.profile.sector === "dental") return <ClinicLayout />;
-  if (key === "operational-dashboard" || key === "technical-terminal") return <DashboardLayout />;
-  if (key === "commerce-catalog" || key === "immersive-event") return <CommerceLayout />;
-  if (key === "editorial-luxury" || key === "boutique-studio" || key === "neo-brutal-product") return <EditorialLayout />;
-  return <ServiceLayout />;
+  if (siteContent.profile.sector === "blog") return <MotionFrame><BlogEditorialLayout /></MotionFrame>;
+  if (siteContent.profile.sector === "dental") return <MotionFrame><ClinicLayout /></MotionFrame>;
+  if (key === "operational-dashboard" || key === "technical-terminal") return <MotionFrame><DashboardLayout /></MotionFrame>;
+  if (key === "commerce-catalog" || key === "immersive-event") return <MotionFrame><CommerceLayout /></MotionFrame>;
+  if (key === "editorial-luxury" || key === "boutique-studio" || key === "neo-brutal-product") return <MotionFrame><EditorialLayout /></MotionFrame>;
+  return <MotionFrame><ServiceLayout /></MotionFrame>;
+}
+
+export function SiteServicesPage() {
+  return <MotionFrame><ServiceLayout /></MotionFrame>;
+}
+
+export function SiteProofPage() {
+  const profile = siteContent.profile;
+  return (
+    <MotionFrame>
+      <main className="min-h-screen overflow-hidden" style={{ background: profile.palette.bg, color: profile.palette.text }}>
+        <section className={sectionPad + " py-5"}><ShellNav /></section>
+        <ProofAndFaq />
+        <FinalCta />
+      </main>
+    </MotionFrame>
+  );
+}
+
+export function SiteContactPage() {
+  const profile = siteContent.profile;
+  return (
+    <MotionFrame>
+      <main className="min-h-screen overflow-hidden" style={{ background: profile.palette.bg, color: profile.palette.text }}>
+        <section className={sectionPad + " py-5"}><ShellNav /></section>
+        <FinalCta />
+      </main>
+    </MotionFrame>
+  );
 }
 `;
 }
 function buildFallbackLandingPage(_userMessage: string): string {
   return `import type { Metadata } from "next";
-import { GeneratedLandingPage } from "../components/generated-site";
-import { siteContent } from "../lib/generated-site-content";
+import { SiteHomePage } from "../components/site-experience";
+import { siteContent } from "../lib/site-content";
+import { siteRouteMeta } from "../config/site-routes";
 
 export const metadata: Metadata = {
-  title: siteContent.businessName,
-  description: siteContent.profile.intro,
+  title: siteRouteMeta.home.title,
+  description: siteRouteMeta.home.description || siteContent.profile.intro,
 };
 
 export default function Home() {
-  return <GeneratedLandingPage />;
+  return <SiteHomePage />;
 }
 `;
 }
 
 function buildFallbackServicesPage(_userMessage: string): string {
   return `import type { Metadata } from "next";
-import { GeneratedLandingPage } from "../../components/generated-site";
-import { siteContent } from "../../lib/generated-site-content";
+import { SiteServicesPage } from "../../components/site-experience";
+import { siteContent } from "../../lib/site-content";
+import { siteRouteMeta } from "../../config/site-routes";
 
 export const metadata: Metadata = {
-  title: siteContent.profile.servicesTitle + " | " + siteContent.businessName,
-  description: siteContent.profile.intro,
+  title: siteRouteMeta.support.title,
+  description: siteRouteMeta.support.description || siteContent.profile.intro,
 };
 
 export default function ServicesPage() {
-  return <GeneratedLandingPage />;
+  return <SiteServicesPage />;
+}
+`;
+}
+
+function buildFallbackProofPage(_userMessage: string): string {
+  return `import type { Metadata } from "next";
+import { SiteProofPage } from "../../components/site-experience";
+import { siteContent } from "../../lib/site-content";
+import { siteRouteMeta } from "../../config/site-routes";
+
+export const metadata: Metadata = {
+  title: siteRouteMeta.proof.title,
+  description: siteRouteMeta.proof.description || siteContent.caseStudy.text,
+};
+
+export default function ProofPage() {
+  return <SiteProofPage />;
 }
 `;
 }
 
 function buildFallbackContactPage(_userMessage: string): string {
   return `import type { Metadata } from "next";
-import { GeneratedLandingPage } from "../../components/generated-site";
-import { siteContent } from "../../lib/generated-site-content";
+import { SiteContactPage } from "../../components/site-experience";
+import { siteContent } from "../../lib/site-content";
+import { siteRouteMeta } from "../../config/site-routes";
 
 export const metadata: Metadata = {
-  title: siteContent.labels.finalTitle + " | " + siteContent.businessName,
-  description: siteContent.labels.finalText,
+  title: siteRouteMeta.conversion.title,
+  description: siteRouteMeta.conversion.description || siteContent.labels.finalText,
 };
 
 export default function ContactPage() {
-  return <GeneratedLandingPage />;
+  return <SiteContactPage />;
 }
 `;
 }
@@ -3007,37 +3257,73 @@ function buildFallbackOperations(userMessage: string): CodeOperation[] {
   const content = buildFallbackSiteContent(userMessage);
   const supportRoutePath =
     content.profile.sector === "blog" ? "src/app/articles/page.tsx" : "src/app/services/page.tsx";
+  const proofRoutePath =
+    content.profile.sector === "blog"
+      ? "src/app/topics/page.tsx"
+      : content.profile.sector === "commerce"
+        ? "src/app/campaigns/page.tsx"
+        : content.profile.sector === "saas"
+          ? "src/app/pricing/page.tsx"
+          : "src/app/process/page.tsx";
   const conversionRoutePath =
     content.profile.sector === "blog" ? "src/app/newsletter/page.tsx" : "src/app/contact/page.tsx";
 
   return [
     {
       type: "write",
-      index: Number.MAX_SAFE_INTEGER - 4,
-      path: "src/lib/generated-site-content.ts",
+      index: 1,
+      path: "src/lib/site-content.ts",
       content: buildFallbackContentFile(content),
     },
     {
       type: "write",
-      index: Number.MAX_SAFE_INTEGER - 3,
-      path: "src/components/generated-site.tsx",
+      index: 2,
+      path: "src/config/site-routes.ts",
+      content: buildFallbackRouteConfig(content, {
+        support: supportRoutePath,
+        proof: proofRoutePath,
+        conversion: conversionRoutePath,
+      }),
+    },
+    {
+      type: "write",
+      index: 3,
+      path: "src/components/site-motion.tsx",
+      content: buildFallbackMotionComponent(),
+    },
+    {
+      type: "write",
+      index: 4,
+      path: "src/components/site-card.tsx",
+      content: buildFallbackCardComponent(),
+    },
+    {
+      type: "write",
+      index: 5,
+      path: "src/components/site-experience.tsx",
       content: buildFallbackGeneratedSiteComponent(),
     },
     {
       type: "write",
-      index: Number.MAX_SAFE_INTEGER - 2,
+      index: 6,
       path: "src/app/page.tsx",
       content: buildFallbackLandingPage(userMessage),
     },
     {
       type: "write",
-      index: Number.MAX_SAFE_INTEGER - 1,
+      index: 7,
       path: supportRoutePath,
       content: buildFallbackServicesPage(userMessage),
     },
     {
       type: "write",
-      index: Number.MAX_SAFE_INTEGER,
+      index: 8,
+      path: proofRoutePath,
+      content: buildFallbackProofPage(userMessage),
+    },
+    {
+      type: "write",
+      index: 9,
       path: conversionRoutePath,
       content: buildFallbackContactPage(userMessage),
     },
@@ -3252,10 +3538,10 @@ function createLocalPlannerBrief(
       planningLine,
       "Audience: Hizmet veya ürün arayan son kullanıcılar.",
       "UI/UX Direction: Prompt'a özel, güven veren, net hiyerarşili, premium, modern ve animasyonlu bir ürün/site deneyimi.",
-      "Information Architecture: Ana sayfa + 2-4 destek sayfası oluştur; örnek route'lar: hizmetler/özellikler, fiyatlar/menü/tedaviler, hakkımızda, SSS, iletişim veya sektöre uygun eşdeğerleri.",
+      "Information Architecture: Ana sayfa + 3-4 destek sayfası oluştur; örnek route'lar: hizmetler/özellikler, fiyatlar/menü/tedaviler, hakkımızda, SSS, iletişim veya sektöre uygun eşdeğerleri.",
       "Required Pages/Sections: Her route kendi amacına sahip olsun; hero, kanıt, hizmet mimarisi, süreç, sosyal kanıt, SSS, iletişim/dönüşüm CTA ve sektöre özel ek bölümler projeye yayılsın.",
-      "Technical Plan: Next.js App Router içinde src/app/page.tsx yanında gerçek route dosyaları, shared component dosyası, content/config dosyası ve modern transition/hover animasyonları oluştur.",
-      "Acceptance Checklist: En az 3 gerçek page route, shared component/content yapısı, responsive tasarım, anlamlı sektörel metinler, erişilebilir HTML, bozuk import yok, tek sayfa/template hissi yok.",
+      "Technical Plan: Next.js App Router içinde src/app/page.tsx yanında gerçek route dosyaları, 3+ shared component dosyası, 2+ content/config dosyası ve modern transition/hover animasyonları oluştur.",
+      "Acceptance Checklist: En az 4 gerçek page route, 8+ anlamlı dosya, shared component/content yapısı, responsive tasarım, anlamlı sektörel metinler, erişilebilir HTML, bozuk import yok, tek sayfa/template hissi yok.",
     ].join("\n");
   }
 
@@ -3266,10 +3552,10 @@ function createLocalPlannerBrief(
     planningLine,
     "Audience: End users evaluating the service or product.",
     "UI/UX Direction: Prompt-specific, trustworthy, premium, modern, animated product/site experience with clear hierarchy.",
-    "Information Architecture: Build a homepage plus 2-4 supporting pages; sensible routes include services/features, pricing/menu/treatments, about, FAQ, contact, dashboard, blog, or domain-specific equivalents.",
+    "Information Architecture: Build a homepage plus 3-4 supporting pages; sensible routes include services/features, pricing/menu/treatments, about, FAQ, contact, dashboard, blog, or domain-specific equivalents.",
     "Required Pages/Sections: Each route should have a clear job; distribute hero, proof, service architecture, process, social proof, FAQ, contact/conversion CTA, and sector-specific sections across the project.",
-    "Technical Plan: Use Next.js App Router with src/app/page.tsx plus real route files, shared component files, content/config data, and modern transition/hover animation patterns.",
-    "Acceptance Checklist: At least 3 real page routes, shared component/content structure, responsive layout, meaningful sector-specific copy, accessible HTML, no broken imports, no one-page/template feel.",
+    "Technical Plan: Use Next.js App Router with src/app/page.tsx plus real route files, 3+ shared component files, 2+ content/config data files, and modern transition/hover animation patterns.",
+    "Acceptance Checklist: At least 4 real page routes, 8+ meaningful files, shared component/content structure, responsive layout, meaningful sector-specific copy, accessible HTML, no broken imports, no one-page/template feel.",
   ].join("\n");
 }
 
@@ -3468,20 +3754,20 @@ function createLocalArchitectSpec(userMessage: string): ArchitectSpec {
       "src/components/site-sections.tsx",
       "src/components/animated-card.tsx",
     ],
-    contentFiles: ["src/lib/site-content.ts"],
+    contentFiles: ["src/lib/site-content.ts", "src/config/site-routes.ts"],
     acceptanceCriteria: turkish
       ? [
-          "En az 3 gerçek App Router route dosyası oluşturulmalı.",
+          "En az 4 gerçek App Router route dosyası oluşturulmalı.",
           "Görünen tüm metinler Türkçe ve doğru Türkçe karakterlerle yazılmalı.",
           "Tek sayfalık jenerik template hissi olmamalı.",
-          "Ortak component ve content/config yapısı kullanılmalı.",
+          "En az 3 ortak component ve en az 2 content/config/data dosyası kullanılmalı.",
           "Responsive, erişilebilir ve animasyonlu ilk sürüm olmalı.",
         ]
       : [
-          "Create at least 3 real App Router route files.",
+          "Create at least 4 real App Router route files.",
           "All preview-visible copy must be English.",
           "Avoid one-page generic template feel.",
-          "Use shared components and content/config structure.",
+          "Use at least 3 shared components and at least 2 content/config/data files.",
           "Ship a responsive, accessible, animated first version.",
         ],
   };
@@ -3579,7 +3865,7 @@ Schema:
   "designDirection": "specific visual direction",
   "animationPlan": ["short motion requirement"],
   "components": ["src/components/example.tsx"],
-  "contentFiles": ["src/lib/site-content.ts"],
+  "contentFiles": ["src/lib/site-content.ts", "src/config/site-routes.ts"],
   "acceptanceCriteria": ["testable criterion"]
 }
 Rules:
@@ -3589,6 +3875,8 @@ Rules:
 - Follow the visual archetype from LOCAL_FALLBACK_SPEC unless there is a clearly better domain-specific reason to choose a different one.
 - The designDirection must explicitly describe composition, palette, typography, motion, and forbidden template patterns.
 - Prefer reusable components and content/config files.
+- For broad builds, specify 4-5 real routes, at least 3 component files, and at least 2 content/config/data files.
+- Never specify src/components/generated-site.tsx, src/lib/generated-site-content.ts, or GeneratedLandingPage.
 - The spec must protect quality without making tiny edits slow; this is only for power builds.
 `;
   const user = `
@@ -3682,7 +3970,13 @@ function validateBuildAgainstSpec(params: {
   ) {
     if (hasShallowBroadBuildStructure(assistantContent)) {
       issues.push(
-        "Broad build is too shallow: it needs real routes, shared components, content/config structure, motion, and deeper implementation."
+        `Broad build is too shallow: it must write at least ${BROAD_BUILD_MIN_WRITES} files, ${BROAD_BUILD_MIN_ROUTES} real page routes, ${BROAD_BUILD_MIN_COMPONENTS} component files, ${BROAD_BUILD_MIN_CONTENT_FILES} content/config/data files, purposeful motion, and deeper implementation.`
+      );
+    }
+
+    if (hasGeneratedSiteScaffold(assistantContent)) {
+      issues.push(
+        "Generated site reuses deterministic fallback scaffold; do not write generated-site files, generated-site-content, GeneratedLandingPage, or route wrappers around one shared generated page."
       );
     }
 
@@ -3758,6 +4052,12 @@ ${BUILDER_SYSTEM_PROMPT}
 You are repairing a draft that failed Klawpen's architect/spec validator.
 Return exactly one <dec-code> block with executable edit tags only.
 Do not explain outside the tags.
+Hard repair requirements for broad builds:
+- Write ${BROAD_BUILD_MIN_WRITES}-12 meaningful files.
+- Include ${BROAD_BUILD_MIN_ROUTES}+ real App Router page files with route-specific sections/content.
+- Include ${BROAD_BUILD_MIN_COMPONENTS}+ shared component files and ${BROAD_BUILD_MIN_CONTENT_FILES}+ content/config/data files.
+- Do not use src/components/generated-site.tsx, src/lib/generated-site-content.ts, generated-site-content, GeneratedLandingPage, or thin route wrappers around one shared generated page.
+- If the previous draft used that scaffold, replace the architecture instead of patching it cosmetically.
 
 USER_REQUEST:
 ${params.userMessage}
@@ -3800,20 +4100,9 @@ ${clipText(params.codeContext, 80_000)}
     }
 
     console.warn(
-      "Spec repair remained incomplete; keeping best executable response or falling back.",
+      "Spec repair remained incomplete; trying premium rebuild instead of accepting shallow executable output.",
       repairedValidation.issues
     );
-
-    if (hasExecutableCodeOperations(repaired)) {
-      return repaired;
-    }
-
-    if (hasExecutableCodeOperations(params.draft)) {
-      console.warn(
-        "Spec repair did not return executable edit tags; keeping the original executable AI draft instead of replacing it with fallback."
-      );
-      return params.draft;
-    }
 
     const premiumAttempt = await createPremiumFallbackAttempt({
       userMessage: params.userMessage,
@@ -3822,14 +4111,28 @@ ${clipText(params.codeContext, 80_000)}
       codeContext: params.codeContext,
       provider: params.provider,
       options: params.options,
-      reason: "Architect/spec validation repair did not return executable edit tags.",
+      reason: `Architect/spec validation remained incomplete: ${repairedValidation.issues.join("; ")}`,
     });
 
-    if (premiumAttempt) return premiumAttempt;
+    if (premiumAttempt) {
+      const premiumValidation = validateBuildAgainstSpec({
+        userMessage: params.userMessage,
+        assistantContent: premiumAttempt,
+        spec: params.architectSpec,
+        options: params.options,
+      });
+
+      if (premiumValidation.passed) return premiumAttempt;
+
+      console.warn(
+        "Premium rebuild also failed validation; deterministic fallback will be used.",
+        premiumValidation.issues
+      );
+    }
 
     return buildFallbackAssistantContent(
       params.userMessage,
-      "Architect/spec validation repair did not return executable edit tags."
+      "Architect/spec validation could not produce a deep enough AI build."
     );
   } catch (error) {
     console.warn(
@@ -3867,6 +4170,7 @@ async function createBuilderResponse(
           : "VISIBLE UI LANGUAGE: English. Every preview-visible label, heading, CTA, form label, FAQ, route title, metadata title/description, empty state, and error/status text must be English.",
         "CLIENT-FACING COPY CONTRACT: The generated preview must read like the real business/product/publication speaking to its customers. Never write visible copy as Klawpen, an AI, a builder, a freelancer, or an agency explaining a draft.",
         "FORBIDDEN VISIBLE META WORDS: prompt, generated, AI, yapay zeka, Klawpen, Core, Builder, template, şablon, fallback, component, design direction, tasarım yönü, first version, ilk sürüm, launch-ready, yayına hazır, freelancer, proposal, gelişmiş studio.",
+        "FORBIDDEN SCAFFOLD: do not write src/components/generated-site.tsx, src/lib/generated-site-content.ts, import generated-site-content, define/use GeneratedLandingPage, or make route files that only return one shared generated page.",
         "REFINED SCALE CONTRACT: no huge crude headings/buttons/cards. Use tasteful clamp ranges, compact nav, normal-sized CTAs, useful card content, balanced whitespace, and realistic density.",
         "PROFESSIONAL DESIGN METHOD: before writing files, internally compare at least 3 layout directions for this domain, choose the strongest one, then implement. Do not reveal this reasoning.",
         "QUALITY RUBRIC THAT MUST PASS: refined typography, readable Turkish/English copy, domain-specific modules, real multi-route IA, useful content density, purposeful motion, accessible responsive UI, no generic fallback labels, no oversized/heavy-font screenshot.",
@@ -3874,8 +4178,10 @@ async function createBuilderResponse(
         !isExplicitSinglePageRequest(userMessage)
           ? [
               "This is a broad website/app build: create a multi-page project, not a one-page landing.",
-              "Create at least 3 real App Router page files: src/app/page.tsx plus 2+ supporting routes that fit the domain.",
-              "Create shared components for navigation/layout/sections and a content/config/data file to avoid hardcoded repetition.",
+              `Minimum file contract: write ${BROAD_BUILD_MIN_WRITES}-12 meaningful files, including ${BROAD_BUILD_MIN_ROUTES}+ real App Router page files, ${BROAD_BUILD_MIN_COMPONENTS}+ shared component files, and ${BROAD_BUILD_MIN_CONTENT_FILES}+ content/config/data files.`,
+              "Each route must have route-specific sections/content; do not make every route a thin wrapper around the same landing component.",
+              "Create shared components for navigation/layout/sections, cards, route-specific modules, and reusable visual primitives.",
+              "Create organized content/config/data files for copy, route metadata, domain modules, and navigation instead of hardcoding repeated arrays inside one page.",
               "Navigation links must point to real routes or real anchors; do not fake pages with navbar labels only.",
               "Include purposeful modern motion: page/section reveal classes, hover transitions, animated visual details, or CSS keyframes.",
               "If the prompt asks for a blog, magazine, news, article, content, writer, or publishing site: build a real editorial product with featured article, category rails, author cards, newsletter capture, article previews, reading-time metadata, topic filters, and at least one article/category route. Do not use SaaS stats cards.",
@@ -3929,7 +4235,8 @@ Return exactly one <dec-code> block with executable tags. No markdown fences.
 
 QUALITY BAR:
 - Build for a polished Replit/Lovable-level preview, not a template.
-- Create real App Router pages, shared components, and a content/config file.
+- Create ${BROAD_BUILD_MIN_ROUTES}+ real App Router pages, ${BROAD_BUILD_MIN_COMPONENTS}+ shared components, and ${BROAD_BUILD_MIN_CONTENT_FILES}+ content/config/data files; write ${BROAD_BUILD_MIN_WRITES}-12 meaningful files when the request is broad.
+- Never use src/components/generated-site.tsx, src/lib/generated-site-content.ts, generated-site-content imports, GeneratedLandingPage, or route wrappers around one shared generated page.
 - The visual concept must be distinct and complete: no empty panels, no unrelated generic stats, no oversized headline-only hero, no nav + hero + three cards skeleton.
 - Use real customer-visible copy in ${turkish ? "Turkish with correct Turkish characters" : "English"}.
 - Visible UI copy must sound like the real customer website, not a freelancer proposal, builder status, Klawpen output, or AI-generated draft.
@@ -4353,14 +4660,16 @@ ${BUILDER_SYSTEM_PROMPT}
 ${repairReason}
 Return exactly one <dec-code> block with executable edit tags.
 For this build request, rewrite src/app/page.tsx and create a real multi-page App Router project:
-- at least 3 page files total, including src/app/page.tsx plus 2+ supporting routes that fit the user's domain
-- shared component files for navigation, layout, cards/sections, and reusable visual primitives
-- a content/config/data file so copy and page metadata are organized instead of hardcoded repeatedly
+- write ${BROAD_BUILD_MIN_WRITES}-12 meaningful files, not a tiny patch
+- at least ${BROAD_BUILD_MIN_ROUTES} page files total, including src/app/page.tsx plus ${BROAD_BUILD_MIN_SUPPORTING_ROUTES}+ supporting routes that fit the user's domain
+- at least ${BROAD_BUILD_MIN_COMPONENTS} shared component files for navigation, layout, cards/sections, route-specific modules, and reusable visual primitives
+- at least ${BROAD_BUILD_MIN_CONTENT_FILES} content/config/data files so copy, page metadata, routes, and domain modules are organized instead of hardcoded repeatedly
 - real links between pages and meaningful CTAs
 - purposeful modern motion: transitions, hover states, reveal animations, or CSS keyframes
 Visual archetype contract:
 ${formatVisualArchetype(selectVisualArchetype(params.userMessage))}
 Do not reuse the generic centered hero + stat cards + three cards + FAQ skeleton. Change the silhouette, section order, geometry, and domain-specific modules.
+Do not use src/components/generated-site.tsx, src/lib/generated-site-content.ts, generated-site-content, GeneratedLandingPage, or route wrappers around one shared generated page.
 The implementation must feel prompt-specific, visually polished, responsive, and complete enough to preview as a finished public website.
 Customer-facing copy rule:
 - Visible text must speak as the business/product/publication itself, not as Klawpen, an AI, a builder, a freelancer, or an agency explaining work.
@@ -4412,20 +4721,40 @@ ${clipText(params.codeContext, 80_000)}
       }
 
       console.warn(
-        "AI repair response was executable but still shallow, meta-copy, oversized, reused builder branding, or mixed visible UI language; keeping executable AI output instead of replacing it with fallback."
+        "AI repair response was executable but still shallow, meta-copy, oversized, reused builder branding, or mixed visible UI language; trying premium rebuild."
       );
-      return repaired;
+
+      const premiumAttempt = await createPremiumFallbackAttempt({
+        userMessage: params.userMessage,
+        plannerBrief: params.plannerBrief,
+        architectSpec: params.architectSpec,
+        codeContext: params.codeContext,
+        provider: params.provider,
+        options: params.options,
+        reason:
+          "AI repair response remained shallow, meta-copy, oversized, reused builder branding, or mixed visible UI language.",
+      });
+
+      if (
+        premiumAttempt &&
+        !shouldRepairBuildDepth(params.userMessage, premiumAttempt, params.options) &&
+        !shouldRepairGeneratedBrandReuse(params.userMessage, premiumAttempt) &&
+        !hasBuilderMetaVisibleCopy(params.userMessage, premiumAttempt) &&
+        !shouldRepairVisibleLanguageMismatch(params.userMessage, premiumAttempt) &&
+        !hasOversizedCrudeVisualSystem(premiumAttempt)
+      ) {
+        return premiumAttempt;
+      }
+
+      return buildFallbackAssistantContent(
+        params.userMessage,
+        "AI repair could not produce a deep enough build."
+      );
     }
 
     console.warn(
       "AI repair response still did not meet executable/depth/branding requirements; falling back to generated landing page."
     );
-    if (hasExecutableCodeOperations(params.draft)) {
-      console.warn(
-        "AI repair response had no executable edit tags; keeping the original executable AI draft instead of replacing it with fallback."
-      );
-      return params.draft;
-    }
 
     const premiumAttempt = await createPremiumFallbackAttempt({
       userMessage: params.userMessage,
@@ -4448,13 +4777,6 @@ ${clipText(params.codeContext, 80_000)}
       "AI repair pass failed; falling back to generated landing page:",
       error instanceof Error ? error.message : error
     );
-    if (hasExecutableCodeOperations(params.draft)) {
-      console.warn(
-        "AI repair pass failed; keeping the original executable AI draft instead of replacing it with fallback."
-      );
-      return params.draft;
-    }
-
     const premiumAttempt = await createPremiumFallbackAttempt({
       userMessage: params.userMessage,
       plannerBrief: params.plannerBrief,
