@@ -220,6 +220,8 @@ const TIMEOUT_RECOVERY_ENABLED =
   process.env.KLAWPEN_TIMEOUT_RECOVERY !== "false";
 const PREMIUM_FALLBACK_ENABLED =
   process.env.KLAWPEN_ENABLE_PREMIUM_FALLBACK === "true";
+const LOCAL_EMERGENCY_BUILD_ENABLED =
+  process.env.KLAWPEN_LOCAL_EMERGENCY_BUILD !== "false";
 const BROAD_BUILD_MIN_WRITES = readPositiveInt(
   process.env.KLAWPEN_MIN_BROAD_WRITES,
   8
@@ -3769,6 +3771,67 @@ function buildFallbackOperations(userMessage: string): CodeOperation[] {
   ];
 }
 
+function escapeDecAttribute(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function serializeCodeOperations(operations: CodeOperation[]): string {
+  return operations
+    .map((operation) => {
+      if (operation.type === "write" && operation.path) {
+        return `<dec-write path="${escapeDecAttribute(operation.path)}">\n${operation.content || ""}\n</dec-write>`;
+      }
+
+      if (operation.type === "rename" && operation.from && operation.to) {
+        return `<dec-rename from="${escapeDecAttribute(operation.from)}" to="${escapeDecAttribute(operation.to)}" />`;
+      }
+
+      if (operation.type === "delete" && operation.path) {
+        return `<dec-delete path="${escapeDecAttribute(operation.path)}" />`;
+      }
+
+      if (operation.type === "dependency" && operation.packageName) {
+        const version = operation.version
+          ? ` version="${escapeDecAttribute(operation.version)}"`
+          : "";
+        return `<dec-add-dependency name="${escapeDecAttribute(operation.packageName)}"${version}>${operation.packageName}</dec-add-dependency>`;
+      }
+
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function buildLocalEmergencyAssistantContent(
+  userMessage: string,
+  reason: string
+): string {
+  if (!LOCAL_EMERGENCY_BUILD_ENABLED) {
+    return buildFallbackAssistantContent(userMessage, reason);
+  }
+
+  const turkish = isLikelyTurkish(userMessage);
+  const operations = buildFallbackOperations(userMessage);
+  const intro = turkish
+    ? "AI sağlayıcısı bu istekte zaman aşımına düştüğü için projeyi boş bırakmadım; prompt'a göre çalışan bir başlangıç sürümü oluşturdum. Sağlayıcı toparlandığında bunun üzerine daha detaylı tasarım ve kod geliştirmesi yapılabilir."
+    : "The AI provider timed out on this request, so I did not leave the project blank; I created a working prompt-aware starter build. Once the provider is stable, this can be upgraded with a deeper design/code pass.";
+
+  console.warn("Using local emergency build after AI provider failure:", reason);
+
+  return [
+    intro,
+    "",
+    serializeCodeOperations(operations),
+    "",
+    `<dec-verification>${turkish ? "AI sağlayıcısı zaman aşımına düştüğü için yerel emergency build uygulandı." : "Local emergency build was applied because the AI provider timed out."}</dec-verification>`,
+  ].join("\n");
+}
+
 function buildFallbackAssistantContent(userMessage: string, reason: string): string {
   const turkish = isLikelyTurkish(userMessage);
 
@@ -6150,11 +6213,11 @@ ${codeContext}`;
             percents: [83, 84, 85],
             intervalMs: 30_000,
           })) ||
-          buildFallbackAssistantContent(
+          buildLocalEmergencyAssistantContent(
             userMessage,
             transientFailure
-              ? "AI provider timed out or returned a transient gateway error; timeout recovery also failed, so no generic fallback was applied."
-              : "AI provider failed before returning a valid executable build; recovery also failed, so no generic fallback was applied."
+              ? "AI provider timed out or returned a transient gateway error; timeout recovery also failed, so a local emergency build was applied."
+              : "AI provider failed before returning a valid executable build; recovery also failed, so a local emergency build was applied."
           );
       }
     }
