@@ -34,6 +34,11 @@ const AI_BUILDER_TIMEOUT_MS = readPositiveInt(
   process.env.AI_BUILDER_TIMEOUT_MS,
   480_000
 );
+const AI_PRIMARY_BUILD_TIMEOUT_MS = readPositiveInt(
+  process.env.AI_PRIMARY_BUILD_TIMEOUT_MS ||
+    process.env.AI_FIRST_PASS_TIMEOUT_MS,
+  Math.min(AI_BUILDER_TIMEOUT_MS, 300_000)
+);
 const AI_REQUEST_MAX_OUTPUT_TOKENS = readPositiveInt(
   process.env.AI_REQUEST_MAX_OUTPUT_TOKENS,
   8_000
@@ -581,8 +586,14 @@ function getBuildProgressCopy(
       en: ["Creating architecture", "Defining routes, components, content language, and acceptance criteria."],
     },
     draft: {
-      tr: ["Kod yazılıyor", "Klawpen Core sayfa yapısını ve arayüz detaylarını üretiyor."],
-      en: ["Writing code", "Klawpen Core is generating the page structure and UI details."],
+      tr: [
+        "Kod yazılıyor",
+        "Klawpen Core sayfa yapısını ve arayüz detaylarını hazırlıyor; büyük projelerde bu aşama birkaç dakika sürebilir.",
+      ],
+      en: [
+        "Writing code",
+        "Klawpen Core is preparing the page structure and UI details; larger builds can take a few minutes.",
+      ],
     },
     review: {
       tr: ["Kalite kontrol yapılıyor", "Kod, tasarım hiyerarşisi ve uygulanabilirlik kontrol ediliyor."],
@@ -4791,7 +4802,8 @@ async function createBuilderResponse(
   input: string,
   provider: AiProviderConfig,
   userMessage?: string,
-  options: BuildOptions = {}
+  options: BuildOptions = {},
+  overrides: { timeoutMs?: number; maxOutputTokens?: number } = {}
 ): Promise<string> {
   if (userMessage && hasBuildIntent(userMessage, options)) {
     const visualArchetype = selectVisualArchetype(userMessage);
@@ -4844,8 +4856,9 @@ async function createBuilderResponse(
       ].join("\n"),
       temperature: Math.max(aiTemperature, 0.22),
       retries: 0,
-      timeoutMs: AI_BUILDER_TIMEOUT_MS,
-      maxOutputTokens: AI_BUILDER_MAX_OUTPUT_TOKENS,
+      timeoutMs: overrides.timeoutMs ?? AI_BUILDER_TIMEOUT_MS,
+      maxOutputTokens:
+        overrides.maxOutputTokens ?? AI_BUILDER_MAX_OUTPUT_TOKENS,
       modelOverride,
     });
   }
@@ -5905,12 +5918,17 @@ ${codeContext}`;
           flattenedInput,
           provider,
           userMessage,
-          resolvedOptions
+          resolvedOptions,
+          {
+            timeoutMs: AI_PRIMARY_BUILD_TIMEOUT_MS,
+            maxOutputTokens: AI_BUILDER_MAX_OUTPUT_TOKENS,
+          }
         ),
         progress,
         userMessage,
         stage: "draft",
-        percents: [42, 48, 54, 58],
+        percents: [42, 46, 50, 54, 58, 61, 63, 65, 67, 68],
+        intervalMs: 24_000,
       });
 
       await progress?.(getBuildProgressCopy(userMessage, "review", 62));
@@ -5963,25 +5981,39 @@ ${codeContext}`;
       if (isTimeoutError(error)) {
         await progress?.(getBuildProgressCopy(userMessage, "repair", 74));
         assistantContent =
-          (await createTimeoutRecoveryAttempt({
+          (await withProgressPulse({
+            task: createTimeoutRecoveryAttempt({
+              userMessage,
+              plannerBrief,
+              architectSpec,
+              implementationBlueprint,
+              codeContext,
+              provider,
+              options: resolvedOptions,
+              reason: failureReason,
+            }),
+            progress,
             userMessage,
-            plannerBrief,
-            architectSpec,
-            implementationBlueprint,
-            codeContext,
-            provider,
-            options: resolvedOptions,
-            reason: failureReason,
+            stage: "repair",
+            percents: [76, 78, 80, 82],
+            intervalMs: 30_000,
           })) ||
-          (await createPremiumFallbackAttempt({
+          (await withProgressPulse({
+            task: createPremiumFallbackAttempt({
+              userMessage,
+              plannerBrief,
+              architectSpec,
+              implementationBlueprint,
+              codeContext,
+              provider,
+              options: resolvedOptions,
+              reason: failureReason,
+            }),
+            progress,
             userMessage,
-            plannerBrief,
-            architectSpec,
-            implementationBlueprint,
-            codeContext,
-            provider,
-            options: resolvedOptions,
-            reason: failureReason,
+            stage: "repair",
+            percents: [83, 84, 85],
+            intervalMs: 30_000,
           })) ||
           buildFallbackAssistantContent(
             userMessage,
