@@ -30,7 +30,7 @@ const AI_REQUEST_TIMEOUT_MS = readPositiveInt(
 );
 const AI_BUILDER_TIMEOUT_MS = readPositiveInt(
   process.env.AI_BUILDER_TIMEOUT_MS,
-  240_000
+  180_000
 );
 const AI_REQUEST_MAX_OUTPUT_TOKENS = readPositiveInt(
   process.env.AI_REQUEST_MAX_OUTPUT_TOKENS,
@@ -38,7 +38,7 @@ const AI_REQUEST_MAX_OUTPUT_TOKENS = readPositiveInt(
 );
 const AI_BUILDER_MAX_OUTPUT_TOKENS = readPositiveInt(
   process.env.AI_BUILDER_MAX_OUTPUT_TOKENS,
-  42_000
+  32_000
 );
 const AI_PLANNER_MAX_OUTPUT_TOKENS = readPositiveInt(
   process.env.AI_PLANNER_MAX_OUTPUT_TOKENS,
@@ -61,10 +61,22 @@ const AI_REASONING_EFFORT =
   process.env.AI_REASONING_EFFORT ||
   process.env.KLAWPEN_REASONING_EFFORT ||
   "";
+const AI_BUILDER_TIMEOUT_HARD_CAP_MS = readPositiveInt(
+  process.env.AI_BUILDER_TIMEOUT_HARD_CAP_MS,
+  240_000
+);
+const AI_REQUEST_TIMEOUT_HARD_CAP_MS = readPositiveInt(
+  process.env.AI_REQUEST_TIMEOUT_HARD_CAP_MS,
+  120_000
+);
 
 function readPositiveInt(value: string | undefined, fallback: number) {
   const parsed = Number.parseInt(value || "", 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function clampTimeout(timeoutMs: number, hardCapMs: number) {
+  return Math.min(Math.max(timeoutMs, 1_000), hardCapMs);
 }
 
 function getAiClient(provider: AiProviderConfig) {
@@ -596,6 +608,40 @@ function getBuildProgressCopy(
   };
 }
 
+async function withProgressPulse<T>({
+  task,
+  progress,
+  userMessage,
+  stage,
+  percents,
+  intervalMs = 12_000,
+}: {
+  task: Promise<T>;
+  progress?: ProgressReporter;
+  userMessage: string;
+  stage: BuildProgress["stage"];
+  percents: number[];
+  intervalMs?: number;
+}): Promise<T> {
+  if (!progress || percents.length === 0) return task;
+
+  let finished = false;
+  let index = 0;
+  const timer = setInterval(() => {
+    if (finished || index >= percents.length) return;
+    const percent = percents[index++];
+    if (percent === undefined) return;
+    void progress(getBuildProgressCopy(userMessage, stage, percent));
+  }, intervalMs);
+
+  try {
+    return await task;
+  } finally {
+    finished = true;
+    clearInterval(timer);
+  }
+}
+
 export function shouldUseConversationOnlyMode(
   userMessage: string,
   attachmentCount: number = 0,
@@ -927,6 +973,11 @@ function shouldRetryWithAlternateTokenParameter(error: unknown) {
   return /\b(max_completion_tokens|max_tokens)\b/i.test(message);
 }
 
+function isTimeoutError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /timed out after \d+ms/i.test(message);
+}
+
 function extractResponseText(resp: any): string {
   if (typeof resp?.output_text === "string" && resp.output_text.trim()) {
     return resp.output_text;
@@ -964,7 +1015,10 @@ async function createAiText(params: {
   const client = getAiClient(params.provider);
   const temperature = params.temperature ?? aiTemperature;
   const retries = params.retries ?? aiMaxRetries;
-  const timeoutMs = params.timeoutMs ?? AI_REQUEST_TIMEOUT_MS;
+  const timeoutMs = clampTimeout(
+    params.timeoutMs ?? AI_REQUEST_TIMEOUT_MS,
+    AI_REQUEST_TIMEOUT_HARD_CAP_MS
+  );
   const maxOutputTokens =
     params.maxOutputTokens ?? AI_REQUEST_MAX_OUTPUT_TOKENS;
   const model = params.modelOverride || params.provider.model;
@@ -1062,7 +1116,10 @@ async function createAiChatText(params: {
   const client = getAiClient(params.provider);
   const temperature = params.temperature ?? aiTemperature;
   const retries = params.retries ?? aiMaxRetries;
-  const timeoutMs = params.timeoutMs ?? AI_REQUEST_TIMEOUT_MS;
+  const timeoutMs = clampTimeout(
+    params.timeoutMs ?? AI_REQUEST_TIMEOUT_MS,
+    AI_BUILDER_TIMEOUT_HARD_CAP_MS
+  );
   const maxOutputTokens =
     params.maxOutputTokens ?? AI_REQUEST_MAX_OUTPUT_TOKENS;
   const model = params.modelOverride || params.provider.model;
@@ -5599,12 +5656,18 @@ ${codeContext}`;
     const flattenedInput = buildFlattenedInput(openaiMessages);
 
     try {
-      assistantContent = await createBuilderResponse(
-        flattenedInput,
-        provider,
+      assistantContent = await withProgressPulse({
+        task: createBuilderResponse(
+          flattenedInput,
+          provider,
+          userMessage,
+          resolvedOptions
+        ),
+        progress,
         userMessage,
-        resolvedOptions
-      );
+        stage: "draft",
+        percents: [42, 48, 54, 58],
+      });
 
       await progress?.(getBuildProgressCopy(userMessage, "review", 62));
       assistantContent = await improveWithCriticLoop({
@@ -5649,6 +5712,12 @@ ${codeContext}`;
         "AI builder generation failed; trying premium fallback attempt before local fallback:",
         error instanceof Error ? error.message : error
       );
+      if (isTimeoutError(error)) {
+        assistantContent = buildFallbackAssistantContent(
+          userMessage,
+          "AI provider timed out during code generation; use a safe structured build instead of waiting again."
+        );
+      } else {
       assistantContent =
         (await createPremiumFallbackAttempt({
           userMessage,
@@ -5665,6 +5734,7 @@ ${codeContext}`;
           userMessage,
           "AI provider failed or timed out before returning a valid executable build."
         );
+      }
     }
   }
 
