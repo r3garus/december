@@ -8,6 +8,33 @@ import * as projectSnapshotService from "../services/projectSnapshot";
 
 const router = express.Router();
 
+function getProjectCreateErrorMessage(error: unknown) {
+  const rawMessage = error instanceof Error ? error.message : String(error);
+  const message = rawMessage || "Unknown project creation error";
+
+  if (/POSTGRES_URL|DATABASE_URL/i.test(message)) {
+    return "Project database is not configured. Check POSTGRES_URL or DATABASE_URL in Coolify.";
+  }
+
+  if (/docker.*(connect|socket|daemon)|ECONNREFUSED|ENOENT|permission denied/i.test(message)) {
+    return "Docker connection failed. Check Docker socket/proxy access for the builder API.";
+  }
+
+  if (/Docker build failed|COPY failed|failed to compute cache key|not found/i.test(message)) {
+    return `Workspace image build failed: ${message.slice(0, 500)}`;
+  }
+
+  if (/No available ports/i.test(message)) {
+    return "No available preview ports found. Free old containers or increase the preview port range.";
+  }
+
+  if (/Proje y|Project .*load/i.test(message)) {
+    return projectSnapshotService.getProjectLoadErrorMessage();
+  }
+
+  return `Project creation failed: ${message.slice(0, 500)}`;
+}
+
 const KLAWPEN_STARTER_PAGE = `import type { Metadata } from "next";
 
 export const metadata: Metadata = {
@@ -156,6 +183,7 @@ router.post("/create", async (req, res) => {
       },
     });
   } catch (error) {
+    const errorMessage = getProjectCreateErrorMessage(error);
     console.error("Project container creation failed:", {
       containerId,
       projectId,
@@ -165,7 +193,7 @@ router.post("/create", async (req, res) => {
 
     res.status(500).json({
       success: false,
-      error: projectSnapshotService.getProjectLoadErrorMessage(),
+      error: errorMessage,
     });
   }
 });

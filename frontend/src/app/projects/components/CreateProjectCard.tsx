@@ -2,6 +2,7 @@
 
 import { Plus } from "lucide-react";
 import { useState } from "react";
+import { toast } from "react-hot-toast";
 import { createContainer } from "../../../lib/backend/api";
 
 interface CreateProjectCardProps {
@@ -20,6 +21,11 @@ export const CreateProjectCard = ({
       onProjectCreated();
     } catch (error) {
       console.error("Failed to create project:", error);
+      toast.error(
+        error instanceof Error && error.message.trim()
+          ? error.message
+          : "Failed to create project. Please try again."
+      );
     } finally {
       setIsCreating(false);
     }

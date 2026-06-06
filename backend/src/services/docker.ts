@@ -15,7 +15,7 @@ const LEGACY_CONTAINER_PREFIX = ["dec", "nextjs"].join("-") + "-";
 const TEMPLATE_IMAGE_NAME =
   process.env.PROJECT_TEMPLATE_IMAGE || "klawpen-workspace-template";
 const TEMPLATE_IMAGE_VERSION = (
-  process.env.PROJECT_TEMPLATE_VERSION || "klawpen-workspace-v3"
+  process.env.PROJECT_TEMPLATE_VERSION || "klawpen-workspace-v4"
 ).replace(/[^a-zA-Z0-9_.-]/g, "-");
 const TEMPLATE_VERSION_LABEL = "klawpen.template.version";
 const PROJECT_WORKSPACE_PATH = "/app/my-nextjs-app";
@@ -537,6 +537,7 @@ export async function buildImage(containerId: string): Promise<string> {
           "tsconfig.json",
           "next.config.ts",
           "postcss.config.mjs",
+          "tailwind.config.ts",
           "src",
         ],
       },

@@ -416,7 +416,13 @@ export const ProjectPromptInterface = ({ language, theme, accountName }: Project
       router.push(`/projects/${containerId}?${params.toString()}`);
     } catch (error) {
       console.error("Failed to create project from prompt:", error);
-      toast.error("Failed to create project. Please try again.");
+      const message =
+        error instanceof Error && error.message.trim()
+          ? error.message
+          : language === "tr"
+            ? "Proje oluşturulamadı. Lütfen tekrar dene."
+            : "Failed to create project. Please try again.";
+      toast.error(message);
     } finally {
       setIsCreatingFromPrompt(false);
     }
