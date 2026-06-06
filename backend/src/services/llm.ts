@@ -808,6 +808,8 @@ Deliver production-minded quality:
 - split the implementation into real files instead of dumping everything into one page: for broad builds write at least ${DEEP_BUILD_MIN_WRITES} meaningful files, ${DEEP_BUILD_MIN_ROUTES}+ page routes, ${DEEP_BUILD_MIN_COMPONENTS}+ shared components, and ${DEEP_BUILD_MIN_CONTENT_FILES}+ content/config/data files
 - prefer a complete, polished implementation over shallow file count, but never use a tiny one-file toy page for a broad build
 - never use the deterministic fallback scaffold in normal AI output: no src/components/generated-site.tsx, no src/lib/generated-site-content.ts, no GeneratedLandingPage, and no route files that only return one shared generated page
+- never imitate or extend Klawpen fallback architecture: avoid site-experience.tsx, site-content.ts, site-routes.ts, site-card.tsx, site-motion.tsx, SiteHomePage, SiteServicesPage, ShellNav, ProofAndFaq, and FinalCta unless the user explicitly asks to edit those existing files
+- for new builds, create domain-named files and components, e.g. menu-board.tsx, treatment-planner.tsx, article-grid.tsx, booking-panel.tsx, store-directory.tsx, case-timeline.tsx, api-console.tsx
 - do not use placeholder copy, fake generic stats, lorem ipsum, or repeated card names
 - when the request implies a website, create a coherent site experience, not only a decorative hero section
 - if multiple pages are explicitly requested, create real App Router pages and navigation
@@ -874,6 +876,7 @@ Rules:
 - FAIL broad website/application builds that have no purposeful animation, transition, hover state, or motion system unless the user requested static/minimal.
 - FAIL broad website/application builds with fewer than ${DEEP_BUILD_MIN_WRITES} meaningful write operations, fewer than ${DEEP_BUILD_MIN_ROUTES} route files, fewer than ${DEEP_BUILD_MIN_COMPONENTS} shared component files, or fewer than ${DEEP_BUILD_MIN_CONTENT_FILES} content/config/data files in deep/power builds.
 - FAIL outputs that use src/components/generated-site.tsx, src/lib/generated-site-content.ts, GeneratedLandingPage, generated-site-content, or route files that only wrap the same shared generated component.
+- FAIL outputs that imitate the fallback architecture signature: site-experience.tsx, site-content.ts, site-routes.ts, site-card.tsx, site-motion.tsx, SiteHomePage, ShellNav, ProofAndFaq, FinalCta, or generic Site* pages for a new prompt.
 - FAIL outputs where visible UI copy uses a different language than the user's prompt.
 - FAIL Turkish-prompt outputs that leave common English UI labels visible, such as Home, Services, About, Contact, Get Started, Learn More, Features, Pricing, or FAQ.
 - FAIL outputs that use Klawpen, Klawpen Cloud, or Klawpen Studio as the generated customer brand unless the user explicitly requested Klawpen itself.
@@ -1287,6 +1290,45 @@ function flattenFileContentTree(
   }
 
   return files;
+}
+
+const FALLBACK_SIGNATURE_PATHS = new Set([
+  "src/lib/site-content.ts",
+  "src/config/site-routes.ts",
+  "src/components/site-motion.tsx",
+  "src/components/site-card.tsx",
+  "src/components/site-experience.tsx",
+]);
+
+function pruneFileContentTreeForNewBuilds(
+  items: fileService.FileContentItem[],
+  userMessage: string,
+  options: BuildOptions = {}
+): fileService.FileContentItem[] {
+  const broadBuild =
+    isBroadBuildRequest(userMessage, options) &&
+    !isExplicitSinglePageRequest(userMessage);
+
+  if (!broadBuild) return items;
+
+  const prune = (
+    node: fileService.FileContentItem
+  ): fileService.FileContentItem | null => {
+    const normalizedPath = normalizeProjectPath(node.path || "");
+    if (node.type === "file" && FALLBACK_SIGNATURE_PATHS.has(normalizedPath)) {
+      return null;
+    }
+
+    if (!node.children?.length) return node;
+
+    const children = node.children
+      .map(prune)
+      .filter(Boolean) as fileService.FileContentItem[];
+
+    return { ...node, children };
+  };
+
+  return items.map(prune).filter(Boolean) as fileService.FileContentItem[];
 }
 
 function appendChangeSummaryTag(
@@ -2008,6 +2050,61 @@ function hasGenericLandingSkeleton(assistantContent: string): boolean {
   );
 }
 
+function hasFallbackArchitectureSignature(assistantContent: string): boolean {
+  const writes = getWriteOperations(assistantContent);
+  const paths = new Set(
+    writes.map((operation) => normalizeProjectPath(operation.path || ""))
+  );
+  const combined = writes.map((operation) => operation.content || "").join("\n");
+  const fallbackPathHits = [
+    "src/lib/site-content.ts",
+    "src/config/site-routes.ts",
+    "src/components/site-motion.tsx",
+    "src/components/site-card.tsx",
+    "src/components/site-experience.tsx",
+  ].filter((path) => paths.has(path)).length;
+  const fallbackNameHits = [
+    /\bSiteHomePage\b/,
+    /\bSiteServicesPage\b/,
+    /\bSiteProofPage\b/,
+    /\bSiteContactPage\b/,
+    /\bShellNav\b/,
+    /\bFinalCta\b/,
+    /\bProofAndFaq\b/,
+    /\bsiteContent\b/,
+    /\bsiteRouteMeta\b/,
+  ].filter((pattern) => pattern.test(combined)).length;
+
+  return fallbackPathHits >= 3 || fallbackNameHits >= 5;
+}
+
+function hasOverAbstractSectionArchitecture(assistantContent: string): boolean {
+  const combined = getCombinedWrittenContent(assistantContent);
+  if (!combined) return false;
+
+  const genericTerms = (
+    combined.match(
+      /\b(hero|features|services|stats|signals|workflow|proof|faq|contact|solution|outcomes|caseStudy|finalCta|primaryCta|secondaryCta|badge|headline|intro)\b/gi
+    ) || []
+  ).length;
+  const routeSpecificTerms = (
+    combined.match(
+      /\b(menu|reservation|booking|appointment|randevu|catalog|cart|checkout|article|author|editor|newsletter|treatment|clinic|case|contract|ticket|schedule|speaker|venue|store|campaign|floor|map|terminal|api|endpoint|integration|dashboard|metric|chart|class|trainer|room|amenity|lawyer|hearing|portfolio|gallery)\b/gi
+    ) || []
+  ).length;
+  const arrayMapCount = (combined.match(/\.map\(\(/g) || []).length;
+  const threeColumnGridCount = (
+    combined.match(/\b(?:md|lg):grid-cols-3\b/g) || []
+  ).length;
+
+  return (
+    genericTerms >= 45 &&
+    routeSpecificTerms < 12 &&
+    arrayMapCount >= 8 &&
+    threeColumnGridCount >= 4
+  );
+}
+
 function getVisualDiversityIssues(
   userMessage: string,
   assistantContent: string,
@@ -2024,6 +2121,18 @@ function getVisualDiversityIssues(
   if (hasGenericLandingSkeleton(assistantContent)) {
     issues.push(
       "The implementation appears to reuse a generic centered hero/stats/cards/FAQ skeleton; create a distinct page silhouette and section rhythm."
+    );
+  }
+
+  if (hasFallbackArchitectureSignature(assistantContent)) {
+    issues.push(
+      "The implementation reuses Klawpen's generic fallback architecture signature; replace it with prompt-specific files, component names, route modules, and data models."
+    );
+  }
+
+  if (hasOverAbstractSectionArchitecture(assistantContent)) {
+    issues.push(
+      "The implementation is built around abstract reusable landing-section names instead of domain-specific modules; create concrete prompt-specific sections and interactions."
     );
   }
 
@@ -3592,21 +3701,14 @@ function buildFallbackOperations(userMessage: string): CodeOperation[] {
 }
 
 function buildFallbackAssistantContent(userMessage: string, reason: string): string {
-  const writes = buildFallbackOperations(userMessage).map(
-    (operation) =>
-      `<dec-write path="${operation.path}">${operation.content || ""}</dec-write>`
-  );
+  const turkish = isLikelyTurkish(userMessage);
 
   return [
-    "<dec-code>",
-    "Plan:",
-    "- " + reason,
-    "- Build a structured multi-page version with content, shared UI, and page files.",
-    ...writes,
-    "</dec-code>",
-    isLikelyTurkish(userMessage)
-      ? "Çok sayfalı yapı hazırlandı; istersen marka tonunu ve bölüm detaylarını daha da keskinleştirebilirsin."
-      : "A multi-page structure is ready; you can refine the brand tone and section details further.",
+    turkish
+      ? "Kanka bu istekte Klawpen Core gerçek, prompt'a özel kod çıktısını güvenli şekilde tamamlayamadı; aynı hazır tasarımı basıp seni yanıltmayacağım."
+      : "Klawpen Core could not safely finish a prompt-specific build for this request; I will not apply a generic fallback design and mislead you.",
+    "",
+    `<dec-error>${reason}</dec-error>`,
   ].join("\n");
 }
 
@@ -3636,16 +3738,6 @@ async function applyCodeOperations(
 
   if (!operations.length) {
     operations = extractMarkdownCodeOperations(assistantContent);
-  }
-
-  if (
-    !operations.length &&
-    shouldForceFallbackPage(userMessage, assistantContent, options)
-  ) {
-    operations = buildFallbackOperations(userMessage);
-    console.warn(
-      "AI response did not include executable edit tags; applying fallback landing page."
-    );
   }
 
   const result: {
@@ -4440,6 +4532,18 @@ function validateBuildAgainstSpec(params: {
     );
   }
 
+  if (hasFallbackArchitectureSignature(assistantContent)) {
+    issues.push(
+      "Implementation reuses the generic fallback architecture signature; generate prompt-specific architecture instead."
+    );
+  }
+
+  if (hasOverAbstractSectionArchitecture(assistantContent)) {
+    issues.push(
+      "Implementation uses over-abstract generic landing-section architecture; replace it with concrete domain-specific modules."
+    );
+  }
+
   if (shouldRepairVisibleLanguageMismatch(userMessage, assistantContent)) {
     issues.push(
       isLikelyTurkish(userMessage)
@@ -4650,7 +4754,7 @@ ${clipText(params.codeContext, 80_000)}
       if (premiumValidation.passed) return premiumAttempt;
 
       console.warn(
-        "Premium rebuild also failed validation; deterministic fallback will be used.",
+        "Premium rebuild also failed validation; returning a non-applied build failure instead of generic fallback.",
         premiumValidation.issues
       );
     }
@@ -4826,7 +4930,7 @@ ${clipText(params.codeContext, 45_000)}
     }
 
     console.warn(
-      "Premium fallback attempt did not return executable edit tags; deterministic fallback may be used."
+      "Premium fallback attempt did not return executable edit tags; returning a non-applied build failure may be required."
     );
     return null;
   } catch (error) {
@@ -5547,7 +5651,12 @@ async function buildAssistantMessageFromSession(
     containerId
   );
 
-  const rawContext = JSON.stringify(fileContentTree, null, 2);
+  const contextTree = pruneFileContentTreeForNewBuilds(
+    fileContentTree,
+    userMessage,
+    resolvedOptions
+  );
+  const rawContext = JSON.stringify(contextTree, null, 2);
   const codeContext = clipText(rawContext, 120_000);
   let assistantContent: string;
 
@@ -5559,7 +5668,7 @@ async function buildAssistantMessageFromSession(
       "src/app/page.tsx",
     ]));
     console.warn(
-      "Runtime repair request detected; applying deterministic fallback page without waiting for AI."
+      "Runtime repair request detected; returning a non-applied repair failure instead of generic fallback."
     );
     assistantContent = buildFallbackAssistantContent(
       userMessage,
@@ -5715,7 +5824,7 @@ ${codeContext}`;
       if (isTimeoutError(error)) {
         assistantContent = buildFallbackAssistantContent(
           userMessage,
-          "AI provider timed out during code generation; use a safe structured build instead of waiting again."
+          "AI provider timed out during code generation; no generic fallback was applied."
         );
       } else {
       assistantContent =

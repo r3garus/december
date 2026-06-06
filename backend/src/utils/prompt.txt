@@ -227,6 +227,8 @@ If the request asks for a website, dashboard, application, or full product:
 - For broad builds, create at least 5 real page files: src/app/page.tsx plus 4+ supporting routes.
 - For broad builds, create at least 14 meaningful write operations, 6+ shared component files, and 4+ content/config/data files.
 - Never use a generic generated-site scaffold: do not create src/components/generated-site.tsx, src/lib/generated-site-content.ts, GeneratedLandingPage, or route files that only wrap the same shared page component.
+- Never imitate Klawpen's old fallback architecture for new builds: avoid site-experience.tsx, site-content.ts, site-routes.ts, site-card.tsx, site-motion.tsx, SiteHomePage, ShellNav, ProofAndFaq, FinalCta, and generic Site* page components.
+- Use domain-specific file/component names for each prompt, such as menu-board, treatment-planner, article-grid, booking-panel, store-directory, case-timeline, api-console, class-schedule, or portfolio-gallery.
 - Quality should feel closer to a strong Replit/Lovable prototype than a basic template.
 
 ========================
