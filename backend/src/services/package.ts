@@ -1,7 +1,7 @@
 import Docker from "dockerode";
 import { Writable } from "stream";
+import { docker } from "./dockerClient";
 
-const docker = new Docker({ socketPath: "/var/run/docker.sock" });
 const BASE_PATH = "/app/my-nextjs-app";
 const PACKAGE_SPEC_PATTERN =
   /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*(?:@[a-z0-9._~^*<>=+-][a-z0-9._~^*<>=+-]*)?$/i;

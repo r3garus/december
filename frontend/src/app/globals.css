@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@config "../../tailwind.config.ts";
 
 @font-face {
   font-family: "XSpace";
@@ -34,6 +35,21 @@
   --motion-route-duration: 380ms;
   --motion-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --motion-ease-emphasized: cubic-bezier(0.16, 1, 0.3, 1);
+  --klawpen-color-ink: #0b0c10;
+  --klawpen-color-coal: #111217;
+  --klawpen-color-graphite: #222223;
+  --klawpen-color-panel: #111827;
+  --klawpen-color-mist: #f6f8fb;
+  --klawpen-color-paper: #ffffff;
+  --klawpen-color-steel: #254260;
+  --klawpen-color-ocean: #31577d;
+  --klawpen-color-cyan: #12b5cb;
+  --klawpen-color-ice: #8bd6e6;
+  --klawpen-space-shell: clamp(1rem, 3vw, 3rem);
+  --klawpen-space-section: clamp(4rem, 8vw, 8rem);
+  --klawpen-radius-soft: 1rem;
+  --klawpen-radius-panel: 1.5rem;
+  --klawpen-radius-hero: 2rem;
 }
 
 @theme inline {

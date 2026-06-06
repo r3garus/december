@@ -14,6 +14,7 @@ interface ProjectPromptInterfaceProps {
 }
 
 interface StoredProjectMetadata {
+  projectId?: string;
   title?: string;
   summary?: string;
   prompt?: string;
@@ -231,11 +232,11 @@ export const ProjectPromptInterface = ({ language, theme, accountName }: Project
       projectIntentRequired:
         "L\u00fctfen ne olu\u015fturmak istedi\u011fini yaz. \u00d6rnek: \"Modern bir SaaS landing page yap\".",
       greetingResponse:
-        "Merhaba! Buradayım. Bir soru sorabilir, oluşturmak istediğin projeyi anlatabilir veya geliştirmek istediğin kısmı yazabilirsin.",
+        "Merhaba! Buraday\u0131m. Bir soru sorabilir, olu\u015fturmak istedi\u011fin projeyi anlatabilir veya geli\u015ftirmek istedi\u011fin k\u0131sm\u0131 yazabilirsin.",
       questionResponse:
-        "Güzel soru. Bu alan yeni proje başlatmak için çalışıyor. Genel sorular için bir projenin içindeki ajan sohbetini kullanabilir veya burada net bir proje brief'i yazabilirsin.",
+        "G\u00fczel soru. Bu alan yeni proje ba\u015flatmak i\u00e7in \u00e7al\u0131\u015f\u0131yor. Genel sorular i\u00e7in bir projenin i\u00e7indeki ajan sohbetini kullanabilir veya burada net bir proje brief'i yazabilirsin.",
       vaguePromptResponse:
-        "Bunu profesyonel yapmak için sektör, hedef kullanıcı, amaç ve görsel tarzı da ekle. Örnek: \"Menü, rezervasyon CTA'sı, yorumlar ve SSS içeren premium restoran landing page yap.\"",
+        "Bunu profesyonel yapmak i\u00e7in sekt\u00f6r, hedef kullan\u0131c\u0131, ama\u00e7 ve g\u00f6rsel tarz\u0131 da ekle. \u00d6rnek: \"Men\u00fc, rezervasyon CTA's\u0131, yorumlar ve SSS i\u00e7eren premium restoran landing page yap.\"",
     },
   }[language];
 
@@ -388,21 +389,28 @@ export const ProjectPromptInterface = ({ language, theme, accountName }: Project
         return;
       }
 
-      toast(language === "tr" ? "Klawpen projesi oluşturuluyor..." : "Creating Klawpen project...");
-      const containerResponse = await createContainer();
+      const projectTitle = buildTitleFromPrompt(promptValue);
+      const projectSummary = buildSummaryFromPrompt(promptValue);
+
+      toast(language === "tr" ? "Klawpen projesi olu\u015fturuluyor..." : "Creating Klawpen project...");
+      const containerResponse = await createContainer({
+        title: projectTitle,
+        prompt: promptValue,
+      });
       const containerId = containerResponse.containerId;
       const existingMetadata = readStoredMetadata();
       const nextMetadata: Record<string, StoredProjectMetadata> = {
         ...existingMetadata,
         [containerId]: {
+          projectId: containerResponse.projectId,
           prompt: promptValue,
-          title: buildTitleFromPrompt(promptValue),
-          summary: buildSummaryFromPrompt(promptValue),
+          title: projectTitle,
+          summary: projectSummary,
         },
       };
       writeStoredMetadata(nextMetadata);
 
-      toast.success(language === "tr" ? "Proje oluşturuldu. Klawpen açılıyor..." : "Project created. Opening Klawpen...");
+      toast.success(language === "tr" ? "Proje olu\u015fturuldu. Klawpen a\u00e7\u0131l\u0131yor..." : "Project created. Opening Klawpen...");
       const params = new URLSearchParams({ prompt: promptValue });
       if (isPlanModeEnabled) params.set("plan", "1");
       router.push(`/projects/${containerId}?${params.toString()}`);

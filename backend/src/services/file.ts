@@ -1,8 +1,8 @@
 import Docker from "dockerode";
 import path from "path";
 import { Writable } from "stream";
+import { docker as dockerClient } from "./dockerClient";
 
-const dockerClient = new Docker({ socketPath: "/var/run/docker.sock" });
 const BASE_PATH = "/app/my-nextjs-app";
 const MAX_FILE_WRITE_BYTES = 10_000_000;
 

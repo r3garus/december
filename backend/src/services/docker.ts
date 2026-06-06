@@ -4,8 +4,8 @@ import fs from "fs/promises";
 import net from "net";
 import os from "os";
 import path from "path";
+import { docker } from "./dockerClient";
 
-const docker = new Docker({ socketPath: "/var/run/docker.sock" });
 const BASE_PORT = 8100;
 const ALLOW_LEGACY_CONTAINERS = process.env.ALLOW_LEGACY_CONTAINERS === "true";
 const PROJECT_LABEL = "klawpen";
@@ -15,9 +15,10 @@ const LEGACY_CONTAINER_PREFIX = ["dec", "nextjs"].join("-") + "-";
 const TEMPLATE_IMAGE_NAME =
   process.env.PROJECT_TEMPLATE_IMAGE || "klawpen-workspace-template";
 const TEMPLATE_IMAGE_VERSION = (
-  process.env.PROJECT_TEMPLATE_VERSION || "klawpen-workspace-v2"
+  process.env.PROJECT_TEMPLATE_VERSION || "klawpen-workspace-v3"
 ).replace(/[^a-zA-Z0-9_.-]/g, "-");
 const TEMPLATE_VERSION_LABEL = "klawpen.template.version";
+const PROJECT_WORKSPACE_PATH = "/app/my-nextjs-app";
 const DEFAULT_PUBLIC_API_ORIGIN =
   process.env.NODE_ENV === "production"
     ? "https://api.builder.klawpen.com"
@@ -35,7 +36,43 @@ let detectedProjectNetwork: Promise<string | null> | null = null;
 export interface ProjectOwner {
   teamId: number;
   localUserId?: number;
+  projectId?: string;
 }
+
+export interface CreateContainerOptions {
+  restoreSnapshot?: boolean;
+}
+
+function readBooleanEnv(name: string, fallback: boolean): boolean {
+  const value = process.env[name];
+  if (value === undefined) return fallback;
+  return ["1", "true", "yes", "on"].includes(value.toLowerCase());
+}
+
+function readPositiveIntEnv(name: string, fallback: number): number {
+  const parsed = Number.parseInt(process.env[name] || "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const PROJECT_CONTAINER_MEMORY_BYTES = readPositiveIntEnv(
+  "PROJECT_CONTAINER_MEMORY_BYTES",
+  512 * 1024 * 1024
+);
+const PROJECT_CONTAINER_NANO_CPUS = readPositiveIntEnv(
+  "PROJECT_CONTAINER_NANO_CPUS",
+  1_000_000_000
+);
+const PROJECT_CONTAINER_PIDS_LIMIT = readPositiveIntEnv(
+  "PROJECT_CONTAINER_PIDS_LIMIT",
+  100
+);
+const PROJECT_READONLY_ROOTFS = readBooleanEnv("PROJECT_READONLY_ROOTFS", true);
+const PROJECT_WORKSPACE_VOLUME_ENABLED = readBooleanEnv(
+  "PROJECT_WORKSPACE_VOLUME_ENABLED",
+  true
+);
+const PROJECT_WORKSPACE_VOLUME_PREFIX =
+  process.env.PROJECT_WORKSPACE_VOLUME_PREFIX || "klawpen-workspace-data-";
 
 async function getAllAssignedPorts(): Promise<number[]> {
   const containers = await docker.listContainers({ all: true });
@@ -89,6 +126,48 @@ async function isPortAvailable(port: number): Promise<boolean> {
 
 function releasePort(port: number): void {
   usedPorts.delete(port);
+}
+
+function sanitizeDockerName(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_.-]/g, "-").slice(0, 120);
+}
+
+function getWorkspaceVolumeName(containerId: string, owner: ProjectOwner): string {
+  return `${PROJECT_WORKSPACE_VOLUME_PREFIX}${sanitizeDockerName(
+    owner.projectId || containerId
+  )}`;
+}
+
+function getProjectHostConfig(
+  assignedPort: number,
+  networkMode: string | null,
+  containerId: string,
+  owner: ProjectOwner
+): Record<string, unknown> {
+  const binds = PROJECT_WORKSPACE_VOLUME_ENABLED
+    ? [`${getWorkspaceVolumeName(containerId, owner)}:${PROJECT_WORKSPACE_PATH}:rw`]
+    : [];
+
+  return {
+    PortBindings: { "3000/tcp": [{ HostPort: assignedPort.toString() }] },
+    Memory: PROJECT_CONTAINER_MEMORY_BYTES,
+    NanoCpus: PROJECT_CONTAINER_NANO_CPUS,
+    PidsLimit: PROJECT_CONTAINER_PIDS_LIMIT,
+    ReadonlyRootfs: PROJECT_READONLY_ROOTFS,
+    SecurityOpt: ["no-new-privileges:true"],
+    Tmpfs: {
+      "/tmp": "rw,noexec,nosuid,size=128m,uid=1000,gid=1000,mode=1777",
+      [`${PROJECT_WORKSPACE_PATH}/.next`]:
+        "rw,nosuid,size=256m,uid=1000,gid=1000,mode=1777",
+      [`${PROJECT_WORKSPACE_PATH}/node_modules/.cache`]:
+        "rw,nosuid,size=128m,uid=1000,gid=1000,mode=1777",
+      "/home/node/.cache": "rw,nosuid,size=128m,uid=1000,gid=1000,mode=1777",
+      "/home/node/.bun/install/cache":
+        "rw,nosuid,size=256m,uid=1000,gid=1000,mode=1777",
+    },
+    ...(binds.length > 0 ? { Binds: binds } : {}),
+    ...(networkMode ? { NetworkMode: networkMode } : {}),
+  };
 }
 
 async function resolveProjectNetwork(): Promise<string | null> {
@@ -265,8 +344,76 @@ export default config;
 
   await writeTemplateFile(
     rootDir,
+    "tailwind.config.ts",
+    `import type { Config } from "tailwindcss";
+
+export const klawpenBranding = {
+  colors: {
+    ink: "#0b0c10",
+    coal: "#111217",
+    graphite: "#222223",
+    panel: "#111827",
+    mist: "#f6f8fb",
+    paper: "#ffffff",
+    steel: "#254260",
+    ocean: "#31577d",
+    cyan: "#12b5cb",
+    ice: "#8bd6e6",
+    slate: "#64748b",
+  },
+  spacing: {
+    shell: "clamp(1rem, 3vw, 3rem)",
+    section: "clamp(4rem, 8vw, 8rem)",
+    compact: "clamp(0.75rem, 1.4vw, 1.25rem)",
+  },
+  borderRadius: {
+    soft: "1rem",
+    panel: "1.5rem",
+    hero: "2rem",
+    pill: "999px",
+  },
+  fontFamily: {
+    sans: ["Inter", "ui-sans-serif", "system-ui", "sans-serif"],
+    display: ["Inter", "ui-sans-serif", "system-ui", "sans-serif"],
+    mono: ["ui-monospace", "SFMono-Regular", "Menlo", "monospace"],
+  },
+};
+
+const config = {
+  theme: {
+    extend: {
+      colors: {
+        klawpen: klawpenBranding.colors,
+      },
+      spacing: {
+        "klawpen-shell": klawpenBranding.spacing.shell,
+        "klawpen-section": klawpenBranding.spacing.section,
+        "klawpen-compact": klawpenBranding.spacing.compact,
+      },
+      borderRadius: {
+        "klawpen-soft": klawpenBranding.borderRadius.soft,
+        "klawpen-panel": klawpenBranding.borderRadius.panel,
+        "klawpen-hero": klawpenBranding.borderRadius.hero,
+        "klawpen-pill": klawpenBranding.borderRadius.pill,
+      },
+      fontFamily: {
+        "klawpen-sans": klawpenBranding.fontFamily.sans,
+        "klawpen-display": klawpenBranding.fontFamily.display,
+        "klawpen-mono": klawpenBranding.fontFamily.mono,
+      },
+    },
+  },
+} satisfies Config;
+
+export default config;
+`
+  );
+
+  await writeTemplateFile(
+    rootDir,
     "src/app/globals.css",
     `@import "tailwindcss";
+@config "../../tailwind.config.ts";
 
 :root {
   background: #f6f8fb;
@@ -443,7 +590,8 @@ export async function buildImage(containerId: string): Promise<string> {
 export async function createContainer(
   imageName: string,
   containerId: string,
-  owner: ProjectOwner
+  owner: ProjectOwner,
+  _options: CreateContainerOptions = {}
 ): Promise<{ container: Docker.Container; port: number }> {
   const containerName = `${CONTAINER_PREFIX}${containerId}`;
   const assignedPort = await findAvailablePort();
@@ -455,16 +603,22 @@ export async function createContainer(
     Image: imageName,
     name: containerName,
     ExposedPorts: { "3000/tcp": {} },
-    HostConfig: {
-      PortBindings: { "3000/tcp": [{ HostPort: assignedPort.toString() }] },
-      ...(networkMode ? { NetworkMode: networkMode } : {}),
-    },
+    HostConfig: getProjectHostConfig(
+      assignedPort,
+      networkMode,
+      containerId,
+      owner
+    ),
     Labels: {
       project: PROJECT_LABEL,
       type: "klawpen-workspace",
       assignedPort: assignedPort.toString(),
       teamId: String(owner.teamId),
       userId: owner.localUserId ? String(owner.localUserId) : "",
+      projectId: owner.projectId || "",
+      workspaceVolume: PROJECT_WORKSPACE_VOLUME_ENABLED
+        ? getWorkspaceVolumeName(containerId, owner)
+        : "",
     },
   });
 

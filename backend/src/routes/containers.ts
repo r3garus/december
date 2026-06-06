@@ -4,6 +4,7 @@ import * as dockerService from "../services/docker";
 import * as exportService from "../services/export";
 import * as fileService from "../services/file";
 import * as packageService from "../services/package";
+import * as projectSnapshotService from "../services/projectSnapshot";
 
 const router = express.Router();
 
@@ -82,8 +83,22 @@ router.get("/", async (req, res) => {
 
 router.post("/create", async (req, res) => {
   const containerId = uuidv4();
+  const requestedProjectId =
+    typeof req.body?.projectId === "string" && req.body.projectId.trim()
+      ? req.body.projectId.trim()
+      : null;
+  const projectId = requestedProjectId || uuidv4();
+  const projectPrompt =
+    typeof req.body?.prompt === "string" ? req.body.prompt : null;
+  const projectTitle = typeof req.body?.title === "string" ? req.body.title : null;
 
   try {
+    const latestSnapshot = requestedProjectId
+      ? await projectSnapshotService.getLatestProjectSnapshot({
+          projectId,
+          account: req.account!,
+        })
+      : null;
     const imageName = await dockerService.buildImage(containerId);
     const { container, port } = await dockerService.createContainer(
       imageName,
@@ -91,16 +106,47 @@ router.post("/create", async (req, res) => {
       {
         teamId: req.account!.teamId,
         localUserId: req.account!.localUserId,
+        projectId,
       }
     );
-    await fileService.writeFile(container.id, "src/app/page.tsx", KLAWPEN_STARTER_PAGE);
+    await projectSnapshotService.ensureProjectForContainer({
+      projectId,
+      containerId: container.id,
+      account: req.account!,
+      title: projectTitle,
+      prompt: projectPrompt,
+    });
+
+    if (latestSnapshot) {
+      await projectSnapshotService.restoreProjectSnapshotToContainer({
+        containerId: container.id,
+        snapshot: latestSnapshot,
+      });
+    } else {
+      await fileService.writeFile(
+        container.id,
+        "src/app/page.tsx",
+        KLAWPEN_STARTER_PAGE
+      );
+      await projectSnapshotService.snapshotContainerFiles({
+        containerId: container.id,
+        account: req.account!,
+        projectId,
+        metadata: {
+          source: "container_create",
+          restored: false,
+        },
+      });
+    }
 
     res.json({
       success: true,
       containerId: container.id,
+      projectId,
       container: {
         id: containerId,
         containerId: container.id,
+        projectId,
         status: "running",
         port: port,
         url: dockerService.buildPreviewUrl(container.id),
@@ -110,11 +156,77 @@ router.post("/create", async (req, res) => {
       },
     });
   } catch (error) {
+    console.error("Project container creation failed:", {
+      containerId,
+      projectId,
+      error: error instanceof Error ? error.message : error,
+    });
     await dockerService.cleanupImage(containerId);
 
     res.status(500).json({
       success: false,
-      error: error instanceof Error ? error.message : "Unknown error",
+      error: projectSnapshotService.getProjectLoadErrorMessage(),
+    });
+  }
+});
+
+router.post("/:containerId/init-session", async (req, res) => {
+  const { containerId } = req.params;
+
+  try {
+    const container = await dockerService.assertProjectContainer(
+      containerId,
+      req.account
+    );
+    const containerInfo = await container.inspect();
+    const labels = containerInfo.Config?.Labels || {};
+    const requestedProjectId =
+      typeof req.body?.projectId === "string" && req.body.projectId.trim()
+        ? req.body.projectId.trim()
+        : null;
+    const projectId = requestedProjectId || labels.projectId || uuidv4();
+    const restoreLatest = req.body?.restoreLatest === true;
+
+    const project = await projectSnapshotService.ensureProjectForContainer({
+      projectId,
+      containerId,
+      account: req.account!,
+      title: typeof req.body?.title === "string" ? req.body.title : null,
+      prompt: typeof req.body?.prompt === "string" ? req.body.prompt : null,
+    });
+
+    let restoredFiles = 0;
+    if (restoreLatest) {
+      const latestSnapshot = await projectSnapshotService.getLatestProjectSnapshot({
+        projectId: project.id,
+        account: req.account!,
+      });
+
+      if (latestSnapshot) {
+        const restoreResult =
+          await projectSnapshotService.restoreProjectSnapshotToContainer({
+            containerId,
+            snapshot: latestSnapshot,
+          });
+        restoredFiles = restoreResult.restoredFiles;
+      }
+    }
+
+    res.json({
+      success: true,
+      projectId: project.id,
+      restoredFiles,
+      containerId,
+    });
+  } catch (error) {
+    console.error("Project session initialization failed:", {
+      containerId,
+      error: error instanceof Error ? error.message : error,
+    });
+
+    res.status(500).json({
+      success: false,
+      error: projectSnapshotService.getProjectLoadErrorMessage(),
     });
   }
 });

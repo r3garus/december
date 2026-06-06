@@ -8,9 +8,11 @@ import {
   type AiProviderConfig,
   type AiWorkloadEstimate,
 } from "./aiProvider";
+import type { AuthenticatedAccount } from "./account";
 import * as dockerService from "./docker";
 import * as fileService from "./file";
 import * as packageService from "./package";
+import * as projectSnapshotService from "./projectSnapshot";
 
 const clientCache = new Map<string, OpenAI>();
 
@@ -30,7 +32,7 @@ const AI_REQUEST_TIMEOUT_MS = readPositiveInt(
 );
 const AI_BUILDER_TIMEOUT_MS = readPositiveInt(
   process.env.AI_BUILDER_TIMEOUT_MS,
-  180_000
+  480_000
 );
 const AI_REQUEST_MAX_OUTPUT_TOKENS = readPositiveInt(
   process.env.AI_REQUEST_MAX_OUTPUT_TOKENS,
@@ -38,6 +40,14 @@ const AI_REQUEST_MAX_OUTPUT_TOKENS = readPositiveInt(
 );
 const AI_BUILDER_MAX_OUTPUT_TOKENS = readPositiveInt(
   process.env.AI_BUILDER_MAX_OUTPUT_TOKENS,
+  48_000
+);
+const AI_RECOVERY_BUILD_TIMEOUT_MS = readPositiveInt(
+  process.env.AI_RECOVERY_BUILD_TIMEOUT_MS,
+  300_000
+);
+const AI_RECOVERY_MAX_OUTPUT_TOKENS = readPositiveInt(
+  process.env.AI_RECOVERY_MAX_OUTPUT_TOKENS,
   32_000
 );
 const AI_PLANNER_MAX_OUTPUT_TOKENS = readPositiveInt(
@@ -63,11 +73,11 @@ const AI_REASONING_EFFORT =
   "";
 const AI_BUILDER_TIMEOUT_HARD_CAP_MS = readPositiveInt(
   process.env.AI_BUILDER_TIMEOUT_HARD_CAP_MS,
-  240_000
+  900_000
 );
 const AI_REQUEST_TIMEOUT_HARD_CAP_MS = readPositiveInt(
   process.env.AI_REQUEST_TIMEOUT_HARD_CAP_MS,
-  120_000
+  240_000
 );
 
 function readPositiveInt(value: string | undefined, fallback: number) {
@@ -177,6 +187,8 @@ const PREVIEW_CHECK_ENABLED = process.env.KLAWPEN_ENABLE_PREVIEW_CHECK === "true
 const CROSS_REVIEW_ENABLED = process.env.KLAWPEN_ENABLE_CROSS_REVIEW !== "false";
 const DETERMINISTIC_RUNTIME_FALLBACK_ENABLED =
   process.env.KLAWPEN_DETERMINISTIC_RUNTIME_FALLBACK === "true";
+const TIMEOUT_RECOVERY_ENABLED =
+  process.env.KLAWPEN_TIMEOUT_RECOVERY !== "false";
 const BROAD_BUILD_MIN_WRITES = readPositiveInt(
   process.env.KLAWPEN_MIN_BROAD_WRITES,
   8
@@ -837,6 +849,9 @@ Deliver production-minded quality:
 - build visually useful sections, not generic "01 / signal / strategic story" rails. If the domain is commerce, restaurant, clinic, legal, local service, fitness, event, or blog, create modules that users expect in that domain.
 - before writing code, internally run a design critique: "Would a real premium agency ship this screenshot?" If the answer is no, revise the layout before returning.
 - every page must feel like a finished public-facing website for a real client: no internal planning labels, no "we are building this", no "design direction", no "first version", no placeholder/fallback wording
+- design-token contract: every generated workspace includes Tailwind klawpen-branding tokens. Use the klawpen-* token namespace as the visual source of truth: bg-klawpen-ink, bg-klawpen-coal, bg-klawpen-panel, bg-klawpen-mist, text-klawpen-steel, text-klawpen-ocean, border-klawpen-ocean, rounded-klawpen-panel, rounded-klawpen-hero, px-klawpen-shell, py-klawpen-section, font-klawpen-sans, and font-klawpen-display.
+- avoid arbitrary hardcoded hex/rgb/hsl colors in generated UI. Use klawpen-* classes and opacity modifiers by default; only introduce a very small number of custom colors if the user explicitly provides a brand color or the domain truly requires a distinct accent.
+- keep the design professional, minimalist, responsive, and visually refined; use tokens for consistency but still vary layout silhouette, content modules, rhythm, and motion by prompt.
 `;
 
 const CRITIC_SYSTEM_PROMPT = `
@@ -4942,6 +4957,125 @@ ${clipText(params.codeContext, 45_000)}
   }
 }
 
+function selectTimeoutRecoveryProvider(currentProvider: AiProviderConfig) {
+  try {
+    const providers = getAiProviders();
+    return (
+      providers.find((provider) => provider.key !== currentProvider.key) ||
+      currentProvider
+    );
+  } catch {
+    return currentProvider;
+  }
+}
+
+async function createTimeoutRecoveryAttempt(params: {
+  userMessage: string;
+  plannerBrief: string;
+  architectSpec?: ArchitectSpec | null;
+  implementationBlueprint?: ImplementationBlueprint | null;
+  codeContext: string;
+  provider: AiProviderConfig;
+  options?: BuildOptions;
+  reason: string;
+}): Promise<string | null> {
+  if (!TIMEOUT_RECOVERY_ENABLED) return null;
+
+  const turkish = isLikelyTurkish(params.userMessage);
+  const visualArchetype = selectVisualArchetype(params.userMessage);
+  const recoveryProvider = selectTimeoutRecoveryProvider(params.provider);
+  const requirements = shouldUseDeepBuildLayer(params.options)
+    ? {
+        writes: Math.max(10, Math.min(DEEP_BUILD_MIN_WRITES, 12)),
+        routes: Math.max(4, Math.min(DEEP_BUILD_MIN_ROUTES, 5)),
+        supportingRoutes: Math.max(
+          3,
+          Math.min(DEEP_BUILD_MIN_SUPPORTING_ROUTES, 4)
+        ),
+        components: Math.max(4, Math.min(DEEP_BUILD_MIN_COMPONENTS, 5)),
+        contentFiles: Math.max(2, Math.min(DEEP_BUILD_MIN_CONTENT_FILES, 3)),
+        writtenBytes: Math.max(
+          28_000,
+          Math.min(DEEP_BUILD_MIN_WRITTEN_BYTES, 45_000)
+        ),
+      }
+    : getBroadBuildRequirements(params.options);
+
+  const system = `
+${BUILDER_SYSTEM_PROMPT}
+
+You are in TIMEOUT RECOVERY BUILD MODE.
+The previous code generation pass timed out: ${params.reason}
+
+Goal: produce a real, prompt-specific, executable project now. Do not explain. Do not use markdown fences.
+Return exactly one <dec-code> block with executable edit tags.
+
+Recovery scope:
+- Build a polished, professional preview, but keep the response compact enough to finish reliably.
+- Write ${requirements.writes}+ meaningful files.
+- Include ${requirements.routes}+ real App Router page files, including src/app/page.tsx and ${requirements.supportingRoutes}+ supporting routes.
+- Include ${requirements.components}+ shared component files and ${requirements.contentFiles}+ content/config/data files.
+- Target ${requirements.writtenBytes}+ written characters across edited files; prioritize useful density over huge decorative blocks.
+- Use real navigation between routes, responsive layout, accessible semantics, refined typography, hover/reveal motion, and domain-specific modules.
+- Avoid one-page-only results unless the user explicitly requested one page.
+
+Visual contract:
+${formatVisualArchetype(visualArchetype)}
+
+Hard rules:
+- No generic fallback architecture: no site-experience.tsx, site-content.ts, site-routes.ts, site-card.tsx, site-motion.tsx, GeneratedLandingPage, generated-site-content, or route wrappers around one shared page.
+- No visible builder/meta language: prompt, generated, AI, yapay zeka, Klawpen, Core, Builder, template, şablon, fallback, component, design direction, tasarım yönü, first version, ilk sürüm, launch-ready, freelancer, proposal, gelişmiş studio.
+- Visible UI language must be ${turkish ? "Turkish with correct Turkish characters" : "English"}.
+- Customer-facing copy must sound like the real business/product/publication speaking to customers, not a freelancer or AI explaining work.
+- Avoid giant crude headings, oversized buttons, huge empty cards, and the nav + hero + stat cards + FAQ skeleton.
+`;
+
+  const user = `
+USER REQUEST:
+${params.userMessage}
+
+PLANNER BRIEF:
+${clipText(params.plannerBrief, 6_000)}
+
+ARCHITECT SPEC:
+${clipText(formatArchitectSpec(params.architectSpec || null), 8_000)}
+
+IMPLEMENTATION BLUEPRINT:
+${clipText(formatImplementationBlueprint(params.implementationBlueprint || null), 8_000)}
+
+CURRENT CODEBASE SNAPSHOT:
+${clipText(params.codeContext, 24_000)}
+`;
+
+  try {
+    const response = await createAiChatText({
+      provider: recoveryProvider,
+      system,
+      user,
+      temperature: Math.max(aiTemperature, 0.2),
+      retries: 0,
+      timeoutMs: AI_RECOVERY_BUILD_TIMEOUT_MS,
+      maxOutputTokens: AI_RECOVERY_MAX_OUTPUT_TOKENS,
+      modelOverride: getBuilderModelOverride(params.options),
+    });
+
+    if (hasExecutableCodeOperations(response)) {
+      return response;
+    }
+
+    console.warn(
+      "Timeout recovery attempt did not return executable edit tags."
+    );
+    return null;
+  } catch (error) {
+    console.warn(
+      "Timeout recovery attempt failed:",
+      error instanceof Error ? error.message : error
+    );
+    return null;
+  }
+}
+
 async function createCriticReview(
   input: string,
   provider: AiProviderConfig
@@ -5638,7 +5772,8 @@ async function buildAssistantMessageFromSession(
   userMessage: string,
   workloadEstimate?: AiWorkloadEstimate,
   progress?: ProgressReporter,
-  options: BuildOptions = {}
+  options: BuildOptions = {},
+  account?: AuthenticatedAccount
 ): Promise<{ assistantMessage: Message }> {
   const resolvedOptions = resolveBuildOptions(
     userMessage,
@@ -5821,11 +5956,37 @@ ${codeContext}`;
         "AI builder generation failed; trying premium fallback attempt before local fallback:",
         error instanceof Error ? error.message : error
       );
+      const failureReason = isTimeoutError(error)
+        ? "AI provider timed out during code generation; a compact prompt-specific recovery build was attempted."
+        : "AI provider failed before returning a valid executable build.";
+
       if (isTimeoutError(error)) {
-        assistantContent = buildFallbackAssistantContent(
-          userMessage,
-          "AI provider timed out during code generation; no generic fallback was applied."
-        );
+        await progress?.(getBuildProgressCopy(userMessage, "repair", 74));
+        assistantContent =
+          (await createTimeoutRecoveryAttempt({
+            userMessage,
+            plannerBrief,
+            architectSpec,
+            implementationBlueprint,
+            codeContext,
+            provider,
+            options: resolvedOptions,
+            reason: failureReason,
+          })) ||
+          (await createPremiumFallbackAttempt({
+            userMessage,
+            plannerBrief,
+            architectSpec,
+            implementationBlueprint,
+            codeContext,
+            provider,
+            options: resolvedOptions,
+            reason: failureReason,
+          })) ||
+          buildFallbackAssistantContent(
+            userMessage,
+            "AI provider timed out during code generation; timeout recovery also failed, so no generic fallback was applied."
+          );
       } else {
       assistantContent =
         (await createPremiumFallbackAttempt({
@@ -5863,6 +6024,28 @@ ${codeContext}`;
     progress,
     resolvedOptions
   );
+
+  if (account && applyResult.applied > 0) {
+    try {
+      await projectSnapshotService.snapshotContainerFiles({
+        containerId,
+        account,
+        metadata: {
+          source: "ai_apply",
+          applied: applyResult.applied,
+          failed: applyResult.failed.length,
+          userMessage: clipText(userMessage, 1_000),
+          createdAt: new Date().toISOString(),
+        },
+      });
+    } catch (error) {
+      console.error("Project snapshot save failed after AI apply:", {
+        containerId,
+        teamId: account.teamId,
+        error: error instanceof Error ? error.message : error,
+      });
+    }
+  }
 
   const gateReports = await runPostApplyQualityGates({
     containerId,
@@ -5918,7 +6101,8 @@ export async function sendMessage(
   userMessage: string,
   attachments: Attachment[] = [],
   workloadEstimate?: AiWorkloadEstimate,
-  options: BuildOptions = {}
+  options: BuildOptions = {},
+  account?: AuthenticatedAccount
 ): Promise<{ userMessage: Message; assistantMessage: Message }> {
   const session = getOrCreateChatSession(containerId);
   removeTrailingUnansweredUserMessage(session, userMessage);
@@ -5939,7 +6123,8 @@ export async function sendMessage(
     userMessage,
     workloadEstimate,
     undefined,
-    options
+    options,
+    account
   );
 
   return {
@@ -5953,7 +6138,8 @@ export async function* sendMessageStream(
   userMessage: string,
   attachments: Attachment[] = [],
   workloadEstimate?: AiWorkloadEstimate,
-  options: BuildOptions = {}
+  options: BuildOptions = {},
+  account?: AuthenticatedAccount
 ): AsyncGenerator<{ type: "user" | "assistant" | "progress" | "done"; data: any }> {
   const session = getOrCreateChatSession(containerId);
   removeTrailingUnansweredUserMessage(session, userMessage);
@@ -5983,7 +6169,8 @@ export async function* sendMessageStream(
       wakeProgressReader?.();
       wakeProgressReader = null;
     },
-    options
+    options,
+    account
   ).finally(() => {
     buildFinished = true;
     wakeProgressReader?.();

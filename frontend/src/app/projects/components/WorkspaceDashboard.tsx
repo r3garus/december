@@ -88,6 +88,7 @@ const WORKSPACE_TWO_FACTOR_STORAGE_KEY = `${workspaceProfileStoragePrefix}:twoFa
 const WORKSPACE_LOGIN_ALERTS_STORAGE_KEY = `${workspaceProfileStoragePrefix}:loginAlerts`;
 
 interface StoredProjectMetadata {
+  projectId?: string;
   title?: string;
   summary?: string;
   prompt?: string;
@@ -1571,8 +1572,33 @@ export const WorkspaceDashboard = ({
   }, [projectMenuOpen]);
 
   useEffect(() => {
+    const initializeProjectSession = async () => {
+      const savedProject = readStoredProjectMetadata()[containerId];
+      if (!savedProject?.projectId) return;
+
+      try {
+        const authHeaders = await getBackendAuthHeaders();
+        await fetch(`${API_BASE_URL}/containers/${containerId}/init-session`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...authHeaders,
+          },
+          body: JSON.stringify({
+            projectId: savedProject.projectId,
+            title: savedProject.title,
+            prompt: savedProject.prompt,
+            restoreLatest: false,
+          }),
+        });
+      } catch (error) {
+        console.warn("Project session initialization failed:", error);
+      }
+    };
+
     const loadChatHistory = async () => {
       try {
+        await initializeProjectSession();
         const response = await getChatHistory(containerId);
         if (response.success) {
           const urlParams = new URLSearchParams(window.location.search);

@@ -345,7 +345,8 @@ router.post("/:containerId/messages", async (req, res) => {
         message,
         safeAttachments,
         workload,
-        buildOptions
+        buildOptions,
+        account
       );
 
       for await (const chunk of messageStream) {
@@ -360,7 +361,8 @@ router.post("/:containerId/messages", async (req, res) => {
         message,
         safeAttachments,
         workload,
-        buildOptions
+        buildOptions,
+        account
       );
 
       res.json({

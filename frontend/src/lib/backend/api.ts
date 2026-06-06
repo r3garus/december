@@ -67,9 +67,11 @@ export interface ApiResponse<T> {
 
 export interface CreateContainerResponse {
   containerId: string;
+  projectId?: string;
   container: {
     id: string;
     containerId: string;
+    projectId?: string;
     status: string;
     port: number;
     url: string;
@@ -77,6 +79,12 @@ export interface CreateContainerResponse {
     createdAt: string;
     type: string;
   };
+}
+
+export interface CreateContainerOptions {
+  projectId?: string;
+  title?: string;
+  prompt?: string;
 }
 
 export interface StartContainerResponse {
@@ -151,10 +159,15 @@ export async function getContainers(): Promise<Container[]> {
   return response.containers;
 }
 
-export async function createContainer(): Promise<CreateContainerResponse> {
+export async function createContainer(
+  options: CreateContainerOptions = {}
+): Promise<CreateContainerResponse> {
   const response = await fetchApi<
     { success: boolean } & CreateContainerResponse
-  >("/containers/create", { method: "POST" });
+  >("/containers/create", {
+    method: "POST",
+    body: JSON.stringify(options),
+  });
   return response;
 }
 

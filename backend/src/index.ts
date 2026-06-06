@@ -16,6 +16,7 @@ const allowedOrigins = new Set([
   "https://www.klawpen.com",
   "https://builder.klawpen.com",
   "https://api.builder.klawpen.com",
+  "https://preview.builder.klawpen.com",
   "http://localhost:3000",
   "http://localhost:3001",
   "http://localhost:3010",
