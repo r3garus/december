@@ -234,6 +234,10 @@ export function buildPreviewUrl(containerId: string): string {
   return `${PUBLIC_PREVIEW_PROXY_ORIGIN}/preview/${containerId}/${tokenQuery}`;
 }
 
+export function getPreviewProxyOrigin(): string {
+  return PUBLIC_PREVIEW_PROXY_ORIGIN;
+}
+
 export function buildRawPreviewUrl(port: number): string {
   return `${process.env.PREVIEW_BASE_URL || "http://localhost"}:${port}`;
 }
@@ -729,6 +733,14 @@ export async function getPreviewRuntime(
     `http://host.docker.internal:${port}`,
     `http://172.17.0.1:${port}`,
   ].filter((url): url is string => Boolean(url));
+
+  console.log("Resolved preview runtime:", {
+    containerId,
+    port,
+    containerName,
+    publicOrigin: PUBLIC_PREVIEW_PROXY_ORIGIN,
+    upstreamUrls: Array.from(new Set(upstreamUrls)).slice(0, 5),
+  });
 
   return {
     containerInfo,

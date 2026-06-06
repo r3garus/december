@@ -221,7 +221,8 @@ const TIMEOUT_RECOVERY_ENABLED =
 const PREMIUM_FALLBACK_ENABLED =
   process.env.KLAWPEN_ENABLE_PREMIUM_FALLBACK === "true";
 const LOCAL_EMERGENCY_BUILD_ENABLED =
-  process.env.KLAWPEN_LOCAL_EMERGENCY_BUILD === "true";
+  process.env.KLAWPEN_LOCAL_EMERGENCY_BUILD === "true" &&
+  process.env.KLAWPEN_ALLOW_LOCAL_TEMPLATE_FALLBACK === "true";
 const STAGED_BUILD_ENABLED =
   process.env.KLAWPEN_STAGED_BUILD !== "false";
 const STAGED_BUILD_TIMEOUT_MS = readPositiveInt(
@@ -420,6 +421,12 @@ interface ImplementationBlueprint {
   }>;
   components: string[];
   contentFiles: string[];
+  stageFiles?: {
+    foundation: string[];
+    components: string[];
+    pages: string[];
+    polish: string[];
+  };
   visualSystem: {
     palette: string;
     typography: string;
@@ -1042,6 +1049,23 @@ function shouldRetryWithAlternateTokenParameter(error: unknown) {
 
 function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function getProviderLogContext(provider: AiProviderConfig) {
+  let baseHost = provider.baseUrl;
+
+  try {
+    baseHost = new URL(provider.baseUrl).host;
+  } catch {
+    // Keep the raw value; it is still useful in logs and contains no key.
+  }
+
+  return {
+    provider: provider.key,
+    envPrefix: provider.envPrefix,
+    model: provider.model,
+    baseHost,
+  };
 }
 
 function isTimeoutError(error: unknown) {
@@ -1718,6 +1742,20 @@ function getExecutableCodeOperations(assistantContent: string): CodeOperation[] 
     : extractMarkdownCodeOperations(assistantContent);
 }
 
+function getExecutableOperationsFingerprint(assistantContent: string): string {
+  return JSON.stringify(
+    getExecutableCodeOperations(assistantContent).map((operation) => ({
+      type: operation.type,
+      path: normalizeProjectPath(operation.path || ""),
+      from: normalizeProjectPath(operation.from || ""),
+      to: normalizeProjectPath(operation.to || ""),
+      packageName: operation.packageName || "",
+      version: operation.version || "",
+      content: operation.content || "",
+    }))
+  );
+}
+
 function isBroadBuildRequest(message: string, options: BuildOptions = {}) {
   if (!hasBuildIntent(message, options)) return false;
 
@@ -2157,6 +2195,22 @@ function hasFallbackArchitectureSignature(assistantContent: string): boolean {
   ].filter((pattern) => pattern.test(combined)).length;
 
   return fallbackPathHits >= 3 || fallbackNameHits >= 5;
+}
+
+function isForbiddenGenericAiOutputPath(filePath: string): boolean {
+  const normalizedPath = normalizeProjectPath(filePath);
+
+  return [
+    "src/components/generated-site.tsx",
+    "src/lib/generated-site-content.ts",
+    "src/lib/site-content.ts",
+    "src/config/site-routes.ts",
+    "src/components/site-motion.tsx",
+    "src/components/site-card.tsx",
+    "src/components/site-experience.tsx",
+    "src/components/site-shell.tsx",
+    "src/components/site-sections.tsx",
+  ].includes(normalizedPath);
 }
 
 function hasOverAbstractSectionArchitecture(assistantContent: string): boolean {
@@ -3891,23 +3945,41 @@ function shouldUseStagedBuild(
   );
 }
 
-function getStagedBuildStages(userMessage: string): StagedBuildStage[] {
+function getStagedBuildStages(
+  userMessage: string,
+  blueprint?: ImplementationBlueprint | null,
+  spec?: ArchitectSpec | null
+): StagedBuildStage[] {
   const turkish = isLikelyTurkish(userMessage);
+  const filePlan = getDomainFilePlan(userMessage, spec?.routes || blueprint?.routes);
+  const stageFiles = blueprint?.stageFiles || {
+    foundation: filePlan.foundation,
+    components: filePlan.components,
+    pages: filePlan.pages,
+    polish: filePlan.polish,
+  };
+  const routeFiles = (
+    stageFiles.pages?.length ? stageFiles.pages : filePlan.pages
+  ).slice(0, Math.max(5, BROAD_BUILD_MIN_ROUTES));
+  const contentFiles = (
+    stageFiles.foundation?.length ? stageFiles.foundation : filePlan.foundation
+  ).filter((filePath) => /^src\/(app|lib|data|config)\//.test(filePath));
+  const componentFiles = (
+    stageFiles.components?.length ? stageFiles.components : filePlan.components
+  ).filter((filePath) => /^src\/components\//.test(filePath));
+
   return [
     {
       key: "foundation",
       title: "foundation",
       percent: 38,
-      files: [
-        "src/app/globals.css",
-        "src/lib/site-content.ts",
-        "src/config/site-routes.ts",
-      ],
+      files: contentFiles,
       instructions: [
-        "Create only the project foundation files.",
+        "Create only the project foundation files using the exact domain-specific file plan below.",
+        `Required foundation files: ${contentFiles.join(", ")}.`,
         "Write/overwrite src/app/globals.css with the visual system, animation keyframes, responsive base rules, and refined typography scale.",
-        "Write/overwrite src/lib/site-content.ts with domain-specific customer-facing copy, page metadata, navigation, sections, FAQ, proof, and CTA data.",
-        "Write/overwrite src/config/site-routes.ts with real App Router route metadata.",
+        "Write/overwrite the listed lib/data/config files with domain-specific customer-facing copy, page metadata, navigation, route metadata, modules, FAQ, proof, and CTA data.",
+        "Do not use generic site-content.ts, site-routes.ts, generated-site-content.ts, or fallback scaffold filenames unless they are already in the required file plan.",
         turkish
           ? "All preview-visible copy in data files must be Turkish with correct Turkish characters."
           : "All preview-visible copy in data files must be English.",
@@ -3918,17 +3990,13 @@ function getStagedBuildStages(userMessage: string): StagedBuildStage[] {
       key: "components",
       title: "components",
       percent: 50,
-      files: [
-        "src/components/site-shell.tsx",
-        "src/components/site-sections.tsx",
-        "src/components/site-visuals.tsx",
-      ],
+      files: componentFiles,
       instructions: [
-        "Create reusable visual and layout components only.",
-        "Write/overwrite src/components/site-shell.tsx for navigation, page shell, footer, and route layout helpers.",
-        "Write/overwrite src/components/site-sections.tsx for hero, service/domain modules, workflow, proof, FAQ, and CTA sections.",
-        "Write/overwrite src/components/site-visuals.tsx for prompt-specific visual primitives, cards, badges, mockups, illustrations, or panels.",
-        "Use the content/config files from the foundation stage. Keep imports valid.",
+        "Create reusable visual and layout components only using the exact domain-specific component file plan below.",
+        `Required component files: ${componentFiles.join(", ")}.`,
+        "Include navigation/page shell, route layout helpers, hero, service/domain modules, workflow, proof, FAQ, conversion, cards, visual primitives, mockups, illustrations, panels, and motion primitives as appropriate.",
+        "Use the content/config/data files from the foundation stage. Keep imports valid.",
+        "Do not create site-shell.tsx/site-sections.tsx as a lazy generic scaffold unless they are already in the required file plan.",
         "Do not write page route files in this stage. Keep the response compact.",
       ].join("\n"),
     },
@@ -3936,15 +4004,10 @@ function getStagedBuildStages(userMessage: string): StagedBuildStage[] {
       key: "pages",
       title: "pages",
       percent: 62,
-      files: [
-        "src/app/page.tsx",
-        "src/app/services/page.tsx",
-        "src/app/process/page.tsx",
-        "src/app/contact/page.tsx",
-      ],
+      files: routeFiles,
       instructions: [
         "Create real App Router pages that import the shared components/content.",
-        "Write/overwrite src/app/page.tsx and at least three supporting route files that fit the user's domain.",
+        `Write/overwrite these route files: ${routeFiles.join(", ")}.`,
         "Each route must have route-specific content and composition; do not make thin wrappers around the same page.",
         "Navigation links must point to real routes.",
         "Do not rewrite foundation/component files unless an import fix is absolutely required.",
@@ -3954,15 +4017,11 @@ function getStagedBuildStages(userMessage: string): StagedBuildStage[] {
       key: "polish",
       title: "polish",
       percent: 72,
-      files: [
-        "src/components/site-interactions.tsx",
-        "src/app/layout.tsx",
-        "src/app/page.tsx",
-      ],
+      files: stageFiles.polish?.length ? stageFiles.polish : filePlan.polish,
       instructions: [
         "Apply final polish in a small patch.",
         "Add or refine purposeful motion, hover states, accessibility labels, responsive spacing, metadata, and import fixes.",
-        "Write/overwrite src/components/site-interactions.tsx only if useful.",
+        "Write/overwrite only the listed polish files or minimal import fixes needed for consistency.",
         "Patch src/app/layout.tsx metadata and any page/component files needed for consistency.",
         "Keep the response small and executable.",
       ].join("\n"),
@@ -4001,11 +4060,20 @@ async function createStagedBuildAttempt(params: {
 }): Promise<string | null> {
   if (!shouldUseStagedBuild(params.userMessage, params.options)) return null;
 
-  const stages = getStagedBuildStages(params.userMessage);
+  const stages = getStagedBuildStages(
+    params.userMessage,
+    params.implementationBlueprint || null,
+    params.architectSpec || null
+  );
   const visualArchetype = selectVisualArchetype(params.userMessage);
   const turkish = isLikelyTurkish(params.userMessage);
   const requirements = getBroadBuildRequirements(params.options);
   let accumulated = "";
+  let appliedStageCount = 0;
+  const canUsePartialStagedBuild = () =>
+    appliedStageCount > 0 &&
+    hasExecutableCodeOperations(accumulated) &&
+    getRouteWriteCount(getWriteOperations(accumulated)) > 0;
 
   for (const [stageIndex, stage] of stages.entries()) {
     await params.progress?.(
@@ -4018,6 +4086,7 @@ ${BUILDER_SYSTEM_PROMPT}
 You are Klawpen Core running in STAGED BUILD MODE.
 The project is intentionally generated across multiple smaller code packets to avoid provider timeouts.
 Return exactly one <dec-code> block with executable edit tags for this stage only. No markdown fences.
+Use the exact file plan for this stage; do not fall back to generic site-* scaffolding.
 
 GLOBAL QUALITY CONTRACT:
 - Build a professional, prompt-specific, multi-page Next.js App Router project.
@@ -4026,6 +4095,7 @@ GLOBAL QUALITY CONTRACT:
 - Avoid generic nav + centered hero + stats + three cards + FAQ skeletons.
 - Use refined proportions, responsive layout, purposeful motion, and domain-specific modules.
 - Do not use generated-site, GeneratedLandingPage, site-experience fallback architecture, or route wrappers around one shared generated page.
+- Do not create generic site-content.ts/site-routes.ts/site-shell.tsx/site-sections.tsx unless the stage file plan explicitly lists them.
 - Across all stages, target ${requirements.routes}+ real routes, ${requirements.components}+ shared components, ${requirements.contentFiles}+ content/config files, and ${requirements.writes}+ meaningful writes.
 
 STAGE ${stageIndex + 1}/${stages.length}: ${stage.title.toUpperCase()}
@@ -4059,6 +4129,13 @@ ${buildStagedContextSummary(accumulated)}
 `;
 
     try {
+      console.log("Starting staged AI build stage:", {
+        stage: stage.key,
+        containerId: params.containerId,
+        files: stage.files,
+        ...getProviderLogContext(params.provider),
+      });
+
       const response = await createAiChatText({
         provider: params.provider,
         system,
@@ -4072,10 +4149,24 @@ ${buildStagedContextSummary(accumulated)}
 
       if (!hasExecutableCodeOperations(response)) {
         console.warn(`Staged build ${stage.key} returned no executable edits.`);
-        return null;
+        return canUsePartialStagedBuild() ? accumulated : null;
       }
 
       const writtenFiles = getOperationFilePaths(response);
+      const forbiddenFiles = writtenFiles.filter(isForbiddenGenericAiOutputPath);
+      if (forbiddenFiles.length > 0) {
+        console.warn(`Staged build ${stage.key} used forbidden generic paths:`, {
+          forbiddenFiles,
+        });
+        return canUsePartialStagedBuild() ? accumulated : null;
+      }
+      const operationCount = getExecutableCodeOperations(response).length;
+      console.log("Staged AI build stage returned executable edits:", {
+        stage: stage.key,
+        containerId: params.containerId,
+        operationCount,
+        writtenFiles,
+      });
       await params.progress?.(
         getBuildProgressCopy(
           params.userMessage,
@@ -4100,6 +4191,10 @@ ${buildStagedContextSummary(accumulated)}
           });
         }
 
+        if (stageApplyResult.applied > 0) {
+          appliedStageCount += 1;
+        }
+
         await params.progress?.(
           getBuildProgressCopy(
             params.userMessage,
@@ -4116,7 +4211,7 @@ ${buildStagedContextSummary(accumulated)}
         `Staged build ${stage.key} failed:`,
         getErrorMessage(error)
       );
-      return null;
+      return canUsePartialStagedBuild() ? accumulated : null;
     }
   }
 
@@ -4143,8 +4238,24 @@ async function applyCodeOperations(
 
   if (!operations.length) return result;
 
+  const writeOperations = operations.filter((operation) => operation.type === "write");
+  const routeWrites = getRouteWriteCount(writeOperations);
+  const componentWrites = getComponentWriteCount(writeOperations);
+  const contentWrites = getContentWriteCount(writeOperations);
+  const totalWriteChars = writeOperations.reduce(
+    (total, operation) => total + (operation.content || "").length,
+    0
+  );
+
   console.log(
-    `Applying ${operations.length} AI code operation(s) to ${containerId}`
+    `Applying ${operations.length} AI code operation(s) to ${containerId}`,
+    {
+      routeWrites,
+      componentWrites,
+      contentWrites,
+      totalWriteChars,
+      files: getOperationFilePaths(assistantContent),
+    }
   );
 
   for (const operation of operations) {
@@ -4360,6 +4471,85 @@ function dedupeArchitectRoutes(routes: ArchitectSpecRoute[]) {
   return cleaned;
 }
 
+function toSafeSlug(value: string, fallback: string): string {
+  const slug = normalizePromptText(value)
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 42);
+
+  return slug || fallback;
+}
+
+function inferProjectDomainKey(userMessage: string): string {
+  const plain = normalizePromptText(userMessage);
+
+  if (/\b(restoran|restaurant|cafe|kafe|kahve|menu)\b/.test(plain)) return "menu";
+  if (/\b(dis|dent|ortodont|klinik|clinic|implant|tedavi)\b/.test(plain)) return "clinic";
+  if (/\b(avukat|hukuk|law|legal|case|dava)\b/.test(plain)) return "legal";
+  if (/\b(blog|magazin|magazine|haber|news|article|makale|yazar|icerik|publishing|yayin)\b/.test(plain)) return "editorial";
+  if (/\b(alisveris|avm|magaza|mall|shopping|store|shop|ecommerce|marketplace|pazar|catalog|urun)\b/.test(plain)) return "commerce";
+  if (/\b(fitness|gym|spor|pilates|trainer|workout)\b/.test(plain)) return "fitness";
+  if (/\b(hotel|otel|room|oda|rezervasyon|reservation)\b/.test(plain)) return "hotel";
+  if (/\b(dashboard|panel|crm|analytics|rapor|workflow|operasyon|admin)\b/.test(plain)) return "ops";
+  if (/\b(api|developer|docs|sdk|terminal|backend|integration|entegrasyon)\b/.test(plain)) return "developer";
+
+  const candidate = plain
+    .split(/\s+/)
+    .map((word) => word.trim())
+    .filter((word) => word.length > 2 && !GENERIC_BUILD_WORDS.has(word))
+    .slice(0, 2)
+    .join("-");
+
+  return toSafeSlug(candidate, "brand");
+}
+
+function getDomainFilePlan(
+  userMessage: string,
+  routes: Array<Partial<ArchitectSpecRoute> & { path: string }> = [
+    { path: "/" },
+    { path: "/services" },
+    { path: "/process" },
+    { path: "/about" },
+    { path: "/contact" },
+  ]
+) {
+  const domainKey = inferProjectDomainKey(userMessage);
+  const safeRoutes = routes.map((route) => ({
+    path: route.path,
+    purpose: route.purpose || "Support the customer journey",
+    visibleTitle: route.visibleTitle || route.path,
+  }));
+  const pageFiles = dedupeArchitectRoutes(safeRoutes)
+    .slice(0, Math.max(5, DEEP_BUILD_MIN_ROUTES))
+    .map((route) => routePathToPageFile(route.path));
+  const foundation = [
+    "src/app/globals.css",
+    `src/lib/${domainKey}-content.ts`,
+    `src/data/${domainKey}-modules.ts`,
+    `src/config/${domainKey}-routes.ts`,
+    `src/config/${domainKey}-design.ts`,
+  ];
+  const components = [
+    `src/components/${domainKey}-shell.tsx`,
+    `src/components/${domainKey}-sections.tsx`,
+    `src/components/${domainKey}-visuals.tsx`,
+    `src/components/${domainKey}-cards.tsx`,
+    `src/components/${domainKey}-conversion.tsx`,
+    `src/components/${domainKey}-motion.tsx`,
+  ];
+  const pages = Array.from(new Set(["src/app/page.tsx", ...pageFiles]));
+  const motionComponent = components[5] || `src/components/${domainKey}-motion.tsx`;
+
+  return {
+    domainKey,
+    foundation,
+    components,
+    pages,
+    polish: ["src/app/layout.tsx", "src/app/globals.css", motionComponent],
+    all: [...foundation, ...components, ...pages],
+  };
+}
+
 function createLocalArchitectSpec(userMessage: string): ArchitectSpec {
   const turkish = isLikelyTurkish(userMessage);
   const plain = normalizePromptText(userMessage);
@@ -4428,6 +4618,14 @@ function createLocalArchitectSpec(userMessage: string): ArchitectSpec {
   const proofPath = isBlog ? "/topics" : isCommerce ? "/campaigns" : isSaas ? "/pricing" : "/process";
   const aboutPath = isBlog ? "/publication" : isCommerce ? "/visit-plan" : "/about";
   const contactPath = isBlog ? "/newsletter" : "/contact";
+
+  const filePlan = getDomainFilePlan(userMessage, [
+    { path: "/", purpose: "", visibleTitle: routeLabels.home },
+    { path: servicePath, purpose: "", visibleTitle: routeLabels.services },
+    { path: proofPath, purpose: "", visibleTitle: routeLabels.proof },
+    { path: aboutPath, purpose: "", visibleTitle: routeLabels.about },
+    { path: contactPath, purpose: "", visibleTitle: routeLabels.contact },
+  ]);
 
   return {
     projectType: `${profile.sector} ${isSaas ? "product" : "website"} prototype`,
@@ -4520,20 +4718,10 @@ function createLocalArchitectSpec(userMessage: string): ArchitectSpec {
           "Hover/press feedback on cards",
           "Noticeable but lightweight route and section motion",
         ],
-    components: [
-      "src/components/site-shell.tsx",
-      "src/components/hero-section.tsx",
-      "src/components/section-card.tsx",
-      "src/components/domain-modules.tsx",
-      "src/components/page-transition.tsx",
-      "src/components/conversion-panel.tsx",
-    ],
-    contentFiles: [
-      "src/lib/site-content.ts",
-      "src/lib/site-modules.ts",
-      "src/config/site-routes.ts",
-      "src/config/design-system.ts",
-    ],
+    components: filePlan.components,
+    contentFiles: filePlan.foundation.filter((filePath) =>
+      /^src\/(lib|data|config)\//.test(filePath)
+    ),
     acceptanceCriteria: turkish
       ? [
           "En az 5 gerçek App Router route dosyası oluşturulmalı.",
@@ -4646,7 +4834,7 @@ Schema:
   "designDirection": "specific visual direction",
   "animationPlan": ["short motion requirement"],
   "components": ["src/components/example.tsx"],
-  "contentFiles": ["src/lib/site-content.ts", "src/config/site-routes.ts"],
+  "contentFiles": ["src/lib/domain-content.ts", "src/config/domain-routes.ts"],
   "acceptanceCriteria": ["testable criterion"]
 }
 Rules:
@@ -4655,7 +4843,7 @@ Rules:
 - Routes must match the user's domain, not a generic SaaS template.
 - Follow the visual archetype from LOCAL_FALLBACK_SPEC unless there is a clearly better domain-specific reason to choose a different one.
 - The designDirection must explicitly describe composition, palette, typography, motion, and forbidden template patterns.
-- Prefer reusable components and content/config files.
+- Prefer reusable components and content/config files with domain-specific names from LOCAL_FALLBACK_SPEC.
 - For broad builds, specify 4-5 real routes, at least 3 component files, and at least 2 content/config/data files.
 - Never specify src/components/generated-site.tsx, src/lib/generated-site-content.ts, or GeneratedLandingPage.
 - The spec must protect quality without making tiny edits slow; this is only for power builds.
@@ -4707,6 +4895,7 @@ function createLocalImplementationBlueprint(
   const fallbackSpec = spec || createLocalArchitectSpec(userMessage);
   const visualArchetype = selectVisualArchetype(userMessage);
   const requirements = getBroadBuildRequirements({ qualityMode: "power", powerMode: true } as BuildOptions);
+  const filePlan = getDomainFilePlan(userMessage, fallbackSpec.routes);
 
   return {
     routes: fallbackSpec.routes.slice(0, Math.max(5, requirements.routes)).map((route) => ({
@@ -4718,20 +4907,16 @@ function createLocalImplementationBlueprint(
       ],
       uniqueModule: `${route.visibleTitle} route-specific experience`,
     })),
-    components: [
-      "src/components/site-shell.tsx",
-      "src/components/hero-section.tsx",
-      "src/components/domain-modules.tsx",
-      "src/components/section-card.tsx",
-      "src/components/page-transition.tsx",
-      "src/components/conversion-panel.tsx",
-    ],
-    contentFiles: [
-      "src/lib/site-content.ts",
-      "src/lib/site-modules.ts",
-      "src/config/site-routes.ts",
-      "src/config/design-system.ts",
-    ],
+    components: filePlan.components,
+    contentFiles: filePlan.foundation.filter((filePath) =>
+      /^src\/(lib|data|config)\//.test(filePath)
+    ),
+    stageFiles: {
+      foundation: filePlan.foundation,
+      components: filePlan.components,
+      pages: filePlan.pages,
+      polish: filePlan.polish,
+    },
     visualSystem: {
       palette: visualArchetype.palette,
       typography: visualArchetype.typography,
@@ -4789,11 +4974,38 @@ function sanitizeImplementationBlueprint(
   const qualityChecklist = Array.isArray(value?.qualityChecklist)
     ? value.qualityChecklist.map(String).filter(Boolean).slice(0, 12)
     : [];
+  const readStageFiles = (
+    key: keyof NonNullable<ImplementationBlueprint["stageFiles"]>
+  ) => {
+    const stageFiles = value?.stageFiles as
+      | Partial<NonNullable<ImplementationBlueprint["stageFiles"]>>
+      | undefined;
+    const files = stageFiles?.[key];
+
+    return Array.isArray(files)
+      ? files.map(String).filter(Boolean).slice(0, 10)
+      : [];
+  };
 
   return {
     routes: dedupedRoutes.length >= 5 ? dedupedRoutes.slice(0, 7) : fallback.routes,
     components: components.length >= 6 ? components : fallback.components,
     contentFiles: contentFiles.length >= 4 ? contentFiles : fallback.contentFiles,
+    stageFiles: {
+      foundation: readStageFiles("foundation").length
+        ? readStageFiles("foundation")
+        : fallback.stageFiles?.foundation || fallback.contentFiles,
+      components: readStageFiles("components").length
+        ? readStageFiles("components")
+        : fallback.stageFiles?.components || fallback.components,
+      pages: readStageFiles("pages").length
+        ? readStageFiles("pages")
+        : fallback.stageFiles?.pages ||
+          fallback.routes.map((route) => routePathToPageFile(route.path)),
+      polish: readStageFiles("polish").length
+        ? readStageFiles("polish")
+        : fallback.stageFiles?.polish || ["src/app/layout.tsx"],
+    },
     visualSystem: {
       palette: String(visualSystem.palette || fallback.visualSystem.palette).slice(0, 240),
       typography: String(visualSystem.typography || fallback.visualSystem.typography).slice(0, 240),
@@ -4837,6 +5049,12 @@ Schema:
   "routes": [{"path": "/", "sections": ["section names"], "uniqueModule": "route-specific module"}],
   "components": ["src/components/example.tsx"],
   "contentFiles": ["src/lib/site-content.ts"],
+  "stageFiles": {
+    "foundation": ["src/app/globals.css", "src/lib/domain-content.ts"],
+    "components": ["src/components/domain-shell.tsx"],
+    "pages": ["src/app/page.tsx", "src/app/domain/page.tsx"],
+    "polish": ["src/app/layout.tsx"]
+  },
   "visualSystem": {"palette": "...", "typography": "...", "layoutSignature": "...", "motion": "..."},
   "qualityChecklist": ["testable item"]
 }
@@ -4844,6 +5062,7 @@ Rules:
 - Visible UI language must be ${turkish ? "Turkish with correct Turkish characters" : "English"}.
 - Plan ${requirements.routes}-7 real routes. Home must be "/".
 - Plan at least ${requirements.components} shared component files and ${requirements.contentFiles} content/config/data files.
+- Use domain-specific file names from LOCAL_BLUEPRINT_FALLBACK.stageFiles instead of generic site-content/site-routes/site-shell names.
 - Every route needs a distinct job and a route-specific module; no thin wrappers around the same landing component.
 - The visual system must specify a screenshot-level layout signature, not generic words like modern/premium.
 - Avoid the repeated nav + centered hero + stats + three cards + FAQ skeleton.
@@ -4932,6 +5151,15 @@ function validateBuildAgainstSpec(params: {
   if (hasFallbackArchitectureSignature(assistantContent)) {
     issues.push(
       "Implementation reuses the generic fallback architecture signature; generate prompt-specific architecture instead."
+    );
+  }
+
+  const forbiddenGenericPaths = getOperationFilePaths(assistantContent).filter(
+    isForbiddenGenericAiOutputPath
+  );
+  if (forbiddenGenericPaths.length > 0) {
+    issues.push(
+      `Implementation writes forbidden generic scaffold paths (${forbiddenGenericPaths.join(", ")}); use prompt/domain-specific filenames instead.`
     );
   }
 
@@ -5077,6 +5305,8 @@ Hard repair requirements for broad builds:
 - Include ${requirements.components}+ shared component files and ${requirements.contentFiles}+ content/config/data files.
 - Target ${requirements.writtenBytes}+ written characters across the edit set for deep broad builds.
 - Do not use src/components/generated-site.tsx, src/lib/generated-site-content.ts, generated-site-content, GeneratedLandingPage, or thin route wrappers around one shared generated page.
+- Do not use generic site-content.ts, site-routes.ts, site-shell.tsx, site-sections.tsx, or site-experience.tsx unless the implementation blueprint explicitly requires them.
+- Prefer the domain-specific files listed in IMPLEMENTATION_BLUEPRINT.stageFiles/components/contentFiles.
 - If the previous draft used that scaffold, replace the architecture instead of patching it cosmetically.
 
 USER_REQUEST:
@@ -6203,6 +6433,7 @@ async function buildAssistantMessageFromSession(
   let assistantContent: string;
   let lastExecutableDraft: string | null = null;
   let stagedAppliedInline = false;
+  let stagedInlineFingerprint: string | null = null;
   const preserveExecutableDraft = (candidate: string, label: string) => {
     if (hasExecutableCodeOperations(candidate)) {
       lastExecutableDraft = candidate;
@@ -6235,6 +6466,13 @@ async function buildAssistantMessageFromSession(
     );
   } else {
     const provider = selectAiProvider(workloadEstimate);
+    console.log("AI builder request selected provider:", {
+      containerId,
+      workloadTier: workloadEstimate?.tier || "unknown",
+      coreCredits: workloadEstimate?.coreCredits || "unknown",
+      options: resolvedOptions,
+      ...getProviderLogContext(provider),
+    });
 
     const recentMessages = session.messages
       .slice(-8)
@@ -6342,6 +6580,23 @@ ${codeContext}`;
 
       if (stagedContent) {
         assistantContent = stagedContent;
+        stagedInlineFingerprint = getExecutableOperationsFingerprint(stagedContent);
+        const stagedWrites = getWriteOperations(stagedContent);
+        console.log("Using staged AI build output:", {
+          containerId,
+          writeCount: stagedWrites.length,
+          routeWrites: getRouteWriteCount(stagedWrites),
+          componentWrites: getComponentWriteCount(stagedWrites),
+          contentWrites: getContentWriteCount(stagedWrites),
+          totalWriteChars: stagedWrites.reduce(
+            (total, operation) => total + (operation.content || "").length,
+            0
+          ),
+          fingerprint: getExecutableOperationsFingerprint(stagedContent).slice(
+            0,
+            120
+          ),
+        });
       } else {
         assistantContent = await withProgressPulse({
           task: createBuilderResponse(
@@ -6448,6 +6703,19 @@ ${codeContext}`;
           "AI pipeline returned no executable edit operations after repair"
         );
       }
+      const finalWrites = getWriteOperations(assistantContent);
+      console.log("AI builder final executable output ready:", {
+        containerId,
+        usedStagedBuild,
+        writeCount: finalWrites.length,
+        routeWrites: getRouteWriteCount(finalWrites),
+        componentWrites: getComponentWriteCount(finalWrites),
+        contentWrites: getContentWriteCount(finalWrites),
+        totalWriteChars: finalWrites.reduce(
+          (total, operation) => total + (operation.content || "").length,
+          0
+        ),
+      });
     } catch (error) {
       console.error(
         "AI builder generation failed; trying recovery build before local fallback:",
@@ -6511,23 +6779,34 @@ ${codeContext}`;
   }
 
   assistantContent = appendChangeSummaryTag(assistantContent, fileContentTree);
+  const currentExecutableFingerprint =
+    getExecutableOperationsFingerprint(assistantContent);
+  const stagedInlineStillCurrent =
+    stagedAppliedInline &&
+    Boolean(stagedInlineFingerprint) &&
+    stagedInlineFingerprint === currentExecutableFingerprint;
+
+  if (stagedAppliedInline && !stagedInlineStillCurrent) {
+    console.warn(
+      "Staged build was applied inline, but later repair changed executable edits; applying final repaired output."
+    );
+  }
+
   await progress?.(
     getBuildProgressCopy(
       userMessage,
-      stagedAppliedInline ? "refresh" : "apply",
+      "apply",
       86,
       getOperationFilePaths(assistantContent)
     )
   );
-  const applyResult = stagedAppliedInline
-    ? { applied: getExecutableCodeOperations(assistantContent).length, failed: [] }
-    : await applyCodeOperations(
-        containerId,
-        assistantContent,
-        userMessage,
-        progress,
-        resolvedOptions
-      );
+  const applyResult = await applyCodeOperations(
+    containerId,
+    assistantContent,
+    userMessage,
+    progress,
+    resolvedOptions
+  );
 
   if (account && applyResult.applied > 0) {
     try {

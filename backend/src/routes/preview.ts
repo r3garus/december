@@ -252,6 +252,12 @@ router.use("/:containerId", async (req, res) => {
         res.send(responseBuffer);
         return;
       } catch (error) {
+        console.warn("Preview upstream attempt failed:", {
+          containerId,
+          upstreamBase,
+          path,
+          error: error instanceof Error ? error.message : error,
+        });
         lastError = error;
       }
     }

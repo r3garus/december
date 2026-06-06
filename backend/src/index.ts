@@ -4,6 +4,8 @@ import accountRoutes from "./routes/account";
 import chatRoutes from "./routes/chat";
 import containerRoutes from "./routes/containers";
 import previewRoutes from "./routes/preview";
+import { getAiProviders } from "./services/aiProvider";
+import { getPreviewProxyOrigin } from "./services/docker";
 
 const app = express();
 
@@ -160,7 +162,76 @@ app.get("/health", (_req, res) => {
   res.json({
     success: true,
     service: "klawpen-builder-api",
-    marker: "professional-build-flow-v1",
+    marker: "professional-build-flow-v2",
+    timestamp: new Date().toISOString(),
+  });
+});
+
+app.get("/diagnostics", (_req, res) => {
+  if (process.env.KLAWPEN_DIAGNOSTICS_ENABLED !== "true") {
+    res.status(404).json({
+      success: false,
+      error: "Not found",
+    });
+    return;
+  }
+
+  const providers = getAiProviders().map((provider) => {
+    let baseHost = provider.baseUrl;
+    try {
+      baseHost = new URL(provider.baseUrl).host;
+    } catch {
+      // Keep raw host string if URL parsing fails.
+    }
+
+    return {
+      key: provider.key,
+      envPrefix: provider.envPrefix,
+      model: provider.model,
+      baseHost,
+      dailyRequestLimit: provider.dailyRequestLimit,
+      priority: provider.priority,
+      hasApiKey: Boolean(provider.apiKey),
+    };
+  });
+
+  res.json({
+    success: true,
+    service: "klawpen-builder-api",
+    marker: "professional-build-flow-v2",
+    build: {
+      stagedBuild: process.env.KLAWPEN_STAGED_BUILD !== "false",
+      localEmergencyBuild:
+        process.env.KLAWPEN_LOCAL_EMERGENCY_BUILD === "true" &&
+        process.env.KLAWPEN_ALLOW_LOCAL_TEMPLATE_FALLBACK === "true",
+      localEmergencyEnvValue:
+        process.env.KLAWPEN_LOCAL_EMERGENCY_BUILD || "(unset)",
+      localTemplateFallbackAllowed:
+        process.env.KLAWPEN_ALLOW_LOCAL_TEMPLATE_FALLBACK || "(unset)",
+      premiumFallback: process.env.KLAWPEN_ENABLE_PREMIUM_FALLBACK === "true",
+      timeoutRecovery: process.env.KLAWPEN_TIMEOUT_RECOVERY !== "false",
+      architectSpec: process.env.KLAWPEN_ENABLE_ARCHITECT_SPEC === "true",
+    },
+    preview: {
+      publicOrigin: getPreviewProxyOrigin(),
+      upstreamTemplate: process.env.PREVIEW_UPSTREAM_URL_TEMPLATE || "(unset)",
+      upstreamHost: process.env.PREVIEW_UPSTREAM_HOST || "(unset)",
+      baseUrl: process.env.PREVIEW_BASE_URL || "(unset)",
+    },
+    ai: {
+      providerCount: providers.length,
+      providers,
+      deepBuildModel:
+        process.env.KLAWPEN_DEEP_BUILD_MODEL ||
+        process.env.AI_DEEP_BUILD_MODEL ||
+        process.env.AI_BUILDER_MODEL ||
+        "(default provider model)",
+      tokenParameter: process.env.AI_CHAT_TOKEN_PARAMETER || "(default)",
+      reasoningEffort:
+        process.env.AI_REASONING_EFFORT ||
+        process.env.KLAWPEN_REASONING_EFFORT ||
+        "(unset)",
+    },
     timestamp: new Date().toISOString(),
   });
 });
