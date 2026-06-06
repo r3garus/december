@@ -222,6 +222,16 @@ const PREMIUM_FALLBACK_ENABLED =
   process.env.KLAWPEN_ENABLE_PREMIUM_FALLBACK === "true";
 const LOCAL_EMERGENCY_BUILD_ENABLED =
   process.env.KLAWPEN_LOCAL_EMERGENCY_BUILD !== "false";
+const STAGED_BUILD_ENABLED =
+  process.env.KLAWPEN_STAGED_BUILD !== "false";
+const STAGED_BUILD_TIMEOUT_MS = readPositiveInt(
+  process.env.AI_STAGED_BUILD_TIMEOUT_MS,
+  120_000
+);
+const STAGED_BUILD_MAX_OUTPUT_TOKENS = readPositiveInt(
+  process.env.AI_STAGED_BUILD_MAX_OUTPUT_TOKENS,
+  18_000
+);
 const BROAD_BUILD_MIN_WRITES = readPositiveInt(
   process.env.KLAWPEN_MIN_BROAD_WRITES,
   8
@@ -3859,6 +3869,234 @@ function getOperationFilePaths(assistantContent: string): string[] {
   return Array.from(paths).slice(0, 8);
 }
 
+type StagedBuildStageKey = "foundation" | "components" | "pages" | "polish";
+
+interface StagedBuildStage {
+  key: StagedBuildStageKey;
+  title: string;
+  percent: number;
+  files: string[];
+  instructions: string;
+}
+
+function shouldUseStagedBuild(
+  userMessage: string,
+  options: BuildOptions = {}
+) {
+  return (
+    STAGED_BUILD_ENABLED &&
+    hasBuildIntent(userMessage, options) &&
+    isBroadBuildRequest(userMessage, options) &&
+    !isExplicitSinglePageRequest(userMessage)
+  );
+}
+
+function getStagedBuildStages(userMessage: string): StagedBuildStage[] {
+  const turkish = isLikelyTurkish(userMessage);
+  return [
+    {
+      key: "foundation",
+      title: "foundation",
+      percent: 38,
+      files: [
+        "src/app/globals.css",
+        "src/lib/site-content.ts",
+        "src/config/site-routes.ts",
+      ],
+      instructions: [
+        "Create only the project foundation files.",
+        "Write/overwrite src/app/globals.css with the visual system, animation keyframes, responsive base rules, and refined typography scale.",
+        "Write/overwrite src/lib/site-content.ts with domain-specific customer-facing copy, page metadata, navigation, sections, FAQ, proof, and CTA data.",
+        "Write/overwrite src/config/site-routes.ts with real App Router route metadata.",
+        turkish
+          ? "All preview-visible copy in data files must be Turkish with correct Turkish characters."
+          : "All preview-visible copy in data files must be English.",
+        "Do not write React pages/components in this stage except config/content. Keep this response compact.",
+      ].join("\n"),
+    },
+    {
+      key: "components",
+      title: "components",
+      percent: 50,
+      files: [
+        "src/components/site-shell.tsx",
+        "src/components/site-sections.tsx",
+        "src/components/site-visuals.tsx",
+      ],
+      instructions: [
+        "Create reusable visual and layout components only.",
+        "Write/overwrite src/components/site-shell.tsx for navigation, page shell, footer, and route layout helpers.",
+        "Write/overwrite src/components/site-sections.tsx for hero, service/domain modules, workflow, proof, FAQ, and CTA sections.",
+        "Write/overwrite src/components/site-visuals.tsx for prompt-specific visual primitives, cards, badges, mockups, illustrations, or panels.",
+        "Use the content/config files from the foundation stage. Keep imports valid.",
+        "Do not write page route files in this stage. Keep the response compact.",
+      ].join("\n"),
+    },
+    {
+      key: "pages",
+      title: "pages",
+      percent: 62,
+      files: [
+        "src/app/page.tsx",
+        "src/app/services/page.tsx",
+        "src/app/process/page.tsx",
+        "src/app/contact/page.tsx",
+      ],
+      instructions: [
+        "Create real App Router pages that import the shared components/content.",
+        "Write/overwrite src/app/page.tsx and at least three supporting route files that fit the user's domain.",
+        "Each route must have route-specific content and composition; do not make thin wrappers around the same page.",
+        "Navigation links must point to real routes.",
+        "Do not rewrite foundation/component files unless an import fix is absolutely required.",
+      ].join("\n"),
+    },
+    {
+      key: "polish",
+      title: "polish",
+      percent: 72,
+      files: [
+        "src/components/site-interactions.tsx",
+        "src/app/layout.tsx",
+        "src/app/page.tsx",
+      ],
+      instructions: [
+        "Apply final polish in a small patch.",
+        "Add or refine purposeful motion, hover states, accessibility labels, responsive spacing, metadata, and import fixes.",
+        "Write/overwrite src/components/site-interactions.tsx only if useful.",
+        "Patch src/app/layout.tsx metadata and any page/component files needed for consistency.",
+        "Keep the response small and executable.",
+      ].join("\n"),
+    },
+  ];
+}
+
+function buildStagedContextSummary(assistantContent: string) {
+  const writes = getWriteOperations(assistantContent);
+  if (!writes.length) return "No previous staged files yet.";
+
+  return writes
+    .map((operation) => {
+      const content = operation.content || "";
+      return [
+        `FILE: ${normalizeProjectPath(operation.path || "")}`,
+        `CHARS: ${content.length}`,
+        `PREVIEW:`,
+        clipText(content, 2_200),
+      ].join("\n");
+    })
+    .join("\n\n---\n\n");
+}
+
+async function createStagedBuildAttempt(params: {
+  userMessage: string;
+  plannerBrief: string;
+  architectSpec?: ArchitectSpec | null;
+  implementationBlueprint?: ImplementationBlueprint | null;
+  codeContext: string;
+  recentMessages: string;
+  provider: AiProviderConfig;
+  options?: BuildOptions;
+  progress?: ProgressReporter;
+}): Promise<string | null> {
+  if (!shouldUseStagedBuild(params.userMessage, params.options)) return null;
+
+  const stages = getStagedBuildStages(params.userMessage);
+  const visualArchetype = selectVisualArchetype(params.userMessage);
+  const turkish = isLikelyTurkish(params.userMessage);
+  const requirements = getBroadBuildRequirements(params.options);
+  let accumulated = "";
+
+  for (const [stageIndex, stage] of stages.entries()) {
+    await params.progress?.(
+      getBuildProgressCopy(params.userMessage, "draft", stage.percent, stage.files)
+    );
+
+    const system = `
+${BUILDER_SYSTEM_PROMPT}
+
+You are Klawpen Core running in STAGED BUILD MODE.
+The project is intentionally generated across multiple smaller code packets to avoid provider timeouts.
+Return exactly one <dec-code> block with executable edit tags for this stage only. No markdown fences.
+
+GLOBAL QUALITY CONTRACT:
+- Build a professional, prompt-specific, multi-page Next.js App Router project.
+- Visible UI language must be ${turkish ? "Turkish with correct Turkish characters" : "English"}.
+- Customer-facing copy must sound like the real business/product/publication, not Klawpen, an AI, a builder, or a freelancer.
+- Avoid generic nav + centered hero + stats + three cards + FAQ skeletons.
+- Use refined proportions, responsive layout, purposeful motion, and domain-specific modules.
+- Do not use generated-site, GeneratedLandingPage, site-experience fallback architecture, or route wrappers around one shared generated page.
+- Across all stages, target ${requirements.routes}+ real routes, ${requirements.components}+ shared components, ${requirements.contentFiles}+ content/config files, and ${requirements.writes}+ meaningful writes.
+
+STAGE ${stageIndex + 1}/${stages.length}: ${stage.title.toUpperCase()}
+${stage.instructions}
+
+VISUAL ARCHETYPE:
+${formatVisualArchetype(visualArchetype)}
+`;
+
+    const user = `
+USER REQUEST:
+${params.userMessage}
+
+PLANNER BRIEF:
+${clipText(params.plannerBrief, 7_000)}
+
+ARCHITECT SPEC:
+${clipText(formatArchitectSpec(params.architectSpec || null), 5_000)}
+
+IMPLEMENTATION BLUEPRINT:
+${clipText(formatImplementationBlueprint(params.implementationBlueprint || null), 5_000)}
+
+RECENT CONVERSATION:
+${clipText(params.recentMessages || "No recent conversation.", 4_000)}
+
+CURRENT CODEBASE SNAPSHOT:
+${clipText(params.codeContext, 12_000)}
+
+PREVIOUS STAGED OUTPUT SUMMARY:
+${buildStagedContextSummary(accumulated)}
+`;
+
+    try {
+      const response = await createAiChatText({
+        provider: params.provider,
+        system,
+        user,
+        temperature: Math.max(aiTemperature, 0.2),
+        retries: 0,
+        timeoutMs: STAGED_BUILD_TIMEOUT_MS,
+        maxOutputTokens: STAGED_BUILD_MAX_OUTPUT_TOKENS,
+        modelOverride: getBuilderModelOverride(params.options),
+      });
+
+      if (!hasExecutableCodeOperations(response)) {
+        console.warn(`Staged build ${stage.key} returned no executable edits.`);
+        return null;
+      }
+
+      const writtenFiles = getOperationFilePaths(response);
+      await params.progress?.(
+        getBuildProgressCopy(
+          params.userMessage,
+          "apply",
+          Math.min(82, stage.percent + 6),
+          writtenFiles.length ? writtenFiles : stage.files
+        )
+      );
+
+      accumulated = [accumulated, response].filter(Boolean).join("\n\n");
+    } catch (error) {
+      console.warn(
+        `Staged build ${stage.key} failed:`,
+        getErrorMessage(error)
+      );
+      return null;
+    }
+  }
+
+  return hasExecutableCodeOperations(accumulated) ? accumulated : null;
+}
+
 async function applyCodeOperations(
   containerId: string,
   assistantContent: string,
@@ -6059,28 +6297,47 @@ ${codeContext}`;
     const flattenedInput = buildFlattenedInput(openaiMessages);
 
     try {
-      assistantContent = await withProgressPulse({
-        task: createBuilderResponse(
-          flattenedInput,
-          provider,
-          userMessage,
-          resolvedOptions,
-          {
-            timeoutMs: AI_PRIMARY_BUILD_TIMEOUT_MS,
-            maxOutputTokens: AI_BUILDER_MAX_OUTPUT_TOKENS,
-          }
-        ),
-        progress,
+      const stagedContent = await createStagedBuildAttempt({
         userMessage,
-        stage: "draft",
-        percents: [42, 46, 50, 54, 58, 61, 63, 65, 67, 68],
-        intervalMs: 24_000,
+        plannerBrief,
+        architectSpec,
+        implementationBlueprint,
+        codeContext,
+        recentMessages,
+        provider,
+        options: resolvedOptions,
+        progress,
       });
+
+      const usedStagedBuild = Boolean(stagedContent);
+
+      if (stagedContent) {
+        assistantContent = stagedContent;
+      } else {
+        assistantContent = await withProgressPulse({
+          task: createBuilderResponse(
+            flattenedInput,
+            provider,
+            userMessage,
+            resolvedOptions,
+            {
+              timeoutMs: AI_PRIMARY_BUILD_TIMEOUT_MS,
+              maxOutputTokens: AI_BUILDER_MAX_OUTPUT_TOKENS,
+            }
+          ),
+          progress,
+          userMessage,
+          stage: "draft",
+          percents: [42, 46, 50, 54, 58, 61, 63, 65, 67, 68],
+          intervalMs: 24_000,
+        });
+      }
       assistantContent = preserveExecutableDraft(
         assistantContent,
-        "Primary AI build"
+        usedStagedBuild ? "Staged AI build" : "Primary AI build"
       );
 
+      if (!usedStagedBuild) {
       try {
         await progress?.(getBuildProgressCopy(userMessage, "review", 62));
         assistantContent = await improveWithCriticLoop({
@@ -6105,8 +6362,9 @@ ${codeContext}`;
         );
         if (lastExecutableDraft) assistantContent = lastExecutableDraft;
       }
+      }
 
-      if (shouldUsePowerBuildLayer(resolvedOptions)) {
+      if (!usedStagedBuild && shouldUsePowerBuildLayer(resolvedOptions)) {
         try {
           await progress?.(getBuildProgressCopy(userMessage, "validate", 70));
           assistantContent = await repairSpecValidationIssues({
