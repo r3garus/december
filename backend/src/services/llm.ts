@@ -26,11 +26,11 @@ const aiMinQualityScore = aiSdkConfig.minQualityScore ?? 92;
 const aiMaxCriticRounds = aiSdkConfig.maxCriticRounds ?? 4;
 const AI_REQUEST_TIMEOUT_MS = readPositiveInt(
   process.env.AI_REQUEST_TIMEOUT_MS,
-  240_000
+  90_000
 );
 const AI_BUILDER_TIMEOUT_MS = readPositiveInt(
   process.env.AI_BUILDER_TIMEOUT_MS,
-  900_000
+  240_000
 );
 const AI_REQUEST_MAX_OUTPUT_TOKENS = readPositiveInt(
   process.env.AI_REQUEST_MAX_OUTPUT_TOKENS,
@@ -38,7 +38,7 @@ const AI_REQUEST_MAX_OUTPUT_TOKENS = readPositiveInt(
 );
 const AI_BUILDER_MAX_OUTPUT_TOKENS = readPositiveInt(
   process.env.AI_BUILDER_MAX_OUTPUT_TOKENS,
-  70_000
+  42_000
 );
 const AI_PLANNER_MAX_OUTPUT_TOKENS = readPositiveInt(
   process.env.AI_PLANNER_MAX_OUTPUT_TOKENS,
@@ -4667,6 +4667,7 @@ async function createBuilderResponse(
         "Raise the UI quality bar: build polished navigation, rich routes, responsive behavior, refined typography, deliberate color, animations, states, and product-specific copy. Avoid simple toy layouts, heavy font spam, and AI-looking oversized blocks.",
       ].join("\n"),
       temperature: Math.max(aiTemperature, 0.22),
+      retries: 0,
       timeoutMs: AI_BUILDER_TIMEOUT_MS,
       maxOutputTokens: AI_BUILDER_MAX_OUTPUT_TOKENS,
       modelOverride,
@@ -4757,7 +4758,7 @@ ${clipText(params.codeContext, 45_000)}
       system,
       user,
       temperature: Math.max(aiTemperature, 0.24),
-      retries: Math.max(aiMaxRetries, 2),
+      retries: 0,
       timeoutMs: AI_BUILDER_TIMEOUT_MS,
       maxOutputTokens: AI_BUILDER_MAX_OUTPUT_TOKENS,
       modelOverride: getBuilderModelOverride(params.options),
