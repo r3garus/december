@@ -221,7 +221,7 @@ const TIMEOUT_RECOVERY_ENABLED =
 const PREMIUM_FALLBACK_ENABLED =
   process.env.KLAWPEN_ENABLE_PREMIUM_FALLBACK === "true";
 const LOCAL_EMERGENCY_BUILD_ENABLED =
-  process.env.KLAWPEN_LOCAL_EMERGENCY_BUILD !== "false";
+  process.env.KLAWPEN_LOCAL_EMERGENCY_BUILD === "true";
 const STAGED_BUILD_ENABLED =
   process.env.KLAWPEN_STAGED_BUILD !== "false";
 const STAGED_BUILD_TIMEOUT_MS = readPositiveInt(
@@ -3988,6 +3988,7 @@ function buildStagedContextSummary(assistantContent: string) {
 }
 
 async function createStagedBuildAttempt(params: {
+  containerId?: string;
   userMessage: string;
   plannerBrief: string;
   architectSpec?: ArchitectSpec | null;
@@ -4083,6 +4084,31 @@ ${buildStagedContextSummary(accumulated)}
           writtenFiles.length ? writtenFiles : stage.files
         )
       );
+
+      if (params.containerId) {
+        const stageApplyResult = await applyCodeOperations(
+          params.containerId,
+          response,
+          params.userMessage,
+          params.progress,
+          params.options
+        );
+
+        if (stageApplyResult.failed.length > 0) {
+          console.warn(`Staged build ${stage.key} apply had failed edits:`, {
+            failed: stageApplyResult.failed,
+          });
+        }
+
+        await params.progress?.(
+          getBuildProgressCopy(
+            params.userMessage,
+            "refresh",
+            Math.min(84, stage.percent + 8),
+            writtenFiles.length ? writtenFiles : stage.files
+          )
+        );
+      }
 
       accumulated = [accumulated, response].filter(Boolean).join("\n\n");
     } catch (error) {
@@ -6176,6 +6202,7 @@ async function buildAssistantMessageFromSession(
   const codeContext = clipText(rawContext, 60_000);
   let assistantContent: string;
   let lastExecutableDraft: string | null = null;
+  let stagedAppliedInline = false;
   const preserveExecutableDraft = (candidate: string, label: string) => {
     if (hasExecutableCodeOperations(candidate)) {
       lastExecutableDraft = candidate;
@@ -6298,6 +6325,7 @@ ${codeContext}`;
 
     try {
       const stagedContent = await createStagedBuildAttempt({
+        containerId,
         userMessage,
         plannerBrief,
         architectSpec,
@@ -6310,6 +6338,7 @@ ${codeContext}`;
       });
 
       const usedStagedBuild = Boolean(stagedContent);
+      stagedAppliedInline = usedStagedBuild;
 
       if (stagedContent) {
         assistantContent = stagedContent;
@@ -6474,8 +6503,8 @@ ${codeContext}`;
           buildLocalEmergencyAssistantContent(
             userMessage,
             transientFailure
-              ? "AI provider timed out or returned a transient gateway error; timeout recovery also failed, so a local emergency build was applied."
-              : "AI provider failed before returning a valid executable build; recovery also failed, so a local emergency build was applied."
+              ? "AI provider timed out or returned a transient gateway error; staged build and timeout recovery failed before returning valid executable customer code. Automatic template fallback is disabled, so no ready-made design was applied."
+              : "AI provider failed before returning a valid executable build; staged build and recovery failed. Automatic template fallback is disabled, so no ready-made design was applied."
           );
       }
     }
@@ -6485,18 +6514,20 @@ ${codeContext}`;
   await progress?.(
     getBuildProgressCopy(
       userMessage,
-      "apply",
+      stagedAppliedInline ? "refresh" : "apply",
       86,
       getOperationFilePaths(assistantContent)
     )
   );
-  const applyResult = await applyCodeOperations(
-    containerId,
-    assistantContent,
-    userMessage,
-    progress,
-    resolvedOptions
-  );
+  const applyResult = stagedAppliedInline
+    ? { applied: getExecutableCodeOperations(assistantContent).length, failed: [] }
+    : await applyCodeOperations(
+        containerId,
+        assistantContent,
+        userMessage,
+        progress,
+        resolvedOptions
+      );
 
   if (account && applyResult.applied > 0) {
     try {
