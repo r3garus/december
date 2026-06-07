@@ -92,14 +92,18 @@ const AI_DEEP_BUILD_MODEL =
   process.env.AI_DEEP_BUILD_MODEL ||
   process.env.AI_BUILDER_MODEL ||
   "";
-const AI_CHAT_TOKEN_PARAMETER =
-  process.env.AI_CHAT_TOKEN_PARAMETER === "max_tokens"
-    ? "max_tokens"
-    : "max_completion_tokens";
+const AI_CHAT_TOKEN_PARAMETER_ENV =
+  process.env.AI_CHAT_TOKEN_PARAMETER === "max_tokens" ||
+  process.env.AI_CHAT_TOKEN_PARAMETER === "max_completion_tokens"
+    ? process.env.AI_CHAT_TOKEN_PARAMETER
+    : "";
 const AI_REASONING_EFFORT =
   process.env.AI_REASONING_EFFORT ||
   process.env.KLAWPEN_REASONING_EFFORT ||
   "";
+const AI_SEND_REASONING_TO_COMPAT_GATEWAYS =
+  process.env.KLAWPEN_SEND_REASONING_EFFORT_TO_GATEWAYS === "true" ||
+  process.env.AI_SEND_REASONING_EFFORT_TO_GATEWAYS === "true";
 const AI_BUILDER_TIMEOUT_HARD_CAP_MS = readPositiveInt(
   process.env.AI_BUILDER_TIMEOUT_HARD_CAP_MS,
   900_000
@@ -223,6 +227,8 @@ const PREMIUM_FALLBACK_ENABLED =
 const LOCAL_EMERGENCY_BUILD_ENABLED =
   process.env.KLAWPEN_LOCAL_EMERGENCY_BUILD === "true" &&
   process.env.KLAWPEN_ALLOW_LOCAL_TEMPLATE_FALLBACK === "true";
+const PROMPT_AWARE_LOCAL_FALLBACK_ENABLED =
+  process.env.KLAWPEN_PROMPT_AWARE_LOCAL_FALLBACK !== "false";
 const STAGED_BUILD_ENABLED =
   process.env.KLAWPEN_STAGED_BUILD !== "false";
 const STAGED_BUILD_TIMEOUT_MS = readPositiveInt(
@@ -1024,6 +1030,14 @@ function supportsResponsesApi(provider: AiProviderConfig): boolean {
   );
 }
 
+function isOfficialOpenAiEndpoint(provider: AiProviderConfig): boolean {
+  try {
+    return new URL(provider.baseUrl).host.toLowerCase() === "api.openai.com";
+  } catch {
+    return provider.baseUrl.toLowerCase().includes("api.openai.com");
+  }
+}
+
 function clipText(input: string, maxLength: number): string {
   if (input.length <= maxLength) return input;
   return `${input.slice(0, maxLength)}\n\n[TRUNCATED_FOR_CONTEXT]`;
@@ -1052,8 +1066,16 @@ function buildMessageContent(message: string, attachments: Attachment[] = []): a
   return content;
 }
 
-function getAlternateChatTokenParameter() {
-  return AI_CHAT_TOKEN_PARAMETER === "max_completion_tokens"
+function getPrimaryChatTokenParameter(provider: AiProviderConfig) {
+  if (AI_CHAT_TOKEN_PARAMETER_ENV) return AI_CHAT_TOKEN_PARAMETER_ENV;
+
+  // Most OpenAI-compatible gateway wrappers still expect max_tokens even when
+  // they proxy newer models. Official OpenAI stays on max_completion_tokens.
+  return isOfficialOpenAiEndpoint(provider) ? "max_completion_tokens" : "max_tokens";
+}
+
+function getAlternateChatTokenParameter(tokenParameter: string) {
+  return tokenParameter === "max_completion_tokens"
     ? "max_tokens"
     : "max_completion_tokens";
 }
@@ -1061,6 +1083,11 @@ function getAlternateChatTokenParameter() {
 function shouldRetryWithAlternateTokenParameter(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
   return /\b(max_completion_tokens|max_tokens)\b/i.test(message);
+}
+
+function shouldSendReasoningEffort(provider: AiProviderConfig) {
+  if (!AI_REASONING_EFFORT) return false;
+  return isOfficialOpenAiEndpoint(provider) || AI_SEND_REASONING_TO_COMPAT_GATEWAYS;
 }
 
 function getErrorMessage(error: unknown) {
@@ -1154,8 +1181,11 @@ async function createAiText(params: {
       temperature,
       [tokenParameter]: maxOutputTokens,
     });
-    const payload = buildPayload(AI_CHAT_TOKEN_PARAMETER);
-    if (AI_REASONING_EFFORT) payload.reasoning_effort = AI_REASONING_EFFORT;
+    const primaryTokenParameter = getPrimaryChatTokenParameter(params.provider);
+    const payload = buildPayload(primaryTokenParameter);
+    if (shouldSendReasoningEffort(params.provider)) {
+      payload.reasoning_effort = AI_REASONING_EFFORT;
+    }
 
     let response: any;
     try {
@@ -1171,8 +1201,12 @@ async function createAiText(params: {
       );
     } catch (error) {
       if (!shouldRetryWithAlternateTokenParameter(error)) throw error;
-      const retryPayload = buildPayload(getAlternateChatTokenParameter());
-      if (AI_REASONING_EFFORT) retryPayload.reasoning_effort = AI_REASONING_EFFORT;
+      const retryPayload = buildPayload(
+        getAlternateChatTokenParameter(primaryTokenParameter)
+      );
+      if (shouldSendReasoningEffort(params.provider)) {
+        retryPayload.reasoning_effort = AI_REASONING_EFFORT;
+      }
       response = await withRetries(
         () =>
           withTimeout(
@@ -1200,7 +1234,7 @@ async function createAiText(params: {
       temperature,
       max_output_tokens: maxOutputTokens,
     };
-    if (AI_REASONING_EFFORT) {
+    if (shouldSendReasoningEffort(params.provider)) {
       payload.reasoning = { effort: AI_REASONING_EFFORT };
     }
 
@@ -1256,8 +1290,11 @@ async function createAiChatText(params: {
     temperature,
     [tokenParameter]: maxOutputTokens,
   });
-  const payload = buildPayload(AI_CHAT_TOKEN_PARAMETER);
-  if (AI_REASONING_EFFORT) payload.reasoning_effort = AI_REASONING_EFFORT;
+  const primaryTokenParameter = getPrimaryChatTokenParameter(params.provider);
+  const payload = buildPayload(primaryTokenParameter);
+  if (shouldSendReasoningEffort(params.provider)) {
+    payload.reasoning_effort = AI_REASONING_EFFORT;
+  }
 
   let response: any;
   try {
@@ -1273,8 +1310,12 @@ async function createAiChatText(params: {
     );
   } catch (error) {
     if (!shouldRetryWithAlternateTokenParameter(error)) throw error;
-    const retryPayload = buildPayload(getAlternateChatTokenParameter());
-    if (AI_REASONING_EFFORT) retryPayload.reasoning_effort = AI_REASONING_EFFORT;
+    const retryPayload = buildPayload(
+      getAlternateChatTokenParameter(primaryTokenParameter)
+    );
+    if (shouldSendReasoningEffort(params.provider)) {
+      retryPayload.reasoning_effort = AI_REASONING_EFFORT;
+    }
     response = await withRetries(
       () =>
         withTimeout(
@@ -3851,6 +3892,1191 @@ function buildFallbackOperations(userMessage: string): CodeOperation[] {
   ];
 }
 
+function choosePromptAwareFallbackLayout(userMessage: string) {
+  const plain = normalizePromptText(userMessage);
+
+  if (/\b(blog|magazin|magazine|haber|news|article|makale|yazar|icerik|publishing|yayin)\b/.test(plain)) {
+    return "editorial";
+  }
+
+  if (/\b(ecommerce|e commerce|store|shop|shopping|mall|marketplace|pazar|alisveris|avm|magaza|urun|catalog|sepet)\b/.test(plain)) {
+    return "market";
+  }
+
+  if (/\b(saas|software|dashboard|crm|analytics|panel|app|platform|api|developer|docs|sdk|operasyon)\b/.test(plain)) {
+    return "console";
+  }
+
+  if (/\b(restoran|restaurant|cafe|kafe|event|festival|konferans|hotel|otel)\b/.test(plain)) {
+    return "immersive";
+  }
+
+  const variants = ["atelier", "editorial", "market", "console", "immersive"] as const;
+  return variants[hashPromptSeed(plain) % variants.length] || "atelier";
+}
+
+function buildPromptAwareFallbackProfile(userMessage: string) {
+  const base = buildFallbackSiteContent(userMessage);
+  const isTurkish = isLikelyTurkish(userMessage);
+  const layout = choosePromptAwareFallbackLayout(userMessage);
+  const sector = base.profile.sector;
+
+  const nav = isTurkish
+    ? sector === "blog"
+      ? ["Kapak", "Yazılar", "Kategoriler", "Bülten"]
+      : sector === "commerce"
+        ? ["Keşfet", "Mağazalar", "Kampanyalar", "Ziyaret"]
+        : sector === "saas"
+          ? ["Çözüm", "Akış", "Güven", "Demo"]
+          : ["Deneyim", "Hizmetler", "Süreç", "İletişim"]
+    : sector === "blog"
+      ? ["Cover", "Stories", "Topics", "Newsletter"]
+      : sector === "commerce"
+        ? ["Explore", "Stores", "Campaigns", "Visit"]
+        : sector === "saas"
+          ? ["Solution", "Flow", "Trust", "Demo"]
+          : ["Experience", "Services", "Process", "Contact"];
+
+  const showcase = isTurkish
+    ? sector === "blog"
+      ? [
+          ["Derin dosya", "Haftanın ana konusu için editör seçimi."],
+          ["Hızlı okuma", "Kısa, net ve paylaşılabilir içerik akışı."],
+          ["Bülten", "Yeni yazıları kaçırmayan sadık okur kanalı."],
+        ]
+      : sector === "commerce"
+        ? [
+            ["Vitrin rotası", "Öne çıkan mağaza ve kampanyalar tek akışta."],
+            ["Yeme-içme", "Ziyaret planını tamamlayan restoran önerileri."],
+            ["Etkinlik", "Aile ve hafta sonu programları için güncel alan."],
+          ]
+        : sector === "saas"
+          ? [
+              ["Canlı durum", "Ekip ritmini ve darboğazları tek ekranda gösterir."],
+              ["Akıllı iş akışı", "Tekrarlayan adımlar güvenli şekilde hızlanır."],
+              ["Yetki katmanı", "Rol ve erişim sınırları sade bir yapıda kalır."],
+            ]
+          : [
+              ["İlk temas", "Ziyaretçi ne sunduğunuzu ilk ekranda anlar."],
+              ["Güven alanı", "Süreç, referans ve cevaplar kararı kolaylaştırır."],
+              ["Net aksiyon", "Form, randevu veya arama adımı görünür kalır."],
+            ]
+    : sector === "blog"
+      ? [
+          ["Deep feature", "Editor's pick for the main story of the week."],
+          ["Quick read", "A short, clear, and shareable content stream."],
+          ["Newsletter", "A returning-reader channel for new stories."],
+        ]
+      : sector === "commerce"
+        ? [
+            ["Showcase route", "Featured stores and campaigns in one flow."],
+            ["Dining", "Restaurant suggestions that complete the visit plan."],
+            ["Events", "A current space for family and weekend programs."],
+          ]
+        : sector === "saas"
+          ? [
+              ["Live status", "Team rhythm and bottlenecks visible in one view."],
+              ["Smart workflow", "Repeatable steps move faster and safer."],
+              ["Access layer", "Roles and permissions stay simple at scale."],
+            ]
+          : [
+              ["First contact", "Visitors understand the offer immediately."],
+              ["Trust area", "Process, proof, and answers reduce hesitation."],
+              ["Clear action", "Form, booking, or call steps remain visible."],
+            ];
+
+  return {
+    brand: base.businessName,
+    layout,
+    sector,
+    palette: base.profile.palette,
+    nav,
+    eyebrow: base.profile.badge,
+    headline: base.profile.headline,
+    intro: base.profile.intro,
+    primary: base.profile.primary,
+    secondary: base.profile.secondary,
+    stats: base.stats,
+    featuresTitle: base.labels.signalTitle,
+    featuresIntro: base.labels.workflowIntro,
+    features: base.signals,
+    processTitle: base.labels.workflowTitle,
+    process: base.workflow,
+    showcase,
+    proofTitle: base.caseStudy.title,
+    proofLabel: base.caseStudy.label,
+    proofText: base.caseStudy.text,
+    quote: base.profile.testimonial,
+    faqTitle: base.labels.faqTitle,
+    faq: base.profile.faq,
+    ctaTitle: base.labels.finalTitle,
+    ctaText: base.labels.finalText,
+  };
+}
+
+function buildPromptAwareFallbackPage(userMessage: string): string {
+  const content = buildPromptAwareFallbackProfile(userMessage);
+
+  return `import type { Metadata } from "next";
+import type { CSSProperties } from "react";
+
+const content = ${JSON.stringify(content, null, 2)};
+
+export const metadata: Metadata = {
+  title: content.brand,
+  description: content.intro,
+};
+
+function HeroPanel() {
+  if (content.layout === "market") {
+    return (
+      <div className="hero-panel market-panel">
+        <div className="panel-kicker">{content.nav[1]}</div>
+        <div className="market-grid">
+          {content.showcase.map((item, index) => (
+            <article key={item[0]} className={"market-tile tile-" + index}>
+              <span>0{index + 1}</span>
+              <h3>{item[0]}</h3>
+              <p>{item[1]}</p>
+            </article>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (content.layout === "console") {
+    return (
+      <div className="hero-panel console-panel">
+        <div className="console-top">
+          <span>{content.proofLabel}</span>
+          <strong>{content.stats[0]?.[0]}</strong>
+        </div>
+        {content.showcase.map((item, index) => (
+          <div key={item[0]} className="console-row">
+            <i />
+            <div>
+              <strong>{item[0]}</strong>
+              <p>{item[1]}</p>
+            </div>
+            <span>{Math.max(72, 96 - index * 9)}%</span>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (content.layout === "editorial") {
+    return (
+      <div className="hero-panel editorial-panel">
+        <p className="panel-kicker">{content.proofLabel}</p>
+        <h2>{content.proofTitle}</h2>
+        <p>{content.proofText}</p>
+        <div className="editorial-stack">
+          {content.showcase.map((item) => (
+            <span key={item[0]}>{item[0]}</span>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (content.layout === "immersive") {
+    return (
+      <div className="hero-panel immersive-panel">
+        <div className="immersive-spotlight">
+          <span>{content.proofLabel}</span>
+          <h2>{content.proofTitle}</h2>
+          <p>{content.proofText}</p>
+        </div>
+        <div className="immersive-strip">
+          {content.showcase.map((item, index) => (
+            <article key={item[0]} className="immersive-card">
+              <strong>0{index + 1}</strong>
+              <span>{item[0]}</span>
+            </article>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="hero-panel atelier-panel">
+      <div className="panel-orbit" />
+      {content.showcase.map((item, index) => (
+        <article key={item[0]} className="atelier-card">
+          <span>0{index + 1}</span>
+          <h3>{item[0]}</h3>
+          <p>{item[1]}</p>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+export default function Home() {
+  const themeVars = {
+    "--bg": content.palette.bg,
+    "--text": content.palette.text,
+    "--muted": content.palette.muted,
+    "--primary": content.palette.primary,
+    "--primaryText": content.palette.primaryText,
+    "--panel": content.palette.panel,
+    "--panelText": content.palette.panelText,
+    "--accent": content.palette.accent,
+    "--soft": content.palette.soft,
+    "--border": content.palette.border,
+  } as CSSProperties;
+
+  return (
+    <main className={"site-root layout-" + content.layout} style={themeVars}>
+      <nav className="site-nav">
+        <a href="#top" className="brand-mark">
+          <span>{content.brand.slice(0, 1)}</span>
+          {content.brand}
+        </a>
+        <div className="nav-links">
+          {content.nav.map((item, index) => (
+            <a key={item} href={index === 0 ? "#top" : index === 1 ? "#features" : index === 2 ? "#proof" : "#contact"}>
+              {item}
+            </a>
+          ))}
+        </div>
+      </nav>
+
+      <section id="top" className="hero-section">
+        <div className="hero-copy">
+          <p className="eyebrow">{content.eyebrow}</p>
+          <h1>{content.headline}</h1>
+          <p className="hero-intro">{content.intro}</p>
+          <div className="hero-actions">
+            <a href="#contact" className="button primary">{content.primary}</a>
+            <a href="#features" className="button secondary">{content.secondary}</a>
+          </div>
+          <div className="stats-row">
+            {content.stats.map((stat) => (
+              <div key={stat[1]}>
+                <strong>{stat[0]}</strong>
+                <span>{stat[1]}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <HeroPanel />
+      </section>
+
+      <section id="features" className="content-section feature-section">
+        <div className="section-heading">
+          <p className="eyebrow">{content.nav[1]}</p>
+          <h2>{content.featuresTitle}</h2>
+          <p>{content.featuresIntro}</p>
+        </div>
+        <div className="feature-grid">
+          {content.features.map((feature) => (
+            <article key={feature.title} className="feature-card">
+              <span>{feature.eyebrow}</span>
+              <h3>{feature.title}</h3>
+              <p>{feature.text}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="content-section process-section">
+        <div className="process-panel">
+          <div>
+            <p className="eyebrow">{content.nav[2]}</p>
+            <h2>{content.processTitle}</h2>
+          </div>
+          <div className="process-list">
+            {content.process.map((item, index) => (
+              <article key={item.step}>
+                <span>0{index + 1}</span>
+                <div>
+                  <h3>{item.step}</h3>
+                  <p>{item.text}</p>
+                </div>
+              </article>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section id="proof" className="content-section proof-section">
+        <article className="proof-card">
+          <span>{content.proofLabel}</span>
+          <h2>{content.proofTitle}</h2>
+          <p>{content.proofText}</p>
+        </article>
+        <article className="quote-card">
+          <p>{content.quote}</p>
+        </article>
+      </section>
+
+      <section className="content-section faq-section">
+        <div className="section-heading compact">
+          <p className="eyebrow">{content.nav[3]}</p>
+          <h2>{content.faqTitle}</h2>
+        </div>
+        <div className="faq-grid">
+          {content.faq.map((item) => (
+            <article key={item[0]}>
+              <h3>{item[0]}</h3>
+              <p>{item[1]}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section id="contact" className="cta-section">
+        <p className="eyebrow">{content.nav[3]}</p>
+        <h2>{content.ctaTitle}</h2>
+        <p>{content.ctaText}</p>
+        <a href="mailto:hello@example.com" className="button primary">{content.primary}</a>
+      </section>
+    </main>
+  );
+}
+`;
+}
+
+function buildPromptAwareFallbackGlobals(): string {
+  return `@import "tailwindcss";
+@config "../../tailwind.config.ts";
+
+:root {
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-height: 100%;
+  scroll-behavior: smooth;
+}
+
+body {
+  min-height: 100%;
+  margin: 0;
+  background: #f7f4ee;
+  color: #17110d;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.site-root {
+  --shadow: 0 24px 80px rgba(20, 15, 10, 0.12);
+  min-height: 100vh;
+  overflow-x: hidden;
+  background:
+    radial-gradient(circle at 8% 4%, color-mix(in srgb, var(--primary) 24%, transparent), transparent 30rem),
+    radial-gradient(circle at 92% 10%, color-mix(in srgb, var(--accent) 20%, transparent), transparent 28rem),
+    linear-gradient(135deg, var(--bg), color-mix(in srgb, var(--soft) 72%, white));
+  color: var(--text);
+  font-family: "Aptos", "Segoe UI", sans-serif;
+}
+
+.layout-editorial {
+  font-family: "Newsreader", Georgia, serif;
+}
+
+.layout-console {
+  background:
+    radial-gradient(circle at 12% 8%, color-mix(in srgb, var(--accent) 30%, transparent), transparent 30rem),
+    linear-gradient(145deg, var(--panel), color-mix(in srgb, var(--panel) 82%, black));
+  color: var(--panelText);
+}
+
+.site-nav,
+.hero-section,
+.content-section,
+.cta-section {
+  width: min(1180px, calc(100% - 40px));
+  margin-inline: auto;
+}
+
+.site-nav {
+  position: sticky;
+  top: 16px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-top: 16px;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, white 76%, transparent);
+  padding: 10px 12px;
+  box-shadow: 0 16px 50px rgba(15, 23, 42, 0.08);
+  backdrop-filter: blur(18px);
+}
+
+.layout-console .site-nav {
+  background: color-mix(in srgb, var(--panel) 72%, transparent);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.brand-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding-right: 12px;
+  font-size: 0.94rem;
+  font-weight: 760;
+  letter-spacing: -0.02em;
+}
+
+.brand-mark span {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--primary);
+  color: var(--primaryText);
+  box-shadow: 0 12px 30px color-mix(in srgb, var(--primary) 28%, transparent);
+}
+
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.nav-links a {
+  border-radius: 999px;
+  padding: 9px 12px;
+  color: color-mix(in srgb, var(--text) 62%, transparent);
+  font-size: 0.82rem;
+  font-weight: 690;
+  transition: background 180ms ease, color 180ms ease, transform 180ms ease;
+}
+
+.layout-console .nav-links a {
+  color: rgba(255, 255, 255, 0.68);
+}
+
+.nav-links a:hover {
+  transform: translateY(-1px);
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+  color: var(--text);
+}
+
+.layout-console .nav-links a:hover {
+  color: white;
+}
+
+.hero-section {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(360px, 0.82fr);
+  gap: clamp(28px, 5vw, 72px);
+  align-items: center;
+  min-height: calc(100vh - 86px);
+  padding-block: clamp(64px, 10vw, 128px);
+}
+
+.layout-editorial .hero-section {
+  grid-template-columns: minmax(340px, 0.78fr) minmax(0, 1.1fr);
+}
+
+.layout-market .hero-section {
+  grid-template-columns: minmax(0, 0.86fr) minmax(390px, 1fr);
+}
+
+.hero-copy {
+  animation: rise-in 700ms ease both;
+}
+
+.eyebrow,
+.panel-kicker {
+  margin: 0;
+  color: var(--primary);
+  font-size: 0.72rem;
+  font-weight: 820;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin-top: 0;
+}
+
+.hero-copy h1 {
+  max-width: 820px;
+  margin-bottom: 22px;
+  margin-top: 20px;
+  font-size: clamp(2.55rem, 6vw, 5.65rem);
+  font-weight: 760;
+  letter-spacing: -0.065em;
+  line-height: 0.96;
+}
+
+.layout-editorial .hero-copy h1 {
+  font-weight: 620;
+  letter-spacing: -0.045em;
+  line-height: 1.02;
+}
+
+.hero-intro {
+  max-width: 630px;
+  color: var(--muted);
+  font-size: clamp(1rem, 1.35vw, 1.18rem);
+  line-height: 1.85;
+}
+
+.layout-console .hero-intro {
+  color: rgba(255, 255, 255, 0.68);
+}
+
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 30px;
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 42px;
+  border-radius: 999px;
+  padding: 0 18px;
+  font-size: 0.9rem;
+  font-weight: 760;
+  transition: transform 180ms ease, box-shadow 180ms ease, background 180ms ease;
+}
+
+.button:hover {
+  transform: translateY(-2px);
+}
+
+.button.primary {
+  background: var(--primary);
+  color: var(--primaryText);
+  box-shadow: 0 18px 40px color-mix(in srgb, var(--primary) 26%, transparent);
+}
+
+.button.secondary {
+  border: 1px solid color-mix(in srgb, var(--border) 88%, transparent);
+  background: color-mix(in srgb, white 64%, transparent);
+  color: var(--text);
+}
+
+.layout-console .button.secondary {
+  background: rgba(255, 255, 255, 0.08);
+  color: white;
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.stats-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 42px;
+}
+
+.stats-row div {
+  border-top: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
+  padding-top: 14px;
+}
+
+.stats-row strong {
+  display: block;
+  color: var(--primary);
+  font-size: clamp(1.45rem, 3vw, 2.4rem);
+  letter-spacing: -0.04em;
+}
+
+.stats-row span {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.86rem;
+  line-height: 1.45;
+}
+
+.layout-console .stats-row span {
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.hero-panel {
+  position: relative;
+  min-height: 500px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  border-radius: clamp(28px, 4vw, 54px);
+  background:
+    linear-gradient(145deg, color-mix(in srgb, white 72%, transparent), color-mix(in srgb, var(--soft) 88%, white)),
+    var(--soft);
+  box-shadow: var(--shadow);
+  animation: float-in 850ms 120ms ease both;
+}
+
+.layout-console .hero-panel {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.atelier-panel,
+.immersive-panel {
+  display: grid;
+  align-content: end;
+  gap: 14px;
+  padding: 24px;
+}
+
+.panel-orbit {
+  position: absolute;
+  inset: 36px 36px auto auto;
+  width: 180px;
+  height: 180px;
+  border: 28px solid color-mix(in srgb, var(--primary) 22%, transparent);
+  border-radius: 50%;
+}
+
+.atelier-card {
+  position: relative;
+  z-index: 1;
+  width: min(92%, 390px);
+  border: 1px solid color-mix(in srgb, white 62%, transparent);
+  border-radius: 28px;
+  background: color-mix(in srgb, white 72%, transparent);
+  padding: 20px;
+  backdrop-filter: blur(16px);
+}
+
+.atelier-card:nth-of-type(2) {
+  margin-left: auto;
+}
+
+.atelier-card span,
+.feature-card span,
+.process-list span,
+.proof-card span {
+  color: var(--primary);
+  font-size: 0.72rem;
+  font-weight: 820;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.atelier-card h3,
+.market-tile h3 {
+  margin: 12px 0 8px;
+  font-size: 1.3rem;
+  letter-spacing: -0.02em;
+}
+
+.atelier-card p,
+.market-tile p,
+.console-row p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.immersive-panel {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 24px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--primary) 20%, transparent), transparent 44%),
+    radial-gradient(circle at 76% 26%, color-mix(in srgb, var(--accent) 36%, transparent), transparent 15rem),
+    var(--panel);
+  color: var(--panelText);
+}
+
+.immersive-spotlight {
+  max-width: 430px;
+  border-radius: 32px;
+  background: rgba(255, 255, 255, 0.1);
+  padding: 24px;
+  backdrop-filter: blur(18px);
+}
+
+.immersive-spotlight span,
+.immersive-card strong {
+  color: var(--primary);
+  font-size: 0.72rem;
+  font-weight: 820;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.immersive-spotlight h2 {
+  margin: 14px 0;
+  font-size: clamp(2rem, 4vw, 3.4rem);
+  letter-spacing: -0.052em;
+  line-height: 1.02;
+}
+
+.immersive-spotlight p {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.68);
+  line-height: 1.75;
+}
+
+.immersive-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.immersive-card {
+  display: grid;
+  min-height: 120px;
+  align-content: space-between;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.08);
+  padding: 16px;
+}
+
+.immersive-card span {
+  font-weight: 760;
+  letter-spacing: -0.02em;
+}
+
+.market-panel {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 24px;
+}
+
+.market-grid {
+  display: grid;
+  grid-template-columns: 1fr 0.78fr;
+  gap: 14px;
+}
+
+.market-tile {
+  min-height: 190px;
+  border-radius: 30px;
+  background: color-mix(in srgb, white 74%, transparent);
+  padding: 20px;
+}
+
+.market-tile:first-child {
+  grid-row: span 2;
+  min-height: 394px;
+  background: var(--panel);
+  color: var(--panelText);
+}
+
+.market-tile:first-child p {
+  color: rgba(255, 255, 255, 0.66);
+}
+
+.console-panel {
+  display: grid;
+  gap: 14px;
+  align-content: center;
+  padding: 24px;
+}
+
+.console-top,
+.console-row {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.07);
+  padding: 18px;
+}
+
+.console-top {
+  display: flex;
+  justify-content: space-between;
+  color: rgba(255, 255, 255, 0.66);
+}
+
+.console-top strong {
+  color: var(--primary);
+  font-size: 2.3rem;
+}
+
+.console-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 14px;
+  align-items: center;
+}
+
+.console-row i {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.console-row strong {
+  color: white;
+}
+
+.console-row p {
+  color: rgba(255, 255, 255, 0.58);
+}
+
+.console-row > span {
+  color: var(--primary);
+  font-weight: 820;
+}
+
+.editorial-panel {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding: clamp(24px, 4vw, 44px);
+  background:
+    linear-gradient(180deg, transparent, color-mix(in srgb, var(--panel) 84%, transparent)),
+    radial-gradient(circle at 28% 18%, color-mix(in srgb, var(--accent) 35%, transparent), transparent 17rem),
+    var(--panel);
+  color: var(--panelText);
+}
+
+.editorial-panel h2 {
+  max-width: 520px;
+  margin: 16px 0;
+  font-size: clamp(2rem, 4vw, 3.8rem);
+  font-weight: 540;
+  letter-spacing: -0.045em;
+  line-height: 1.04;
+}
+
+.editorial-panel p:not(.panel-kicker) {
+  max-width: 560px;
+  color: rgba(255, 255, 255, 0.68);
+  line-height: 1.8;
+}
+
+.editorial-stack {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 26px;
+}
+
+.editorial-stack span {
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  padding: 9px 12px;
+  color: rgba(255, 255, 255, 0.76);
+  font-size: 0.82rem;
+}
+
+.content-section {
+  padding-block: clamp(56px, 8vw, 96px);
+}
+
+.section-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(280px, 0.62fr);
+  gap: 28px;
+  align-items: end;
+  margin-bottom: 28px;
+}
+
+.section-heading.compact {
+  display: block;
+  max-width: 680px;
+}
+
+.section-heading h2,
+.process-panel h2,
+.proof-card h2,
+.cta-section h2 {
+  margin: 12px 0 0;
+  font-size: clamp(2rem, 4vw, 3.6rem);
+  font-weight: 700;
+  letter-spacing: -0.052em;
+  line-height: 1.02;
+}
+
+.section-heading p:last-child {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.8;
+}
+
+.layout-console .section-heading p:last-child,
+.layout-console .process-list p {
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.feature-card,
+.faq-grid article {
+  border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  border-radius: 28px;
+  background: color-mix(in srgb, white 68%, transparent);
+  padding: 24px;
+  transition: transform 180ms ease, box-shadow 180ms ease;
+}
+
+.layout-console .feature-card,
+.layout-console .faq-grid article {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.feature-card:hover,
+.faq-grid article:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow);
+}
+
+.feature-card h3,
+.faq-grid h3 {
+  margin: 34px 0 10px;
+  font-size: 1.45rem;
+  letter-spacing: -0.03em;
+}
+
+.feature-card p,
+.faq-grid p,
+.proof-card p,
+.cta-section p {
+  color: var(--muted);
+  line-height: 1.75;
+}
+
+.layout-console .feature-card p,
+.layout-console .faq-grid p,
+.layout-console .proof-card p,
+.layout-console .cta-section p {
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.process-panel {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.55fr) 1fr;
+  gap: 24px;
+  border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  border-radius: 38px;
+  background: color-mix(in srgb, var(--soft) 70%, white);
+  padding: clamp(24px, 4vw, 44px);
+}
+
+.layout-console .process-panel {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.process-list {
+  display: grid;
+  gap: 12px;
+}
+
+.process-list article {
+  display: grid;
+  grid-template-columns: 52px 1fr;
+  gap: 16px;
+  align-items: start;
+  border-radius: 24px;
+  background: color-mix(in srgb, white 64%, transparent);
+  padding: 18px;
+}
+
+.layout-console .process-list article {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.process-list h3 {
+  margin: 0 0 6px;
+  font-size: 1.2rem;
+}
+
+.process-list p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.65;
+}
+
+.proof-section {
+  display: grid;
+  grid-template-columns: 1.15fr 0.85fr;
+  gap: 16px;
+}
+
+.proof-card,
+.quote-card,
+.cta-section {
+  border-radius: 38px;
+  padding: clamp(26px, 4vw, 48px);
+}
+
+.proof-card {
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  background: color-mix(in srgb, white 68%, transparent);
+}
+
+.quote-card {
+  display: flex;
+  align-items: end;
+  background: var(--panel);
+  color: var(--panelText);
+}
+
+.quote-card p {
+  margin: 0;
+  font-size: clamp(1.35rem, 2.4vw, 2.2rem);
+  letter-spacing: -0.035em;
+  line-height: 1.18;
+}
+
+.faq-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.faq-grid h3 {
+  margin-top: 0;
+}
+
+.cta-section {
+  margin-bottom: 40px;
+  text-align: center;
+  background:
+    radial-gradient(circle at 18% 8%, color-mix(in srgb, var(--accent) 24%, transparent), transparent 18rem),
+    var(--panel);
+  color: var(--panelText);
+}
+
+.cta-section p {
+  max-width: 660px;
+  margin-inline: auto;
+}
+
+.cta-section .button {
+  margin-top: 20px;
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes float-in {
+  from {
+    opacity: 0;
+    transform: translateY(22px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (max-width: 900px) {
+  .site-nav {
+    align-items: flex-start;
+    border-radius: 26px;
+  }
+
+  .nav-links {
+    display: none;
+  }
+
+  .hero-section,
+  .layout-editorial .hero-section,
+  .layout-market .hero-section,
+  .section-heading,
+  .process-panel,
+  .proof-section {
+    grid-template-columns: 1fr;
+  }
+
+  .hero-section {
+    min-height: auto;
+    padding-top: 54px;
+  }
+
+  .hero-panel {
+    min-height: 420px;
+  }
+
+  .feature-grid,
+  .faq-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .stats-row {
+    grid-template-columns: 1fr;
+  }
+
+  .market-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .market-tile:first-child {
+    min-height: 220px;
+  }
+}
+
+@media (max-width: 560px) {
+  .site-nav,
+  .hero-section,
+  .content-section,
+  .cta-section {
+    width: min(100% - 24px, 1180px);
+  }
+
+  .hero-copy h1 {
+    letter-spacing: -0.045em;
+  }
+
+  .hero-actions {
+    flex-direction: column;
+  }
+
+  .button {
+    width: 100%;
+  }
+}
+`;
+}
+
+function buildPromptAwareLocalFallbackOperations(userMessage: string): CodeOperation[] {
+  return [
+    {
+      type: "write",
+      index: 1,
+      path: "src/app/globals.css",
+      content: buildPromptAwareFallbackGlobals(),
+    },
+    {
+      type: "write",
+      index: 2,
+      path: "src/app/page.tsx",
+      content: buildPromptAwareFallbackPage(userMessage),
+    },
+  ];
+}
+
 function escapeDecAttribute(value: string): string {
   return value
     .replace(/&/g, "&amp;")
@@ -3891,6 +5117,24 @@ function buildLocalEmergencyAssistantContent(
   userMessage: string,
   reason: string
 ): string {
+  if (PROMPT_AWARE_LOCAL_FALLBACK_ENABLED) {
+    const turkish = isLikelyTurkish(userMessage);
+    const operations = buildPromptAwareLocalFallbackOperations(userMessage);
+    const intro = turkish
+      ? "AI sağlayıcısı bu istekte sağlıklı kod çıktısı dönemediği için önizlemeyi boş bırakmadım; prompt diline ve sektörüne göre çalışan, sade bir güvenlik sürümü oluşturdum. Sağlayıcı toparlandığında bunu daha derin bir Klawpen Core üretimiyle geliştirebiliriz."
+      : "The AI provider did not return a healthy code build for this request, so I did not leave the preview blank; I created a working prompt-aware safety version in the prompt language and sector. Once the provider is stable, this can be upgraded with a deeper Klawpen Core pass.";
+
+    console.warn("Using prompt-aware local safety build after AI provider failure:", reason);
+
+    return [
+      intro,
+      "",
+      serializeCodeOperations(operations),
+      "",
+      `<dec-verification>${turkish ? "Prompt'a duyarlı yerel güvenlik sürümü uygulandı; önizleme boş kalmadı." : "Prompt-aware local safety build was applied so the preview is not blank."}</dec-verification>`,
+    ].join("\n");
+  }
+
   if (!LOCAL_EMERGENCY_BUILD_ENABLED) {
     return buildFallbackAssistantContent(userMessage, reason);
   }

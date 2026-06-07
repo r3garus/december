@@ -162,7 +162,7 @@ app.get("/health", (_req, res) => {
   res.json({
     success: true,
     service: "klawpen-builder-api",
-    marker: "professional-build-flow-v2",
+    marker: "professional-build-flow-v3",
     timestamp: new Date().toISOString(),
   });
 });
@@ -198,9 +198,11 @@ app.get("/diagnostics", (_req, res) => {
   res.json({
     success: true,
     service: "klawpen-builder-api",
-    marker: "professional-build-flow-v2",
+    marker: "professional-build-flow-v3",
     build: {
       stagedBuild: process.env.KLAWPEN_STAGED_BUILD !== "false",
+      promptAwareLocalFallback:
+        process.env.KLAWPEN_PROMPT_AWARE_LOCAL_FALLBACK !== "false",
       localEmergencyBuild:
         process.env.KLAWPEN_LOCAL_EMERGENCY_BUILD === "true" &&
         process.env.KLAWPEN_ALLOW_LOCAL_TEMPLATE_FALLBACK === "true",
@@ -226,7 +228,9 @@ app.get("/diagnostics", (_req, res) => {
         process.env.AI_DEEP_BUILD_MODEL ||
         process.env.AI_BUILDER_MODEL ||
         "(default provider model)",
-      tokenParameter: process.env.AI_CHAT_TOKEN_PARAMETER || "(default)",
+      tokenParameter:
+        process.env.AI_CHAT_TOKEN_PARAMETER ||
+        "(auto: official OpenAI=max_completion_tokens, compatible gateways=max_tokens)",
       reasoningEffort:
         process.env.AI_REASONING_EFFORT ||
         process.env.KLAWPEN_REASONING_EFFORT ||
