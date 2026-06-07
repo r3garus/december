@@ -231,7 +231,23 @@ const STAGED_BUILD_TIMEOUT_MS = readPositiveInt(
 );
 const STAGED_BUILD_MAX_OUTPUT_TOKENS = readPositiveInt(
   process.env.AI_STAGED_BUILD_MAX_OUTPUT_TOKENS,
-  18_000
+  10_000
+);
+const STAGED_BUILD_ROUTE_MAX_OUTPUT_TOKENS = readPositiveInt(
+  process.env.AI_STAGED_ROUTE_MAX_OUTPUT_TOKENS,
+  6_500
+);
+const STAGED_BUILD_BOOTSTRAP_MAX_OUTPUT_TOKENS = readPositiveInt(
+  process.env.AI_STAGED_BOOTSTRAP_MAX_OUTPUT_TOKENS,
+  5_500
+);
+const STAGED_CONTEXT_FILE_PREVIEW_CHARS = readPositiveInt(
+  process.env.AI_STAGED_CONTEXT_FILE_PREVIEW_CHARS,
+  800
+);
+const STAGED_CONTEXT_MAX_FILES = readPositiveInt(
+  process.env.AI_STAGED_CONTEXT_MAX_FILES,
+  8
 );
 const BROAD_BUILD_MIN_WRITES = readPositiveInt(
   process.env.KLAWPEN_MIN_BROAD_WRITES,
@@ -3923,7 +3939,12 @@ function getOperationFilePaths(assistantContent: string): string[] {
   return Array.from(paths).slice(0, 8);
 }
 
-type StagedBuildStageKey = "foundation" | "components" | "pages" | "polish";
+type StagedBuildStageKey =
+  | "bootstrap"
+  | "foundation"
+  | "components"
+  | "route"
+  | "polish";
 
 interface StagedBuildStage {
   key: StagedBuildStageKey;
@@ -3931,6 +3952,7 @@ interface StagedBuildStage {
   percent: number;
   files: string[];
   instructions: string;
+  maxOutputTokens?: number;
 }
 
 function shouldUseStagedBuild(
@@ -3967,13 +3989,71 @@ function getStagedBuildStages(
   const componentFiles = (
     stageFiles.components?.length ? stageFiles.components : filePlan.components
   ).filter((filePath) => /^src\/components\//.test(filePath));
+  const homeRouteFile = routeFiles.find((filePath) => filePath === "src/app/page.tsx");
+  const supportingRouteFiles = routeFiles.filter(
+    (filePath) => filePath !== "src/app/page.tsx"
+  );
+  const routePercentStart = 60;
+  const routePercentStep = Math.max(
+    3,
+    Math.floor(18 / Math.max(1, supportingRouteFiles.length + 1))
+  );
+  const routeStages: StagedBuildStage[] = [
+    ...(homeRouteFile
+      ? [
+          {
+            key: "route" as const,
+            title: "home route",
+            percent: routePercentStart,
+            files: [homeRouteFile],
+            maxOutputTokens: STAGED_BUILD_ROUTE_MAX_OUTPUT_TOKENS,
+            instructions: [
+              "Upgrade the homepage route only using the shared foundation/components.",
+              `Write/overwrite exactly this route file: ${homeRouteFile}.`,
+              "The existing bootstrap homepage is already applied; replace it with the deeper version that imports the shared content/components from earlier stages.",
+              "The homepage must be visually complete by itself: hero, proof, domain module, conversion CTA, and responsive motion.",
+              "Do not write other route files in this stage.",
+            ].join("\n"),
+          },
+        ]
+      : []),
+    ...supportingRouteFiles.map((routeFile, index) => ({
+      key: "route" as const,
+      title: `route ${index + 1}`,
+      percent: routePercentStart + routePercentStep * (index + 1),
+      files: [routeFile],
+      maxOutputTokens: STAGED_BUILD_ROUTE_MAX_OUTPUT_TOKENS,
+      instructions: [
+        "Create one supporting App Router page only.",
+        `Write/overwrite exactly this route file: ${routeFile}.`,
+        "Import the shared content/components from earlier stages.",
+        "This route needs route-specific sections/content and must not be a thin wrapper around the homepage.",
+        "Do not write other route files in this stage.",
+      ].join("\n"),
+    })),
+  ];
 
   return [
     {
+      key: "bootstrap",
+      title: "working preview",
+      percent: 32,
+      files: ["src/app/page.tsx", "src/app/globals.css"],
+      maxOutputTokens: STAGED_BUILD_BOOTSTRAP_MAX_OUTPUT_TOKENS,
+      instructions: [
+        "Create the smallest polished working preview first so the iframe changes quickly even if later stages timeout.",
+        "Write/overwrite only src/app/page.tsx and src/app/globals.css.",
+        "The page must be prompt-specific, customer-facing, responsive, and visually different from Klawpen's default starter.",
+        "Keep it compact but real: hero, one prompt-specific module, proof strip, CTA, and tasteful animation.",
+        "Do not create shared data/component files in this stage.",
+      ].join("\n"),
+    },
+    {
       key: "foundation",
       title: "foundation",
-      percent: 38,
+      percent: 42,
       files: contentFiles,
+      maxOutputTokens: STAGED_BUILD_MAX_OUTPUT_TOKENS,
       instructions: [
         "Create only the project foundation files using the exact domain-specific file plan below.",
         `Required foundation files: ${contentFiles.join(", ")}.`,
@@ -3989,8 +4069,9 @@ function getStagedBuildStages(
     {
       key: "components",
       title: "components",
-      percent: 50,
+      percent: 52,
       files: componentFiles,
+      maxOutputTokens: STAGED_BUILD_MAX_OUTPUT_TOKENS,
       instructions: [
         "Create reusable visual and layout components only using the exact domain-specific component file plan below.",
         `Required component files: ${componentFiles.join(", ")}.`,
@@ -4000,24 +4081,13 @@ function getStagedBuildStages(
         "Do not write page route files in this stage. Keep the response compact.",
       ].join("\n"),
     },
-    {
-      key: "pages",
-      title: "pages",
-      percent: 62,
-      files: routeFiles,
-      instructions: [
-        "Create real App Router pages that import the shared components/content.",
-        `Write/overwrite these route files: ${routeFiles.join(", ")}.`,
-        "Each route must have route-specific content and composition; do not make thin wrappers around the same page.",
-        "Navigation links must point to real routes.",
-        "Do not rewrite foundation/component files unless an import fix is absolutely required.",
-      ].join("\n"),
-    },
+    ...routeStages,
     {
       key: "polish",
       title: "polish",
-      percent: 72,
+      percent: 82,
       files: stageFiles.polish?.length ? stageFiles.polish : filePlan.polish,
+      maxOutputTokens: STAGED_BUILD_BOOTSTRAP_MAX_OUTPUT_TOKENS,
       instructions: [
         "Apply final polish in a small patch.",
         "Add or refine purposeful motion, hover states, accessibility labels, responsive spacing, metadata, and import fixes.",
@@ -4034,13 +4104,14 @@ function buildStagedContextSummary(assistantContent: string) {
   if (!writes.length) return "No previous staged files yet.";
 
   return writes
+    .slice(-STAGED_CONTEXT_MAX_FILES)
     .map((operation) => {
       const content = operation.content || "";
       return [
         `FILE: ${normalizeProjectPath(operation.path || "")}`,
         `CHARS: ${content.length}`,
         `PREVIEW:`,
-        clipText(content, 2_200),
+        clipText(content, STAGED_CONTEXT_FILE_PREVIEW_CHARS),
       ].join("\n");
     })
     .join("\n\n---\n\n");
@@ -4110,19 +4181,19 @@ USER REQUEST:
 ${params.userMessage}
 
 PLANNER BRIEF:
-${clipText(params.plannerBrief, 7_000)}
+${clipText(params.plannerBrief, 4_000)}
 
 ARCHITECT SPEC:
-${clipText(formatArchitectSpec(params.architectSpec || null), 5_000)}
+${clipText(formatArchitectSpec(params.architectSpec || null), 3_000)}
 
 IMPLEMENTATION BLUEPRINT:
-${clipText(formatImplementationBlueprint(params.implementationBlueprint || null), 5_000)}
+${clipText(formatImplementationBlueprint(params.implementationBlueprint || null), 3_500)}
 
 RECENT CONVERSATION:
-${clipText(params.recentMessages || "No recent conversation.", 4_000)}
+${clipText(params.recentMessages || "No recent conversation.", 2_000)}
 
 CURRENT CODEBASE SNAPSHOT:
-${clipText(params.codeContext, 12_000)}
+${clipText(params.codeContext, 6_000)}
 
 PREVIOUS STAGED OUTPUT SUMMARY:
 ${buildStagedContextSummary(accumulated)}
@@ -4143,7 +4214,7 @@ ${buildStagedContextSummary(accumulated)}
         temperature: Math.max(aiTemperature, 0.2),
         retries: 0,
         timeoutMs: STAGED_BUILD_TIMEOUT_MS,
-        maxOutputTokens: STAGED_BUILD_MAX_OUTPUT_TOKENS,
+        maxOutputTokens: stage.maxOutputTokens || STAGED_BUILD_MAX_OUTPUT_TOKENS,
         modelOverride: getBuilderModelOverride(params.options),
       });
 
@@ -5699,6 +5770,78 @@ ${clipText(params.codeContext, 24_000)}
   }
 }
 
+async function createBootstrapRescueAttempt(params: {
+  userMessage: string;
+  plannerBrief: string;
+  codeContext: string;
+  provider: AiProviderConfig;
+  options?: BuildOptions;
+  reason: string;
+}): Promise<string | null> {
+  if (!TIMEOUT_RECOVERY_ENABLED) return null;
+
+  const turkish = isLikelyTurkish(params.userMessage);
+  const recoveryProvider = selectTimeoutRecoveryProvider(params.provider);
+  const visualArchetype = selectVisualArchetype(params.userMessage);
+  const system = `
+${BUILDER_SYSTEM_PROMPT}
+
+You are in ULTRA-COMPACT BOOTSTRAP RESCUE MODE.
+The provider failed during deep generation: ${params.reason}
+Return exactly one <dec-code> block with only two write operations:
+1) src/app/globals.css
+2) src/app/page.tsx
+
+Goal:
+- Produce a polished, prompt-specific, working preview immediately.
+- Keep it compact enough to avoid gateway timeout.
+- This is not a template: customer-visible copy and modules must match the user's requested domain.
+- Include a complete one-page preview with hero, prompt-specific module, proof/benefits, process or catalog/booking equivalent, FAQ or objection handling, and final CTA.
+- Use refined responsive design, purposeful animation, and visible UI language in ${turkish ? "Turkish with correct Turkish characters" : "English"}.
+- Never show builder/meta words: prompt, generated, AI, yapay zeka, Klawpen, Core, Builder, template, şablon, fallback, first version, freelancer, proposal.
+- Do not write any other files. Do not use markdown fences.
+
+VISUAL ARCHETYPE:
+${formatVisualArchetype(visualArchetype)}
+`;
+  const user = `
+USER REQUEST:
+${params.userMessage}
+
+PLANNER BRIEF:
+${clipText(params.plannerBrief, 2_500)}
+
+CURRENT CODEBASE SNAPSHOT:
+${clipText(params.codeContext, 3_000)}
+`;
+
+  try {
+    const response = await createAiChatText({
+      provider: recoveryProvider,
+      system,
+      user,
+      temperature: Math.max(aiTemperature, 0.18),
+      retries: 0,
+      timeoutMs: Math.min(AI_RECOVERY_BUILD_TIMEOUT_MS, STAGED_BUILD_TIMEOUT_MS),
+      maxOutputTokens: STAGED_BUILD_BOOTSTRAP_MAX_OUTPUT_TOKENS,
+      modelOverride: getBuilderModelOverride(params.options),
+    });
+
+    if (hasExecutableCodeOperations(response)) {
+      return response;
+    }
+
+    console.warn("Bootstrap rescue attempt did not return executable edit tags.");
+    return null;
+  } catch (error) {
+    console.warn(
+      "Bootstrap rescue attempt failed:",
+      error instanceof Error ? error.message : error
+    );
+    return null;
+  }
+}
+
 async function createCriticReview(
   input: string,
   provider: AiProviderConfig
@@ -6768,11 +6911,26 @@ ${codeContext}`;
             percents: [83, 84, 85],
             intervalMs: 30_000,
           })) ||
+          (await withProgressPulse({
+            task: createBootstrapRescueAttempt({
+              userMessage,
+              plannerBrief,
+              codeContext,
+              provider,
+              options: resolvedOptions,
+              reason: failureReason,
+            }),
+            progress,
+            userMessage,
+            stage: "repair",
+            percents: [86, 88, 90],
+            intervalMs: 18_000,
+          })) ||
           buildLocalEmergencyAssistantContent(
             userMessage,
             transientFailure
-              ? "AI provider timed out or returned a transient gateway error; staged build and timeout recovery failed before returning valid executable customer code. Automatic template fallback is disabled, so no ready-made design was applied."
-              : "AI provider failed before returning a valid executable build; staged build and recovery failed. Automatic template fallback is disabled, so no ready-made design was applied."
+              ? "AI provider timed out or returned a transient gateway error; staged build, timeout recovery, and bootstrap rescue failed before returning valid executable customer code. Automatic template fallback is disabled, so no ready-made design was applied."
+              : "AI provider failed before returning a valid executable build; staged build, recovery, and bootstrap rescue failed. Automatic template fallback is disabled, so no ready-made design was applied."
           );
       }
     }
