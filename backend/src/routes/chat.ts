@@ -10,10 +10,8 @@ const MAX_ATTACHMENTS = 4;
 const MAX_ATTACHMENT_BYTES = 8_000_000;
 const MAX_TOTAL_ATTACHMENT_BYTES = 12_000_000;
 const CREDIT_UNIT_CENTS = Number(process.env.KLAWPEN_CORE_CREDIT_CENTS || "100");
-const TURKISH_HINT_PATTERN =
-  /[çğıöşü]/i;
-const TURKISH_WORD_PATTERN =
-  /\b(merhaba|selam|kanka|tesisat|site|yap|oluştur|tasarla|düzenle|değiştir|lütfen|için)\b/i;
+const TURKISH_HINT_PATTERN = /[Ã§ÄŸÄ±Ä°Ã¶ÅŸÃ¼]/i;
+const TURKISH_WORD_PATTERN = /\b(merhaba|selam|kanka|tesisat|site|yap|oluÅŸtur|tasarla|dÃ¼zenle|deÄŸiÅŸtir|lÃ¼tfen|iÃ§in)\b/i;
 
 router.param("containerId", async (req, res, next, containerId: string) => {
   try {
@@ -283,10 +281,10 @@ router.post("/:containerId/messages", async (req, res) => {
       const error =
         usage.reason === "free_limit_reached"
           ? isTurkish
-            ? "Ücretsiz kullanım limitin doldu. Devam etmek için planını yükseltmen veya hesabına kredi eklemen gerekiyor."
+            ? "Ãœcretsiz kullanÄ±m limitin doldu. Devam etmek iÃ§in planÄ±nÄ± yÃ¼kseltmen veya hesabÄ±na kredi eklemen gerekiyor."
             : "Free plan limit reached. Upgrade your plan or add credits to continue building."
           : isTurkish
-            ? "Klawpen Core kredin yetersiz. Devam etmek için kredi eklemen veya planını yükseltmen gerekiyor."
+            ? "Klawpen Core kredin yetersiz. Devam etmek iÃ§in kredi eklemen veya planÄ±nÄ± yÃ¼kseltmen gerekiyor."
             : "Your Klawpen Core credit is not enough. Add credit or upgrade your plan.";
 
       return res.status(402).json({

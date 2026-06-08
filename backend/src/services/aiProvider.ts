@@ -19,6 +19,8 @@ export interface AiWorkloadEstimate {
   providerHint: AiProviderKey;
 }
 
+export type AiProviderPurpose = "build" | "chat";
+
 const DEFAULT_BASE_URL = "https://api.gptclubapi.xyz/openai/v1";
 const DEFAULT_CR_MODEL = "gpt-5.3-codex";
 const DEFAULT_SK_MODEL = "anthropic/claude-haiku-4.5";
@@ -33,14 +35,37 @@ function readProviderHint(...values: Array<string | undefined>): AiProviderKey |
   return /^[a-z0-9_.:-]+$/i.test(raw) ? raw : "";
 }
 
-const BUILD_PROVIDER_HINT = readProviderHint(
+export const BUILD_PROVIDER_HINT = readProviderHint(
   process.env.KLAWPEN_BUILD_PROVIDER,
   process.env.AI_BUILD_PROVIDER
 );
-const CHAT_PROVIDER_HINT = readProviderHint(
+export const CHAT_PROVIDER_HINT = readProviderHint(
   process.env.KLAWPEN_CHAT_PROVIDER,
   process.env.AI_CHAT_PROVIDER
 );
+const STRICT_PROVIDER_HINT =
+  process.env.KLAWPEN_STRICT_PROVIDER_HINT === "true" ||
+  process.env.AI_STRICT_PROVIDER_HINT === "true";
+
+function getProviderPublicContext(provider: AiProviderConfig) {
+  let baseHost = provider.baseUrl;
+  try {
+    baseHost = new URL(provider.baseUrl).host;
+  } catch {
+    // Keep the raw value; it is still useful and contains no secret.
+  }
+
+  return {
+    key: provider.key,
+    envPrefix: provider.envPrefix,
+    model: provider.model,
+    baseHost,
+    dailyRequestLimit: provider.dailyRequestLimit,
+    dailyRequestsUsed: getDailyCount(provider.key),
+    priority: provider.priority,
+    hasApiKey: Boolean(provider.apiKey),
+  };
+}
 
 function readProviderConfig(
   key: "cr" | "sk",
@@ -229,6 +254,135 @@ function getDailyCount(providerKey: AiProviderKey) {
   return current.count;
 }
 
+export function getAiProviderDiagnostics() {
+  const providers = getAiProviders();
+  const providerKeys = new Set(providers.map((provider) => provider.key));
+
+  return {
+    buildProviderHint: BUILD_PROVIDER_HINT || "(default: cr)",
+    chatProviderHint: CHAT_PROVIDER_HINT || "(default: sk)",
+    strictProviderHint: STRICT_PROVIDER_HINT,
+    missingBuildProviderHint:
+      Boolean(BUILD_PROVIDER_HINT) && !providerKeys.has(BUILD_PROVIDER_HINT),
+    missingChatProviderHint:
+      Boolean(CHAT_PROVIDER_HINT) && !providerKeys.has(CHAT_PROVIDER_HINT),
+    providerCount: providers.length,
+    providers: providers.map(getProviderPublicContext),
+  };
+}
+
+export function getAiProviderHintForPurpose(purpose: AiProviderPurpose) {
+  return purpose === "chat"
+    ? CHAT_PROVIDER_HINT || "sk"
+    : BUILD_PROVIDER_HINT || "cr";
+}
+
+function getChatCompletionsUrl(provider: AiProviderConfig) {
+  const base = provider.baseUrl.endsWith("/")
+    ? provider.baseUrl
+    : `${provider.baseUrl}/`;
+  return new URL("chat/completions", base).toString();
+}
+
+function getProviderRequestHeaders(provider: AiProviderConfig) {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${provider.apiKey}`,
+    "Content-Type": "application/json",
+  };
+
+  try {
+    const host = new URL(provider.baseUrl).host.toLowerCase();
+    if (host.includes("openrouter.ai")) {
+      headers["HTTP-Referer"] =
+        process.env.OPENROUTER_SITE_URL ||
+        process.env.NEXT_PUBLIC_APP_URL ||
+        "https://builder.klawpen.com";
+      headers["X-Title"] =
+        process.env.OPENROUTER_APP_NAME || "Klawpen Builder";
+    }
+  } catch {
+    // Let the actual request surface invalid URL problems.
+  }
+
+  return headers;
+}
+
+function clipDiagnosticText(value: string, maxLength = 700) {
+  return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
+}
+
+export async function runAiProviderSmokeTest(
+  purpose: AiProviderPurpose = "build"
+) {
+  const provider = selectAiProvider({
+    providerHint: getAiProviderHintForPurpose(purpose),
+  });
+  const startedAt = Date.now();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20_000);
+
+  try {
+    const response = await fetch(getChatCompletionsUrl(provider), {
+      method: "POST",
+      headers: getProviderRequestHeaders(provider),
+      body: JSON.stringify({
+        model: provider.model,
+        messages: [{ role: "user", content: "Reply with exactly: ok" }],
+        temperature: 0,
+        max_tokens: 8,
+      }),
+      signal: controller.signal,
+    });
+    const rawBody = await response.text();
+    let parsed: any = null;
+
+    try {
+      parsed = rawBody ? JSON.parse(rawBody) : null;
+    } catch {
+      // Some gateways return plain text on errors. Keep a clipped copy below.
+    }
+
+    if (!response.ok) {
+      return {
+        success: false,
+        purpose,
+        provider: getProviderPublicContext(provider),
+        status: response.status,
+        latencyMs: Date.now() - startedAt,
+        error:
+          parsed?.error?.message ||
+          parsed?.message ||
+          clipDiagnosticText(rawBody || response.statusText),
+      };
+    }
+
+    return {
+      success: true,
+      purpose,
+      provider: getProviderPublicContext(provider),
+      status: response.status,
+      latencyMs: Date.now() - startedAt,
+      responseText: clipDiagnosticText(
+        parsed?.choices?.[0]?.message?.content ||
+          parsed?.choices?.[0]?.text ||
+          rawBody,
+        120
+      ),
+    };
+  } catch (error) {
+    return {
+      success: false,
+      purpose,
+      provider: getProviderPublicContext(provider),
+      status: 0,
+      latencyMs: Date.now() - startedAt,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export function recordProviderRequest(providerKey: AiProviderKey) {
   const day = todayKey();
   const current = usageByProvider.get(providerKey);
@@ -252,6 +406,14 @@ export function selectAiProvider(
   const preferred = estimate?.providerHint
     ? providers.find((provider) => provider.key === estimate.providerHint)
     : null;
+
+  if (estimate?.providerHint && !preferred) {
+    const message = `Configured Klawpen Core provider "${estimate.providerHint}" is not available. Check its API key and env vars.`;
+    if (STRICT_PROVIDER_HINT) {
+      throw new Error(message);
+    }
+    console.warn(message);
+  }
   const orderedProviders = [
     ...(preferred ? [preferred] : []),
     ...providers.filter((provider) => provider.key !== preferred?.key),

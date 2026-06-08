@@ -4,7 +4,10 @@ import accountRoutes from "./routes/account";
 import chatRoutes from "./routes/chat";
 import containerRoutes from "./routes/containers";
 import previewRoutes from "./routes/preview";
-import { getAiProviders } from "./services/aiProvider";
+import {
+  getAiProviderDiagnostics,
+  runAiProviderSmokeTest,
+} from "./services/aiProvider";
 import { getPreviewProxyOrigin } from "./services/docker";
 
 const app = express();
@@ -162,7 +165,7 @@ app.get("/health", (_req, res) => {
   res.json({
     success: true,
     service: "klawpen-builder-api",
-    marker: "professional-build-flow-v3",
+    marker: "provider-diagnostics-design-fallback-v4",
     timestamp: new Date().toISOString(),
   });
 });
@@ -176,29 +179,12 @@ app.get("/diagnostics", (_req, res) => {
     return;
   }
 
-  const providers = getAiProviders().map((provider) => {
-    let baseHost = provider.baseUrl;
-    try {
-      baseHost = new URL(provider.baseUrl).host;
-    } catch {
-      // Keep raw host string if URL parsing fails.
-    }
-
-    return {
-      key: provider.key,
-      envPrefix: provider.envPrefix,
-      model: provider.model,
-      baseHost,
-      dailyRequestLimit: provider.dailyRequestLimit,
-      priority: provider.priority,
-      hasApiKey: Boolean(provider.apiKey),
-    };
-  });
+  const aiDiagnostics = getAiProviderDiagnostics();
 
   res.json({
     success: true,
     service: "klawpen-builder-api",
-    marker: "professional-build-flow-v3",
+    marker: "provider-diagnostics-design-fallback-v4",
     build: {
       stagedBuild: process.env.KLAWPEN_STAGED_BUILD !== "false",
       promptAwareLocalFallback:
@@ -221,8 +207,7 @@ app.get("/diagnostics", (_req, res) => {
       baseUrl: process.env.PREVIEW_BASE_URL || "(unset)",
     },
     ai: {
-      providerCount: providers.length,
-      providers,
+      ...aiDiagnostics,
       deepBuildModel:
         process.env.KLAWPEN_DEEP_BUILD_MODEL ||
         process.env.AI_DEEP_BUILD_MODEL ||
@@ -238,6 +223,20 @@ app.get("/diagnostics", (_req, res) => {
     },
     timestamp: new Date().toISOString(),
   });
+});
+
+app.get("/diagnostics/ai-smoke", async (req, res) => {
+  if (process.env.KLAWPEN_DIAGNOSTICS_ENABLED !== "true") {
+    res.status(404).json({
+      success: false,
+      error: "Not found",
+    });
+    return;
+  }
+
+  const purpose = req.query.purpose === "chat" ? "chat" : "build";
+  const result = await runAiProviderSmokeTest(purpose);
+  res.status(result.success ? 200 : 502).json(result);
 });
 
 app.use("/preview", previewRoutes);

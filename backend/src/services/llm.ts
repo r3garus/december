@@ -5150,50 +5150,437 @@ p {
 `;
 }
 
+const LEGACY_LOCAL_FALLBACK_PATHS = [
+  "src/lib/brand-profile.ts",
+  "src/components/experience/nav.tsx",
+  "src/components/experience/hero-panel.tsx",
+  "src/components/experience/sections.tsx",
+  "src/lib/site-content.ts",
+  "src/config/site-routes.ts",
+  "src/components/site-motion.tsx",
+  "src/components/site-card.tsx",
+  "src/components/site-experience.tsx",
+] as const;
+
+function buildDomainFallbackContentFile(
+  content: ReturnType<typeof buildFallbackSiteContent>
+): string {
+  return `export const experienceContent = ${JSON.stringify(content, null, 2)} as const;
+
+export type ExperienceContent = typeof experienceContent;
+`;
+}
+
+function buildDomainFallbackDesignConfig(
+  domainKey: string,
+  content: ReturnType<typeof buildFallbackSiteContent>
+): string {
+  const design = {
+    namespace: domainKey,
+    archetype: content.visualArchetype,
+    palette: content.profile.palette,
+    rhythm: {
+      shell: "min(1180px, calc(100% - 40px))",
+      sectionY: "clamp(72px, 9vw, 128px)",
+      cardRadius: "1.75rem",
+      heroRadius: "2.6rem",
+    },
+    motion: {
+      entrance: "site-fade-in 700ms ease-out both",
+      card: "transform 220ms ease, box-shadow 220ms ease, background 220ms ease",
+      hover: "translateY(-4px)",
+    },
+  };
+
+  return `export const experienceDesign = ${JSON.stringify(design, null, 2)} as const;
+`;
+}
+
+function buildDomainFallbackModulesFile(
+  domainKey: string,
+  content: ReturnType<typeof buildFallbackSiteContent>
+): string {
+  const modules = {
+    namespace: domainKey,
+    hero: {
+      badge: content.profile.badge,
+      headline: content.profile.headline,
+      intro: content.profile.intro,
+      primary: content.profile.primary,
+      secondary: content.profile.secondary,
+    },
+    navigation: content.nav,
+    signals: content.signals,
+    workflow: content.workflow,
+    outcomes: content.outcomes,
+    proof: content.caseStudy,
+    faq: content.profile.faq,
+  };
+
+  return `export const experienceModules = ${JSON.stringify(modules, null, 2)} as const;
+`;
+}
+
+function buildDomainFallbackRouteConfig(
+  userMessage: string,
+  content: ReturnType<typeof buildFallbackSiteContent>
+): string {
+  const routes = dedupeArchitectRoutes(createLocalArchitectSpec(userMessage).routes)
+    .slice(0, 5)
+    .map((route, index) => {
+      const key = ["home", "support", "proof", "about", "conversion"][index] || `route${index}`;
+      return {
+        key,
+        path: route.path,
+        label: route.visibleTitle,
+        title:
+          route.path === "/"
+            ? content.businessName
+            : `${route.visibleTitle} | ${content.businessName}`,
+        description:
+          route.purpose ||
+          (route.path === "/"
+            ? content.profile.intro
+            : content.labels.finalText),
+      };
+    });
+  const routeMeta = Object.fromEntries(routes.map((route) => [route.key, route]));
+
+  return `export const experienceRouteMeta = ${JSON.stringify(routeMeta, null, 2)} as const;
+
+export const experienceRoutes = ${JSON.stringify(routes, null, 2)} as const;
+`;
+}
+
+function replaceIdentifier(source: string, from: string, to: string) {
+  return source.replace(new RegExp(`\\b${from}\\b`, "g"), to);
+}
+
+function buildDomainFallbackMotionComponent(): string {
+  return buildFallbackMotionComponent();
+}
+
+function buildDomainFallbackCardComponent(): string {
+  return replaceIdentifier(
+    buildFallbackCardComponent(),
+    "SiteCard",
+    "ExperienceCard"
+  );
+}
+
+function buildDomainFallbackVisualsComponent(domainKey: string): string {
+  return `import { experienceContent } from "../lib/${domainKey}-content";
+
+export function AtmosphericVisual({ compact = false }: { compact?: boolean }) {
+  const palette = experienceContent.profile.palette;
+
+  return (
+    <div className={compact ? "relative h-28 overflow-hidden rounded-[1.4rem]" : "relative min-h-72 overflow-hidden rounded-[2.4rem]"}>
+      <div className="absolute inset-0" style={{ background: "linear-gradient(135deg," + palette.panel + "," + palette.accent + ")" }} />
+      <div className="absolute -left-10 top-8 h-36 w-36 rounded-full blur-3xl" style={{ background: palette.primary }} />
+      <div className="absolute bottom-6 right-6 grid gap-2">
+        {experienceContent.stats.map(([value, label]) => (
+          <div key={label} className="rounded-2xl bg-white/15 px-4 py-3 text-white backdrop-blur">
+            <strong className="block text-2xl tracking-[-0.04em]">{value}</strong>
+            <span className="text-xs opacity-70">{label}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+`;
+}
+
+function buildDomainFallbackSectionDeckComponent(domainKey: string): string {
+  return `import { experienceContent } from "../lib/${domainKey}-content";
+
+export function SectionDeck() {
+  const palette = experienceContent.profile.palette;
+
+  return (
+    <section className="grid gap-4 md:grid-cols-3">
+      {experienceContent.outcomes.map(([title, text]) => (
+        <article key={title} className="rounded-[1.75rem] border bg-white/75 p-6 shadow-sm" style={{ borderColor: palette.border }}>
+          <p className="text-xs font-bold uppercase tracking-[0.24em]" style={{ color: palette.primary }}>
+            {experienceContent.labels.proofTitle}
+          </p>
+          <h3 className="mt-6 text-2xl font-bold tracking-[-0.02em]">{title}</h3>
+          <p className="mt-3 leading-7" style={{ color: palette.muted }}>{text}</p>
+        </article>
+      ))}
+    </section>
+  );
+}
+`;
+}
+
+function buildDomainFallbackExperienceComponent(domainKey: string): string {
+  let source = buildFallbackGeneratedSiteComponent()
+    .replace(
+      `import { siteContent } from "../lib/site-content";`,
+      `import { experienceContent } from "../lib/${domainKey}-content";`
+    )
+    .replace(
+      `import { siteRoutes } from "../config/site-routes";`,
+      `import { experienceRoutes } from "../config/${domainKey}-routes";`
+    )
+    .replace(
+      `import { SiteCard } from "./site-card";`,
+      `import { ExperienceCard } from "./${domainKey}-cards";`
+    )
+    .replace(
+      `import { MotionFrame } from "./site-motion";`,
+      `import { MotionFrame } from "./${domainKey}-motion";`
+    );
+
+  source = replaceIdentifier(source, "siteContent", "experienceContent");
+  source = replaceIdentifier(source, "siteRoutes", "experienceRoutes");
+  source = replaceIdentifier(source, "SiteCard", "ExperienceCard");
+  source = replaceIdentifier(source, "SiteHomePage", "ExperienceHomePage");
+  source = replaceIdentifier(source, "SiteServicesPage", "ExperienceSupportPage");
+  source = replaceIdentifier(source, "SiteProofPage", "ExperienceProofPage");
+  source = replaceIdentifier(source, "SiteContactPage", "ExperienceContactPage");
+
+  return `${source}
+
+export function ExperienceAboutPage() {
+  const content = experienceContent;
+  const profile = content.profile;
+
+  return (
+    <MotionFrame>
+      <main className="min-h-screen overflow-hidden" style={{ background: profile.palette.bg, color: profile.palette.text }}>
+        <section className={sectionPad + " py-5"}><ShellNav /></section>
+        <section className={sectionPad + " py-16"}>
+          <div className="mx-auto grid max-w-7xl gap-8 lg:grid-cols-[0.8fr_1.2fr]">
+            <aside className="rounded-[2.4rem] p-8 text-white" style={{ background: profile.palette.panel }}>
+              <p className="text-xs font-bold uppercase tracking-[0.3em]" style={{ color: profile.palette.primary }}>{profile.badge}</p>
+              <h1 className="mt-6 text-[clamp(2.2rem,4.2vw,4.1rem)] font-bold leading-[1.04] tracking-[-0.03em]">{content.labels.outcomesTitle}</h1>
+              <p className="mt-6 text-lg leading-8 text-white/68">{profile.intro}</p>
+            </aside>
+            <div className="grid gap-4 md:grid-cols-2">
+              {content.outcomes.map(([title, text]) => (
+                <article key={title} className="rounded-[1.8rem] border bg-white/75 p-6" style={{ borderColor: profile.palette.border }}>
+                  <h2 className="text-2xl font-bold tracking-[-0.02em]">{title}</h2>
+                  <p className="mt-3 leading-7" style={{ color: profile.palette.muted }}>{text}</p>
+                </article>
+              ))}
+            </div>
+          </div>
+        </section>
+        <FinalCta />
+      </main>
+    </MotionFrame>
+  );
+}
+`;
+}
+
+function buildDomainFallbackGlobals(): string {
+  return `@import "tailwindcss";
+@config "../../tailwind.config.ts";
+
+:root {
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-height: 100%;
+  scroll-behavior: smooth;
+}
+
+body {
+  min-height: 100%;
+  margin: 0;
+  background: #f7f4ee;
+  color: #17110d;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+@keyframes site-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.992);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+::selection {
+  background: rgba(41, 182, 177, 0.24);
+}
+`;
+}
+
+function buildDomainFallbackLayout(
+  userMessage: string,
+  domainKey: string
+): string {
+  const lang = isLikelyTurkish(userMessage) ? "tr" : "en";
+
+  return `import type { Metadata } from "next";
+import "./globals.css";
+import { experienceContent } from "../lib/${domainKey}-content";
+
+export const metadata: Metadata = {
+  title: experienceContent.businessName,
+  description: experienceContent.profile.intro,
+};
+
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
+  return (
+    <html lang="${lang}">
+      <body>{children}</body>
+    </html>
+  );
+}
+`;
+}
+
+function buildDomainFallbackRoutePage(params: {
+  domainKey: string;
+  routeKey: string;
+  componentName: string;
+  routeFile: string;
+}): string {
+  const base = normalizeProjectPath(params.routeFile) === "src/app/page.tsx"
+    ? ".."
+    : "../..";
+
+  return `import type { Metadata } from "next";
+import { ${params.componentName} } from "${base}/components/${params.domainKey}-experience";
+import { experienceRouteMeta } from "${base}/config/${params.domainKey}-routes";
+
+const routeMeta = experienceRouteMeta.${params.routeKey};
+
+export const metadata: Metadata = {
+  title: routeMeta.title,
+  description: routeMeta.description,
+};
+
+export default function Page() {
+  return <${params.componentName} />;
+}
+`;
+}
+
 function buildPromptAwareLocalFallbackOperations(userMessage: string): CodeOperation[] {
+  const content = buildFallbackSiteContent(userMessage);
+  const spec = createLocalArchitectSpec(userMessage);
+  const routes = dedupeArchitectRoutes(spec.routes).slice(0, 5);
+  const filePlan = getDomainFilePlan(userMessage, routes);
+  const domainKey = filePlan.domainKey;
+  const routeComponentNames = [
+    "ExperienceHomePage",
+    "ExperienceSupportPage",
+    "ExperienceProofPage",
+    "ExperienceAboutPage",
+    "ExperienceContactPage",
+  ];
+  const routeKeys = ["home", "support", "proof", "about", "conversion"];
+  const routeOperations = routes.map((route, index): CodeOperation => {
+    const routeFile = routePathToPageFile(route.path);
+    return {
+      type: "write",
+      index: 100 + index,
+      path: routeFile,
+      content: buildDomainFallbackRoutePage({
+        domainKey,
+        routeKey: routeKeys[index] || `route${index}`,
+        componentName: routeComponentNames[index] || "ExperienceSupportPage",
+        routeFile,
+      }),
+    };
+  });
+
   return [
+    ...LEGACY_LOCAL_FALLBACK_PATHS.map((path, index): CodeOperation => ({
+      type: "delete",
+      index,
+      path,
+    })),
     {
       type: "write",
-      index: 1,
-      path: "src/lib/brand-profile.ts",
-      content: buildPromptAwareFallbackContentModule(userMessage),
-    },
-    {
-      type: "write",
-      index: 2,
-      path: "src/components/experience/nav.tsx",
-      content: buildPromptAwareNavComponent(),
-    },
-    {
-      type: "write",
-      index: 3,
-      path: "src/components/experience/hero-panel.tsx",
-      content: buildPromptAwareHeroPanelComponent(),
-    },
-    {
-      type: "write",
-      index: 4,
-      path: "src/components/experience/sections.tsx",
-      content: buildPromptAwareSectionsComponent(),
-    },
-    {
-      type: "write",
-      index: 5,
+      index: 20,
       path: "src/app/globals.css",
-      content: buildPromptAwareFallbackGlobals(),
+      content: buildDomainFallbackGlobals(),
     },
     {
       type: "write",
-      index: 6,
+      index: 21,
+      path: `src/lib/${domainKey}-content.ts`,
+      content: buildDomainFallbackContentFile(content),
+    },
+    {
+      type: "write",
+      index: 22,
+      path: `src/data/${domainKey}-modules.ts`,
+      content: buildDomainFallbackModulesFile(domainKey, content),
+    },
+    {
+      type: "write",
+      index: 23,
+      path: `src/config/${domainKey}-routes.ts`,
+      content: buildDomainFallbackRouteConfig(userMessage, content),
+    },
+    {
+      type: "write",
+      index: 24,
+      path: `src/config/${domainKey}-design.ts`,
+      content: buildDomainFallbackDesignConfig(domainKey, content),
+    },
+    {
+      type: "write",
+      index: 25,
+      path: `src/components/${domainKey}-motion.tsx`,
+      content: buildDomainFallbackMotionComponent(),
+    },
+    {
+      type: "write",
+      index: 26,
+      path: `src/components/${domainKey}-cards.tsx`,
+      content: buildDomainFallbackCardComponent(),
+    },
+    {
+      type: "write",
+      index: 27,
+      path: `src/components/${domainKey}-visuals.tsx`,
+      content: buildDomainFallbackVisualsComponent(domainKey),
+    },
+    {
+      type: "write",
+      index: 28,
+      path: `src/components/${domainKey}-section-deck.tsx`,
+      content: buildDomainFallbackSectionDeckComponent(domainKey),
+    },
+    {
+      type: "write",
+      index: 29,
+      path: `src/components/${domainKey}-experience.tsx`,
+      content: buildDomainFallbackExperienceComponent(domainKey),
+    },
+    {
+      type: "write",
+      index: 30,
       path: "src/app/layout.tsx",
-      content: buildPromptAwareFallbackLayout(userMessage),
+      content: buildDomainFallbackLayout(userMessage, domainKey),
     },
-    {
-      type: "write",
-      index: 7,
-      path: "src/app/page.tsx",
-      content: buildPromptAwareFallbackPage(userMessage),
-    },
+    ...routeOperations,
   ];
 }
 
