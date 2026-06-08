@@ -332,7 +332,7 @@ const PROMPT_AWARE_LOCAL_FALLBACK_ENABLED =
   process.env.KLAWPEN_PROMPT_AWARE_LOCAL_FALLBACK === "true" &&
   process.env.KLAWPEN_ALLOW_LOCAL_TEMPLATE_FALLBACK === "true";
 const STAGED_BUILD_ENABLED =
-  process.env.KLAWPEN_STAGED_BUILD !== "false";
+  process.env.KLAWPEN_STAGED_BUILD === "true";
 const STAGED_INLINE_APPLY_ENABLED =
   process.env.KLAWPEN_STAGED_INLINE_APPLY === "true";
 const STAGED_BUILD_TIMEOUT_MS = readPositiveInt(

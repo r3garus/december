@@ -168,7 +168,7 @@ app.get("/health", (_req, res) => {
   res.json({
     success: true,
     service: "klawpen-builder-api",
-    marker: "pipeline-hardening-docker-parser-verify-v7",
+    marker: "streaming-llm-digest-verify-v8",
     timestamp: new Date().toISOString(),
   });
 });
@@ -187,9 +187,9 @@ app.get("/diagnostics", (_req, res) => {
   res.json({
     success: true,
     service: "klawpen-builder-api",
-    marker: "pipeline-hardening-docker-parser-verify-v7",
+    marker: "streaming-llm-digest-verify-v8",
     build: {
-      stagedBuild: process.env.KLAWPEN_STAGED_BUILD !== "false",
+      stagedBuild: process.env.KLAWPEN_STAGED_BUILD === "true",
       stagedInlineApply: process.env.KLAWPEN_STAGED_INLINE_APPLY === "true",
       promptAwareLocalFallback:
         process.env.KLAWPEN_PROMPT_AWARE_LOCAL_FALLBACK === "true" &&
@@ -205,6 +205,21 @@ app.get("/diagnostics", (_req, res) => {
       premiumFallback: process.env.KLAWPEN_ENABLE_PREMIUM_FALLBACK === "true",
       timeoutRecovery: process.env.KLAWPEN_TIMEOUT_RECOVERY !== "false",
       architectSpec: process.env.KLAWPEN_ENABLE_ARCHITECT_SPEC === "true",
+    },
+    llm: {
+      streaming: process.env.KLAWPEN_LLM_STREAMING !== "false",
+      ttfbTimeoutMs:
+        process.env.AI_STREAM_TTFB_TIMEOUT_MS ||
+        process.env.KLAWPEN_STREAM_TTFB_TIMEOUT_MS ||
+        "18000",
+      idleTimeoutMs:
+        process.env.AI_STREAM_IDLE_TIMEOUT_MS ||
+        process.env.KLAWPEN_STREAM_IDLE_TIMEOUT_MS ||
+        "20000",
+      fallbackModels:
+        process.env.AI_STREAM_FALLBACK_MODELS ||
+        process.env.KLAWPEN_LLM_FALLBACK_MODELS ||
+        "deepseek/deepseek-chat,anthropic/claude-3.5-sonnet",
     },
     preview: {
       publicOrigin: getPreviewProxyOrigin(),

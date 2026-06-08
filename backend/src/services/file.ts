@@ -182,6 +182,30 @@ function hashContent(content: string): string {
   return crypto.createHash("sha256").update(content, "utf8").digest("hex");
 }
 
+async function getContainerFileDigest(
+  containerId: string,
+  absolutePath: string
+): Promise<{ bytes: number; sha256: string }> {
+  const quotedPath = shellQuote(absolutePath);
+  const output = await runContainerCommand(
+    containerId,
+    [
+      "sh",
+      "-c",
+      `bytes=$(wc -c < ${quotedPath}); sha=$(sha256sum ${quotedPath} | awk '{print $1}'); printf '%s %s' "$bytes" "$sha"`,
+    ],
+    BASE_PATH
+  );
+  const [rawBytes, sha256] = output.trim().split(/\s+/);
+  const bytes = Number.parseInt(rawBytes || "", 10);
+
+  if (!Number.isFinite(bytes) || !/^[a-f0-9]{64}$/i.test(sha256 || "")) {
+    throw new Error(`file_digest_failed: ${absolutePath}`);
+  }
+
+  return { bytes, sha256: sha256!.toLowerCase() };
+}
+
 export async function getFileTree(
   docker: Docker,
   containerId: string,
@@ -425,43 +449,48 @@ export async function readFile(
   });
 
   const stream = await exec.start({ Detach: false, Tty: false });
+  const stdoutChunks: Buffer[] = [];
+  const stderrChunks: Buffer[] = [];
+  const stdout = new Writable({
+    write(chunk, _encoding, callback) {
+      stdoutChunks.push(Buffer.from(chunk));
+      callback();
+    },
+  });
+  const stderr = new Writable({
+    write(chunk, _encoding, callback) {
+      stderrChunks.push(Buffer.from(chunk));
+      callback();
+    },
+  });
 
-  return new Promise<string>((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    let stderr = "";
+  docker.modem.demuxStream(stream, stdout, stderr);
 
-    stream.on("data", (chunk: Buffer) => {
-      if (chunk.length > 8) {
-        const header = chunk.slice(0, 8);
-        const streamType = header[0];
-
-        if (streamType === 1) {
-          chunks.push(chunk.slice(8));
-        } else if (streamType === 2) {
-          stderr += chunk.slice(8).toString("utf8");
-        }
-      } else {
-        chunks.push(chunk);
-      }
-    });
-
-    stream.on("end", () => {
-      if (stderr && stderr.trim() !== "exec /bin/sh: invalid argument") {
-        console.error("File read stderr:", stderr);
-      }
-
-      const buffer = Buffer.concat(chunks);
-      const content = buffer.toString("utf8");
-
-      const cleanContent = content.replace(/^\uFEFF/, "");
-      resolve(cleanContent);
-    });
-
+  await new Promise<void>((resolve, reject) => {
+    stream.on("end", resolve);
     stream.on("error", (error) => {
-      console.error("Stream error:", error);
+      console.error("File read stream error:", error);
       reject(error);
     });
   });
+
+  const result = await exec.inspect();
+  const output = Buffer.concat(stdoutChunks).toString("utf8");
+  const errorOutput = Buffer.concat(stderrChunks).toString("utf8");
+
+  if (result.ExitCode !== 0) {
+    throw new Error(
+      errorOutput.trim() ||
+        output.trim() ||
+        `File read failed with exit code ${result.ExitCode}`
+    );
+  }
+
+  if (errorOutput && errorOutput.trim() !== "exec /bin/sh: invalid argument") {
+    console.error("File read stderr:", errorOutput);
+  }
+
+  return output.replace(/^\uFEFF/, "");
 }
 
 export async function listFiles(
@@ -542,9 +571,8 @@ export async function writeFile(
       path: dirPath,
     });
 
-    const writtenContent = await readFile(dockerClient, containerId, absolutePath);
-    const actualBytes = Buffer.byteLength(writtenContent, "utf8");
-    const actualHash = hashContent(writtenContent);
+    const { bytes: actualBytes, sha256: actualHash } =
+      await getContainerFileDigest(containerId, absolutePath);
 
     if (actualBytes !== expectedBytes || actualHash !== expectedHash) {
       console.error("container_file_write_verification_failed", {
