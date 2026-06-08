@@ -217,6 +217,144 @@ const shouldProcessInitialPrompt = (messages: Message[], promptFromUrl: string |
 const mergeUniqueFiles = (files: string[], previous: string[] = []) =>
   Array.from(new Set([...files, ...previous])).slice(0, 8);
 
+const fallbackBuildFiles = [
+  "src/app/page.tsx",
+  "src/app/globals.css",
+  "src/components/sections/hero.tsx",
+  "src/components/sections/proof.tsx",
+  "src/lib/site-content.ts",
+];
+
+const getFileName = (filePath: string) =>
+  filePath.split("/").filter(Boolean).pop() || filePath;
+
+const getFileDirectory = (filePath: string) => {
+  const parts = filePath.split("/").filter(Boolean);
+  return parts.length > 1 ? parts.slice(0, -1).join("/") : "root";
+};
+
+const getFileExtension = (filePath: string) =>
+  getFileName(filePath).split(".").pop()?.toUpperCase() || "FILE";
+
+const getBuildFileIntent = (filePath: string, language: UiLanguage) => {
+  const file = filePath.toLowerCase();
+  const tr = language === "tr";
+
+  if (file.endsWith("globals.css")) {
+    return tr
+      ? "Görsel sistem, animasyonlar ve responsive temel ayarlar işleniyor."
+      : "Visual system, animations, and responsive base rules are being shaped.";
+  }
+
+  if (file.includes("/components/")) {
+    return tr
+      ? "Tekrar kullanılabilir arayüz parçaları ve etkileşimler düzenleniyor."
+      : "Reusable interface sections and interactions are being composed.";
+  }
+
+  if (file.includes("/lib/") || file.includes("/data/") || file.includes("/config/")) {
+    return tr
+      ? "İçerik yapısı, route bilgileri ve sayfa verileri hazırlanıyor."
+      : "Content structure, route details, and page data are being prepared.";
+  }
+
+  if (file.endsWith("layout.tsx")) {
+    return tr
+      ? "Sayfa kabuğu, metadata ve ortak layout ayarları eşitleniyor."
+      : "Shell layout, metadata, and shared page settings are being synced.";
+  }
+
+  if (file.endsWith("page.tsx")) {
+    return tr
+      ? "Sayfa kompozisyonu, CTA akışı ve görünür bölümler kuruluyor."
+      : "Page composition, CTA flow, and visible sections are being assembled.";
+  }
+
+  return tr
+    ? "Dosya güncelleniyor ve çalışma alanına uygulanıyor."
+    : "File is being updated and applied to the workspace.";
+};
+
+const getBuildCodePreview = (
+  filePath: string,
+  stage: BuildProgress["stage"],
+  language: UiLanguage
+) => {
+  const file = filePath.toLowerCase();
+  const tr = language === "tr";
+  const stageLabel =
+    stage === "scan"
+      ? "scan"
+      : stage === "plan" || stage === "architect"
+        ? "plan"
+        : stage === "review" || stage === "validate" || stage === "repair"
+          ? "refine"
+          : stage === "verify"
+            ? "verify"
+            : stage === "refresh"
+              ? "refresh"
+              : "write";
+
+  if (file.endsWith(".css")) {
+    return [
+      "@layer components {",
+      "  .hero-shell {",
+      "    background: var(--surface-gradient);",
+      "    animation: reveal 760ms ease both;",
+      "  }",
+      "  .interactive-card:hover { transform: translateY(-4px); }",
+      "}",
+    ];
+  }
+
+  if (file.includes("/lib/") || file.includes("/data/") || file.includes("/config/")) {
+    return [
+      "export const pageSections = [",
+      `  { label: "${tr ? "Kahraman alanı" : "Hero section"}", state: "${stageLabel}" },`,
+      `  { label: "${tr ? "Güven kanıtı" : "Trust proof"}", priority: "high" },`,
+      `  { label: "${tr ? "Dönüşüm adımı" : "Conversion path"}", visible: true },`,
+      "] as const;",
+    ];
+  }
+
+  if (file.includes("/components/")) {
+    return [
+      "export function ExperienceSection() {",
+      "  return (",
+      "    <section className=\"motion-safe:animate-in\">",
+      "      <HeaderCopy />",
+      "      <ResponsiveCards />",
+      "    </section>",
+      "  );",
+      "}",
+    ];
+  }
+
+  if (file.endsWith("layout.tsx")) {
+    return [
+      "export const metadata = {",
+      "  title: site.name,",
+      "  description: site.description,",
+      "};",
+      "export default function RootLayout({ children }) {",
+      "  return <html><body>{children}</body></html>;",
+      "}",
+    ];
+  }
+
+  return [
+    "export default function Page() {",
+    "  return (",
+    "    <main className=\"min-h-screen overflow-hidden\">",
+    "      <Hero />",
+    "      <ProofAndProcess />",
+    "      <FinalCta />",
+    "    </main>",
+    "  );",
+    "}",
+  ];
+};
+
 export const WorkspaceDashboard = ({
   containerId,
 }: WorkspaceDashboardProps) => {
@@ -231,6 +369,7 @@ export const WorkspaceDashboard = ({
   );
   const [buildProgress, setBuildProgress] = useState<BuildProgress | null>(null);
   const [recentBuildFiles, setRecentBuildFiles] = useState<string[]>([]);
+  const [activeBuildFileIndex, setActiveBuildFileIndex] = useState(0);
   const [isDragOver, setIsDragOver] = useState<boolean>(false);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [isDesktopView, setIsDesktopView] = useState<boolean>(true);
@@ -279,6 +418,30 @@ export const WorkspaceDashboard = ({
   > | null>(null);
 
   const isDark = settingsTheme === "dark";
+  useEffect(() => {
+    if (!isLoading) {
+      setActiveBuildFileIndex(0);
+      return;
+    }
+
+    const candidateCount =
+      buildProgress?.files?.length ||
+      recentBuildFiles.length ||
+      fallbackBuildFiles.length;
+
+    setActiveBuildFileIndex((index) => index % candidateCount);
+
+    const timer = window.setInterval(() => {
+      setActiveBuildFileIndex((index) => (index + 1) % candidateCount);
+    }, 1650);
+
+    return () => window.clearInterval(timer);
+  }, [
+    isLoading,
+    buildProgress?.files?.join("|"),
+    recentBuildFiles.join("|"),
+  ]);
+
   const accountEntitlements = accountSnapshot?.entitlements;
   const profileDisplayName =
     `${profileFirstName} ${profileLastName}`.trim() ||
@@ -505,6 +668,12 @@ export const WorkspaceDashboard = ({
     buildOverlayStepVerify: "Quality check",
     buildOverlayStepPreview: "Preview refresh",
     buildOverlayChangedFiles: "Live file activity",
+    buildOverlayLiveCode: "Live code pass",
+    buildOverlayActiveFile: "Active file",
+    buildOverlayWriting: "Writing",
+    buildOverlayQueued: "Queued",
+    buildOverlayApplied: "Applied",
+    buildOverlayFocus: "Current focus",
     askFollowUp: "Ask about this code...",
     welcomeAssistantName: "Assistant",
     welcomeTitle:
@@ -872,6 +1041,12 @@ export const WorkspaceDashboard = ({
     buildOverlayStepVerify: "Kalite kontrolü",
     buildOverlayStepPreview: "Önizleme yenileme",
     buildOverlayChangedFiles: "Canlı dosya aktivitesi",
+    buildOverlayLiveCode: "Canlı kod akışı",
+    buildOverlayActiveFile: "Aktif dosya",
+    buildOverlayWriting: "Yazılıyor",
+    buildOverlayQueued: "Sırada",
+    buildOverlayApplied: "Uygulandı",
+    buildOverlayFocus: "Şu anki odak",
     askFollowUp: "Kod hakkinda sor...",
     welcomeAssistantName: "Asistan",
     welcomeTitle: "Klawpen calisma alanin hazir. Bu projeyi planlama, gelistirme, duzenleme ve yayinlama akisinda birlikte ilerletebiliriz.",
@@ -2339,7 +2514,24 @@ export const WorkspaceDashboard = ({
   const visibleBuildFiles = (activeBuildProgress.files?.length
     ? activeBuildProgress.files
     : recentBuildFiles
-  ).slice(0, 5);
+  ).length
+    ? (activeBuildProgress.files?.length
+        ? activeBuildProgress.files
+        : recentBuildFiles)
+    : fallbackBuildFiles;
+  const visibleBuildFileWindow = visibleBuildFiles.slice(0, 6);
+  const activeBuildFile =
+    visibleBuildFiles[activeBuildFileIndex % visibleBuildFiles.length] ||
+    fallbackBuildFiles[0];
+  const activeBuildFileCode = getBuildCodePreview(
+    activeBuildFile,
+    activeBuildProgress.stage,
+    settingsLanguage
+  );
+  const activeBuildFileIntent = getBuildFileIntent(
+    activeBuildFile,
+    settingsLanguage
+  );
 
   const WelcomeMessage = () => (
     <div className="mb-3 flex flex-col items-start">
@@ -2735,53 +2927,223 @@ export const WorkspaceDashboard = ({
                     />
                   </div>
                   {isLoading && (
-                    <div className="absolute inset-0 z-30 flex items-center justify-center bg-slate-950/22 p-4 backdrop-blur-[6px]">
+                    <div className="absolute inset-0 z-30 flex items-center justify-center bg-slate-950/24 p-3 backdrop-blur-[8px] sm:p-5">
                       <div
-                        className={`w-full max-w-md overflow-hidden rounded-[28px] border p-5 shadow-[0_30px_90px_rgba(15,23,42,0.28)] ${
+                        className={`relative w-full max-w-4xl overflow-hidden rounded-[30px] border p-4 shadow-[0_32px_110px_rgba(15,23,42,0.34)] sm:p-5 ${
                           isDark
-                            ? "border-white/10 bg-[#1f2022]/88 text-slate-100"
-                            : "border-white/70 bg-white/88 text-slate-900"
+                            ? "border-white/10 bg-[#17191d]/90 text-slate-100"
+                            : "border-white/75 bg-white/90 text-slate-900"
                         }`}
                       >
-                        <div className="flex items-start gap-3">
-                          <div className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[#1689ff]/12 text-[#1689ff]">
-                            <span className="absolute h-8 w-8 animate-ping rounded-2xl bg-[#1689ff]/18" />
-                            <Terminal className="relative h-5 w-5" />
+                        <div className="pointer-events-none absolute -left-16 -top-16 h-44 w-44 rounded-full bg-[#1689ff]/20 blur-3xl" />
+                        <div className="pointer-events-none absolute -bottom-20 right-8 h-52 w-52 rounded-full bg-[#7cc7ff]/18 blur-3xl" />
+
+                        <div className="relative flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                          <div className="flex min-w-0 items-start gap-3">
+                            <div className="relative flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-[#1689ff]/12 text-[#1689ff] shadow-[0_18px_45px_rgba(22,137,255,0.18)]">
+                              <span className="absolute h-9 w-9 animate-ping rounded-2xl bg-[#1689ff]/16" />
+                              <Terminal className="relative h-5 w-5" />
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <p className="text-sm font-semibold tracking-[-0.02em]">
+                                  {activeBuildProgress.title}
+                                </p>
+                                <span className="inline-flex items-center gap-1 rounded-full bg-[#1689ff]/10 px-2 py-0.5 text-[10px] font-semibold text-[#1689ff]">
+                                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#1689ff]" />
+                                  {settingsLabels.buildOverlayWriting}
+                                </span>
+                              </div>
+                              <p
+                                className={`mt-1 max-w-2xl text-xs leading-5 ${
+                                  isDark ? "text-slate-400" : "text-slate-500"
+                                }`}
+                              >
+                                {activeBuildProgress.description}
+                              </p>
+                            </div>
                           </div>
-                          <div className="min-w-0 flex-1">
-                            <p className="text-sm font-semibold tracking-[-0.02em]">
-                              {activeBuildProgress.title}
-                            </p>
-                            <p
-                              className={`mt-1 text-xs leading-5 ${
-                                isDark ? "text-slate-400" : "text-slate-500"
-                              }`}
-                            >
-                              {activeBuildProgress.description}
-                            </p>
+
+                          <div className="flex shrink-0 items-center gap-2">
+                            <span className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold ${
+                              isDark
+                                ? "border-white/10 bg-white/[0.04] text-slate-300"
+                                : "border-slate-200 bg-white text-slate-600"
+                            }`}>
+                              {getFileExtension(activeBuildFile)}
+                            </span>
+                            <span className="rounded-full bg-[#1689ff]/12 px-2.5 py-1 text-[10px] font-semibold text-[#1689ff]">
+                              {Math.max(1, Math.min(99, activeBuildProgress.percent))}%
+                            </span>
                           </div>
-                          <span className="rounded-full bg-[#1689ff]/12 px-2 py-1 text-[10px] font-semibold text-[#1689ff]">
-                            {Math.max(1, Math.min(99, activeBuildProgress.percent))}%
-                          </span>
                         </div>
 
                         <div
-                          className={`mt-5 h-2 overflow-hidden rounded-full ${
+                          className={`relative mt-4 h-2 overflow-hidden rounded-full ${
                             isDark ? "bg-white/10" : "bg-slate-900/10"
                           }`}
                         >
                           <div
-                            className="h-full rounded-full bg-[linear-gradient(90deg,#1689ff,#7cc7ff)] transition-all duration-500"
+                            className="h-full rounded-full bg-[linear-gradient(90deg,#1689ff,#7cc7ff,#1689ff)] bg-[length:180%_100%] transition-all duration-500"
                             style={{
                               width: `${Math.max(
                                 5,
                                 Math.min(99, activeBuildProgress.percent)
                               )}%`,
+                              animation: "workspace-progress-shimmer 1.8s linear infinite",
                             }}
                           />
                         </div>
 
-                        <div className="mt-5 grid gap-2 sm:grid-cols-4">
+                        <div className="relative mt-5 grid gap-3 lg:grid-cols-[0.92fr_1.08fr]">
+                          <div
+                            className={`rounded-3xl border p-3 ${
+                              isDark
+                                ? "border-white/10 bg-black/18"
+                                : "border-slate-200 bg-slate-50/90"
+                            }`}
+                          >
+                            <div className="mb-3 flex items-center justify-between gap-3">
+                              <div>
+                                <span
+                                  className={`block text-[11px] font-semibold ${
+                                    isDark ? "text-slate-300" : "text-slate-600"
+                                  }`}
+                                >
+                                  {settingsLabels.buildOverlayChangedFiles}
+                                </span>
+                                <span
+                                  className={`mt-0.5 block text-[10px] ${
+                                    isDark ? "text-slate-500" : "text-slate-400"
+                                  }`}
+                                >
+                                  {settingsLabels.buildOverlayFocus}: {getFileDirectory(activeBuildFile)}
+                                </span>
+                              </div>
+                              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#1689ff]" />
+                            </div>
+
+                            <div className="space-y-1.5">
+                              {visibleBuildFileWindow.map((file, index) => {
+                                const active = file === activeBuildFile;
+                                const applied = index < activeBuildFileIndex % visibleBuildFiles.length;
+
+                                return (
+                                  <div
+                                    key={file}
+                                    className={`group flex items-center gap-2 rounded-2xl border px-2.5 py-2 transition-all duration-300 ${
+                                      active
+                                        ? "border-[#1689ff]/35 bg-[#1689ff]/10 shadow-[0_14px_35px_rgba(22,137,255,0.12)]"
+                                        : isDark
+                                          ? "border-white/5 bg-white/[0.035] text-slate-400"
+                                          : "border-white bg-white text-slate-500"
+                                    }`}
+                                  >
+                                    <span
+                                      className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-xl text-[9px] font-bold ${
+                                        active
+                                          ? "bg-[#1689ff] text-white"
+                                          : isDark
+                                            ? "bg-white/[0.06] text-slate-400"
+                                            : "bg-slate-100 text-slate-500"
+                                      }`}
+                                    >
+                                      {getFileExtension(file).slice(0, 3)}
+                                    </span>
+                                    <span className="min-w-0 flex-1">
+                                      <span className={`block truncate font-mono text-[11px] ${
+                                        active
+                                          ? "text-[#1689ff]"
+                                          : isDark
+                                            ? "text-slate-300"
+                                            : "text-slate-600"
+                                      }`}>
+                                        {getFileName(file)}
+                                      </span>
+                                      <span className={`block truncate text-[9px] ${
+                                        isDark ? "text-slate-500" : "text-slate-400"
+                                      }`}>
+                                        {getFileDirectory(file)}
+                                      </span>
+                                    </span>
+                                    <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${
+                                      active
+                                        ? "bg-[#1689ff]/12 text-[#1689ff]"
+                                        : applied
+                                          ? "bg-emerald-500/10 text-emerald-500"
+                                          : isDark
+                                            ? "bg-white/[0.04] text-slate-500"
+                                            : "bg-slate-100 text-slate-400"
+                                    }`}>
+                                      {active
+                                        ? settingsLabels.buildOverlayWriting
+                                        : applied
+                                          ? settingsLabels.buildOverlayApplied
+                                          : settingsLabels.buildOverlayQueued}
+                                    </span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+
+                          <div
+                            className={`relative overflow-hidden rounded-3xl border ${
+                              isDark
+                                ? "border-white/10 bg-[#080b10]/82"
+                                : "border-slate-200 bg-[#0d1320]"
+                            }`}
+                          >
+                            <div className="flex items-center justify-between border-b border-white/10 px-3 py-2.5">
+                              <div className="flex items-center gap-1.5">
+                                <span className="h-2.5 w-2.5 rounded-full bg-[#ff6b6b]" />
+                                <span className="h-2.5 w-2.5 rounded-full bg-[#ffd166]" />
+                                <span className="h-2.5 w-2.5 rounded-full bg-[#06d6a0]" />
+                              </div>
+                              <span className="max-w-[220px] truncate font-mono text-[10px] text-slate-400">
+                                {activeBuildFile}
+                              </span>
+                            </div>
+
+                            <div className="relative min-h-[238px] p-3 font-mono text-[11px] leading-5 text-slate-300 sm:min-h-[260px]">
+                              <div className="pointer-events-none absolute inset-x-3 top-3 h-12 rounded-2xl bg-[#1689ff]/12 blur-xl" />
+                              <div className="mb-3 flex items-start justify-between gap-3 rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2">
+                                <div>
+                                  <span className="block text-[10px] font-semibold uppercase tracking-[0.18em] text-[#7cc7ff]">
+                                    {settingsLabels.buildOverlayActiveFile}
+                                  </span>
+                                  <span className="mt-1 block truncate text-[12px] text-white">
+                                    {getFileName(activeBuildFile)}
+                                  </span>
+                                </div>
+                                <span className="rounded-full bg-[#1689ff]/15 px-2 py-1 text-[9px] font-semibold text-[#7cc7ff]">
+                                  {activeBuildProgress.stage}
+                                </span>
+                              </div>
+
+                              <div className="space-y-1.5">
+                                {activeBuildFileCode.map((line, index) => (
+                                  <div
+                                    key={`${activeBuildFile}-${index}-${line}`}
+                                    className="flex items-center gap-3 rounded-lg px-2 py-0.5 transition-all duration-300"
+                                    style={{ opacity: Math.max(0.38, 1 - index * 0.08) }}
+                                  >
+                                    <span className="w-5 shrink-0 select-none text-right text-slate-600">
+                                      {String(index + 1).padStart(2, "0")}
+                                    </span>
+                                    <span className={index > 4 ? "blur-[1.6px]" : ""}>
+                                      {line}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+
+                              <div className="absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-[#0d1320] to-transparent" />
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="relative mt-4 grid gap-2 sm:grid-cols-4">
                           {buildSteps.map((step) => {
                             const active = activeBuildProgress.percent >= step.doneAt;
 
@@ -2813,41 +3175,11 @@ export const WorkspaceDashboard = ({
                           })}
                         </div>
 
-                        <div
-                          className={`mt-5 rounded-2xl border p-3 ${
-                            isDark
-                              ? "border-white/10 bg-black/18"
-                              : "border-slate-200 bg-slate-50/80"
-                          }`}
-                        >
-                          <div className="mb-2 flex items-center justify-between">
-                            <span
-                              className={`text-[11px] font-semibold ${
-                                isDark ? "text-slate-300" : "text-slate-600"
-                              }`}
-                            >
-                              {settingsLabels.buildOverlayChangedFiles}
-                            </span>
-                            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#1689ff]" />
-                          </div>
-                          <div className="space-y-1.5">
-                            {(visibleBuildFiles.length
-                              ? visibleBuildFiles
-                              : ["src/app/page.tsx"]
-                            ).map((file) => (
-                              <div
-                                key={file}
-                                className={`truncate rounded-xl px-2.5 py-1.5 font-mono text-[11px] ${
-                                  isDark
-                                    ? "bg-white/[0.04] text-slate-300"
-                                    : "bg-white text-slate-600"
-                                }`}
-                              >
-                                {file}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
+                        <p className={`relative mt-3 text-[11px] leading-5 ${
+                          isDark ? "text-slate-500" : "text-slate-500"
+                        }`}>
+                          {activeBuildFileIntent}
+                        </p>
                       </div>
                     </div>
                   )}

@@ -21,12 +21,26 @@ export interface AiWorkloadEstimate {
 
 const DEFAULT_BASE_URL = "https://api.gptclubapi.xyz/openai/v1";
 const DEFAULT_CR_MODEL = "gpt-5.3-codex";
-const DEFAULT_SK_MODEL = "claude-sonnet-4.5";
+const DEFAULT_SK_MODEL = "anthropic/claude-haiku-4.5";
 
 function readInt(value: string | undefined, fallback: number) {
   const parsed = Number.parseInt(value || "", 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
+
+function readProviderHint(...values: Array<string | undefined>): AiProviderKey | "" {
+  const raw = values.find((value) => value?.trim())?.trim().toLowerCase() || "";
+  return /^[a-z0-9_.:-]+$/i.test(raw) ? raw : "";
+}
+
+const BUILD_PROVIDER_HINT = readProviderHint(
+  process.env.KLAWPEN_BUILD_PROVIDER,
+  process.env.AI_BUILD_PROVIDER
+);
+const CHAT_PROVIDER_HINT = readProviderHint(
+  process.env.KLAWPEN_CHAT_PROVIDER,
+  process.env.AI_CHAT_PROVIDER
+);
 
 function readProviderConfig(
   key: "cr" | "sk",
@@ -176,7 +190,11 @@ export function estimateAiWorkload({
   const inputScore = lengthScore + attachmentScore + intentScore;
 
   const buildIntent = /\b(yap|olu[sş]tur|tasarla|kodla|geli[sş]tir|landing|website|site|uygulama|dashboard|build|create|make|design|implement|generate)\b/i.test(message);
-  const preferredProvider: AiProviderKey = buildIntent ? "cr" : "sk";
+  const buildProvider: AiProviderKey = BUILD_PROVIDER_HINT || "cr";
+  const chatProvider: AiProviderKey = CHAT_PROVIDER_HINT || "sk";
+  const preferredProvider: AiProviderKey = buildIntent
+    ? buildProvider
+    : chatProvider;
 
   if (inputScore <= 3) {
     return { tier: "light", coreCredits: 1, inputScore, attachmentCount, providerHint: preferredProvider };
@@ -188,10 +206,10 @@ export function estimateAiWorkload({
     return { tier: "medium", coreCredits: 5, inputScore, attachmentCount, providerHint: preferredProvider };
   }
   if (inputScore <= 24) {
-    return { tier: "heavy", coreCredits: 15, inputScore, attachmentCount, providerHint: "cr" };
+    return { tier: "heavy", coreCredits: 15, inputScore, attachmentCount, providerHint: buildProvider };
   }
 
-  return { tier: "extreme", coreCredits: 35, inputScore, attachmentCount, providerHint: "cr" };
+  return { tier: "extreme", coreCredits: 35, inputScore, attachmentCount, providerHint: buildProvider };
 }
 
 const usageByProvider = new Map<string, { day: string; count: number }>();

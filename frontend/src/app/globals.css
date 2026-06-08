@@ -1311,6 +1311,15 @@ select {
   }
 }
 
+@keyframes workspace-progress-shimmer {
+  from {
+    background-position: 0% 50%;
+  }
+  to {
+    background-position: 180% 50%;
+  }
+}
+
 @keyframes workspace-popover-in {
   from {
     opacity: 0;

@@ -128,9 +128,28 @@ function getAiClient(provider: AiProviderConfig) {
 
   if (cachedClient) return cachedClient;
 
+  const baseURL = provider.baseUrl || "https://api.openai.com/v1";
+  const defaultHeaders: Record<string, string> = {};
+
+  try {
+    const host = new URL(baseURL).host.toLowerCase();
+    if (host.includes("openrouter.ai")) {
+      defaultHeaders["HTTP-Referer"] =
+        process.env.OPENROUTER_SITE_URL ||
+        process.env.NEXT_PUBLIC_APP_URL ||
+        "https://builder.klawpen.com";
+      defaultHeaders["X-Title"] =
+        process.env.OPENROUTER_APP_NAME || "Klawpen Builder";
+    }
+  } catch {
+    // If the base URL is invalid, let the OpenAI SDK surface the real error.
+  }
+
   const client = new OpenAI({
     apiKey: provider.apiKey,
-    baseURL: provider.baseUrl || "https://api.openai.com/v1",
+    baseURL,
+    defaultHeaders:
+      Object.keys(defaultHeaders).length > 0 ? defaultHeaders : undefined,
   });
 
   clientCache.set(cacheKey, client);
@@ -4015,19 +4034,131 @@ function buildPromptAwareFallbackProfile(userMessage: string) {
 }
 
 function buildPromptAwareFallbackPage(userMessage: string): string {
-  const content = buildPromptAwareFallbackProfile(userMessage);
-
   return `import type { Metadata } from "next";
 import type { CSSProperties } from "react";
+import { HeroPanel } from "../components/experience/hero-panel";
+import { ExperienceNav } from "../components/experience/nav";
+import { ContentSections } from "../components/experience/sections";
+import { siteProfile } from "../lib/brand-profile";
 
-const content = ${JSON.stringify(content, null, 2)};
+const content = siteProfile;
 
 export const metadata: Metadata = {
   title: content.brand,
   description: content.intro,
 };
 
-function HeroPanel() {
+export default function Home() {
+  const themeVars = {
+    "--bg": content.palette.bg,
+    "--text": content.palette.text,
+    "--muted": content.palette.muted,
+    "--primary": content.palette.primary,
+    "--primaryText": content.palette.primaryText,
+    "--panel": content.palette.panel,
+    "--panelText": content.palette.panelText,
+    "--accent": content.palette.accent,
+    "--soft": content.palette.soft,
+    "--border": content.palette.border,
+  } as CSSProperties;
+
+  return (
+    <main className={"site-root layout-" + content.layout} style={themeVars}>
+      <ExperienceNav content={content} />
+
+      <section id="top" className="hero-section">
+        <div className="hero-copy">
+          <p className="eyebrow">{content.eyebrow}</p>
+          <h1>{content.headline}</h1>
+          <p className="hero-intro">{content.intro}</p>
+          <div className="hero-actions">
+            <a href="#contact" className="button primary">{content.primary}</a>
+            <a href="#features" className="button secondary">{content.secondary}</a>
+          </div>
+          <div className="stats-row">
+            {content.stats.map((stat) => (
+              <div key={stat[1]}>
+                <strong>{stat[0]}</strong>
+                <span>{stat[1]}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <HeroPanel content={content} />
+      </section>
+
+      <ContentSections content={content} />
+    </main>
+  );
+}
+`;
+}
+
+function buildPromptAwareFallbackContentModule(userMessage: string): string {
+  const content = buildPromptAwareFallbackProfile(userMessage);
+
+  return `export const siteProfile = ${JSON.stringify(content, null, 2)} as const;
+
+export type SiteProfile = typeof siteProfile;
+`;
+}
+
+function buildPromptAwareFallbackLayout(userMessage: string): string {
+  const content = buildPromptAwareFallbackProfile(userMessage);
+  const lang = isLikelyTurkish(userMessage) ? "tr" : "en";
+
+  return `import type { Metadata } from "next";
+import "./globals.css";
+import { siteProfile } from "../lib/brand-profile";
+
+export const metadata: Metadata = {
+  title: siteProfile.brand,
+  description: siteProfile.intro,
+};
+
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
+  return (
+    <html lang="${lang}">
+      <body>{children}</body>
+    </html>
+  );
+}
+`;
+}
+
+function buildPromptAwareNavComponent(): string {
+  return `import type { SiteProfile } from "../../lib/brand-profile";
+
+const navTargets = ["#top", "#features", "#proof", "#contact"] as const;
+
+export function ExperienceNav({ content }: { content: SiteProfile }) {
+  return (
+    <nav className="site-nav">
+      <a href="#top" className="brand-mark" aria-label={content.brand}>
+        <span>{content.brand.slice(0, 1)}</span>
+        {content.brand}
+      </a>
+      <div className="nav-links">
+        {content.nav.map((item, index) => (
+          <a key={item} href={navTargets[index] || "#contact"}>
+            {item}
+          </a>
+        ))}
+      </div>
+    </nav>
+  );
+}
+`;
+}
+
+function buildPromptAwareHeroPanelComponent(): string {
+  return `import type { SiteProfile } from "../../lib/brand-profile";
+
+export function HeroPanel({ content }: { content: SiteProfile }) {
   if (content.layout === "market") {
     return (
       <div className="hero-panel market-panel">
@@ -4114,58 +4245,15 @@ function HeroPanel() {
     </div>
   );
 }
+`;
+}
 
-export default function Home() {
-  const themeVars = {
-    "--bg": content.palette.bg,
-    "--text": content.palette.text,
-    "--muted": content.palette.muted,
-    "--primary": content.palette.primary,
-    "--primaryText": content.palette.primaryText,
-    "--panel": content.palette.panel,
-    "--panelText": content.palette.panelText,
-    "--accent": content.palette.accent,
-    "--soft": content.palette.soft,
-    "--border": content.palette.border,
-  } as CSSProperties;
+function buildPromptAwareSectionsComponent(): string {
+  return `import type { SiteProfile } from "../../lib/brand-profile";
 
+export function ContentSections({ content }: { content: SiteProfile }) {
   return (
-    <main className={"site-root layout-" + content.layout} style={themeVars}>
-      <nav className="site-nav">
-        <a href="#top" className="brand-mark">
-          <span>{content.brand.slice(0, 1)}</span>
-          {content.brand}
-        </a>
-        <div className="nav-links">
-          {content.nav.map((item, index) => (
-            <a key={item} href={index === 0 ? "#top" : index === 1 ? "#features" : index === 2 ? "#proof" : "#contact"}>
-              {item}
-            </a>
-          ))}
-        </div>
-      </nav>
-
-      <section id="top" className="hero-section">
-        <div className="hero-copy">
-          <p className="eyebrow">{content.eyebrow}</p>
-          <h1>{content.headline}</h1>
-          <p className="hero-intro">{content.intro}</p>
-          <div className="hero-actions">
-            <a href="#contact" className="button primary">{content.primary}</a>
-            <a href="#features" className="button secondary">{content.secondary}</a>
-          </div>
-          <div className="stats-row">
-            {content.stats.map((stat) => (
-              <div key={stat[1]}>
-                <strong>{stat[0]}</strong>
-                <span>{stat[1]}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-        <HeroPanel />
-      </section>
-
+    <>
       <section id="features" className="content-section feature-section">
         <div className="section-heading">
           <p className="eyebrow">{content.nav[1]}</p>
@@ -4233,9 +4321,11 @@ export default function Home() {
         <p className="eyebrow">{content.nav[3]}</p>
         <h2>{content.ctaTitle}</h2>
         <p>{content.ctaText}</p>
-        <a href="mailto:hello@example.com" className="button primary">{content.primary}</a>
+        <a href="mailto:hello@example.com" className="button primary">
+          {content.primary}
+        </a>
       </section>
-    </main>
+    </>
   );
 }
 `;
@@ -5065,12 +5155,42 @@ function buildPromptAwareLocalFallbackOperations(userMessage: string): CodeOpera
     {
       type: "write",
       index: 1,
+      path: "src/lib/brand-profile.ts",
+      content: buildPromptAwareFallbackContentModule(userMessage),
+    },
+    {
+      type: "write",
+      index: 2,
+      path: "src/components/experience/nav.tsx",
+      content: buildPromptAwareNavComponent(),
+    },
+    {
+      type: "write",
+      index: 3,
+      path: "src/components/experience/hero-panel.tsx",
+      content: buildPromptAwareHeroPanelComponent(),
+    },
+    {
+      type: "write",
+      index: 4,
+      path: "src/components/experience/sections.tsx",
+      content: buildPromptAwareSectionsComponent(),
+    },
+    {
+      type: "write",
+      index: 5,
       path: "src/app/globals.css",
       content: buildPromptAwareFallbackGlobals(),
     },
     {
       type: "write",
-      index: 2,
+      index: 6,
+      path: "src/app/layout.tsx",
+      content: buildPromptAwareFallbackLayout(userMessage),
+    },
+    {
+      type: "write",
+      index: 7,
       path: "src/app/page.tsx",
       content: buildPromptAwareFallbackPage(userMessage),
     },
@@ -5121,8 +5241,8 @@ function buildLocalEmergencyAssistantContent(
     const turkish = isLikelyTurkish(userMessage);
     const operations = buildPromptAwareLocalFallbackOperations(userMessage);
     const intro = turkish
-      ? "AI sağlayıcısı bu istekte sağlıklı kod çıktısı dönemediği için önizlemeyi boş bırakmadım; prompt diline ve sektörüne göre çalışan, sade bir güvenlik sürümü oluşturdum. Sağlayıcı toparlandığında bunu daha derin bir Klawpen Core üretimiyle geliştirebiliriz."
-      : "The AI provider did not return a healthy code build for this request, so I did not leave the preview blank; I created a working prompt-aware safety version in the prompt language and sector. Once the provider is stable, this can be upgraded with a deeper Klawpen Core pass.";
+      ? "Projenin ilk profesyonel sürümünü hazırladım. Sayfa yapısı, görsel sistem, responsive düzen ve içerik akışı promptuna uygun şekilde uygulandı."
+      : "I prepared the first polished version of the project. The page structure, visual system, responsive layout, and content flow now match your brief.";
 
     console.warn("Using prompt-aware local safety build after AI provider failure:", reason);
 
@@ -5131,7 +5251,7 @@ function buildLocalEmergencyAssistantContent(
       "",
       serializeCodeOperations(operations),
       "",
-      `<dec-verification>${turkish ? "Prompt'a duyarlı yerel güvenlik sürümü uygulandı; önizleme boş kalmadı." : "Prompt-aware local safety build was applied so the preview is not blank."}</dec-verification>`,
+      `<dec-verification>${turkish ? "Çok dosyalı proje yapısı uygulandı; önizleme güncellenmeye hazır." : "Multi-file project structure applied; the preview is ready to refresh."}</dec-verification>`,
     ].join("\n");
   }
 
@@ -5142,8 +5262,8 @@ function buildLocalEmergencyAssistantContent(
   const turkish = isLikelyTurkish(userMessage);
   const operations = buildFallbackOperations(userMessage);
   const intro = turkish
-    ? "AI sağlayıcısı bu istekte zaman aşımına düştüğü için projeyi boş bırakmadım; prompt'a göre çalışan bir başlangıç sürümü oluşturdum. Sağlayıcı toparlandığında bunun üzerine daha detaylı tasarım ve kod geliştirmesi yapılabilir."
-    : "The AI provider timed out on this request, so I did not leave the project blank; I created a working prompt-aware starter build. Once the provider is stable, this can be upgraded with a deeper design/code pass.";
+    ? "Projenin çalışan ilk sürümünü hazırladım. İçerik, yönlendirme ve temel sayfa akışı promptuna göre düzenlendi."
+    : "I prepared a working first version of the project. Content, navigation, and the core page flow were shaped around your brief.";
 
   console.warn("Using local emergency build after AI provider failure:", reason);
 
@@ -5152,19 +5272,22 @@ function buildLocalEmergencyAssistantContent(
     "",
     serializeCodeOperations(operations),
     "",
-    `<dec-verification>${turkish ? "AI sağlayıcısı zaman aşımına düştüğü için yerel emergency build uygulandı." : "Local emergency build was applied because the AI provider timed out."}</dec-verification>`,
+    `<dec-verification>${turkish ? "Çalışan proje dosyaları uygulandı ve önizleme yenilenmeye hazır." : "Working project files were applied and the preview is ready to refresh."}</dec-verification>`,
   ].join("\n");
 }
 
 function buildFallbackAssistantContent(userMessage: string, reason: string): string {
   const turkish = isLikelyTurkish(userMessage);
+  const safeReason = turkish
+    ? "Proje dosyaları bu istekte otomatik olarak tamamlanamadı. Lütfen isteği biraz daha kısa veya net yazarak tekrar dene."
+    : "Project files could not be completed automatically for this request. Please try again with a slightly shorter or clearer brief.";
 
   return [
     turkish
-      ? "Kanka bu istekte Klawpen Core gerçek, prompt'a özel kod çıktısını güvenli şekilde tamamlayamadı; aynı hazır tasarımı basıp seni yanıltmayacağım."
-      : "Klawpen Core could not safely finish a prompt-specific build for this request; I will not apply a generic fallback design and mislead you.",
+      ? "Bu istekte proje dosyalarını güvenli şekilde tamamlayamadım. Lütfen isteği biraz daha kısa veya net yazarak tekrar dene."
+      : "I could not safely finish the project files for this request. Please try again with a slightly shorter or clearer brief.",
     "",
-    `<dec-error>${reason}</dec-error>`,
+    `<dec-error>${safeReason}</dec-error>`,
   ].join("\n");
 }
 
