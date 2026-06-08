@@ -1,4 +1,5 @@
 import Docker from "dockerode";
+import crypto from "crypto";
 import path from "path";
 import { Writable } from "stream";
 import { docker as dockerClient } from "./dockerClient";
@@ -168,6 +169,17 @@ export interface FileContentItem {
   type: "file" | "directory";
   content?: string;
   children?: FileContentItem[];
+}
+
+export interface FileWriteVerification {
+  path: string;
+  absolutePath: string;
+  bytes: number;
+  sha256: string;
+}
+
+function hashContent(content: string): string {
+  return crypto.createHash("sha256").update(content, "utf8").digest("hex");
 }
 
 export async function getFileTree(
@@ -500,7 +512,7 @@ export async function writeFile(
   containerId: string,
   filePath: string,
   content: string
-): Promise<void> {
+): Promise<FileWriteVerification> {
   assertSafeContainerId(containerId);
   if (typeof content !== "string") {
     throw new Error("File content must be a string");
@@ -508,7 +520,16 @@ export async function writeFile(
   if (Buffer.byteLength(content, "utf8") > MAX_FILE_WRITE_BYTES) {
     throw new Error("File content exceeds the 10MB write limit");
   }
-  console.log(`Writing file: ${filePath} (${content.length} characters)`);
+  const expectedBytes = Buffer.byteLength(content, "utf8");
+  const expectedHash = hashContent(content);
+
+  console.log("container_file_write_started", {
+    containerId,
+    trace: "file_write_started",
+    path: filePath,
+    bytes: expectedBytes,
+    sha256: expectedHash.slice(0, 16),
+  });
 
   const absolutePath = toSafeMutablePath(filePath);
   const dirPath = absolutePath.substring(0, absolutePath.lastIndexOf("/"));
@@ -521,14 +542,60 @@ export async function writeFile(
       path: dirPath,
     });
 
-    const verifyOutput = await runContainerCommand(
+    const writtenContent = await readFile(dockerClient, containerId, absolutePath);
+    const actualBytes = Buffer.byteLength(writtenContent, "utf8");
+    const actualHash = hashContent(writtenContent);
+
+    if (actualBytes !== expectedBytes || actualHash !== expectedHash) {
+      console.error("container_file_write_verification_failed", {
+        containerId,
+        trace: "file_write_verification_failed",
+        path: filePath,
+        absolutePath,
+        expectedBytes,
+        actualBytes,
+        expectedSha256: expectedHash,
+        actualSha256: actualHash,
+      });
+      throw new Error(
+        `file_write_verification_failed: ${filePath} expected ${expectedBytes}/${expectedHash.slice(
+          0,
+          12
+        )} but found ${actualBytes}/${actualHash.slice(0, 12)}`
+      );
+    }
+
+    console.log("container_file_write_verified", {
       containerId,
-      ["head", "-n", "5", absolutePath],
-      BASE_PATH
-    );
-    console.log(`File verification (first 5 lines):\n${verifyOutput}`);
+      trace: "file_write_verified",
+      path: filePath,
+      absolutePath,
+      bytes: actualBytes,
+      sha256: actualHash.slice(0, 16),
+    });
+
+    return {
+      path: filePath,
+      absolutePath,
+      bytes: actualBytes,
+      sha256: actualHash,
+    };
   } catch (error) {
-    console.error("Write file error:", error);
+    const message = error instanceof Error ? error.message : String(error);
+    const trace =
+      /permission denied|read-only|EROFS|operation not permitted/i.test(message)
+        ? "file_write_failed_due_to_permission"
+        : /no space left|ENOSPC|quota/i.test(message)
+          ? "file_write_failed_due_to_storage"
+          : "file_write_failed";
+
+    console.error("container_file_write_failed", {
+      containerId,
+      trace,
+      path: filePath,
+      absolutePath,
+      error: message,
+    });
     throw error;
   }
 }

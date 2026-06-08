@@ -8,7 +8,10 @@ import {
   getAiProviderDiagnostics,
   runAiProviderSmokeTest,
 } from "./services/aiProvider";
-import { getPreviewProxyOrigin } from "./services/docker";
+import {
+  getDockerRuntimeDiagnostics,
+  getPreviewProxyOrigin,
+} from "./services/docker";
 
 const app = express();
 
@@ -165,7 +168,7 @@ app.get("/health", (_req, res) => {
   res.json({
     success: true,
     service: "klawpen-builder-api",
-    marker: "ai-output-source-no-template-fallback-v6",
+    marker: "pipeline-hardening-docker-parser-verify-v7",
     timestamp: new Date().toISOString(),
   });
 });
@@ -184,7 +187,7 @@ app.get("/diagnostics", (_req, res) => {
   res.json({
     success: true,
     service: "klawpen-builder-api",
-    marker: "ai-output-source-no-template-fallback-v6",
+    marker: "pipeline-hardening-docker-parser-verify-v7",
     build: {
       stagedBuild: process.env.KLAWPEN_STAGED_BUILD !== "false",
       stagedInlineApply: process.env.KLAWPEN_STAGED_INLINE_APPLY === "true",
@@ -209,6 +212,7 @@ app.get("/diagnostics", (_req, res) => {
       upstreamHost: process.env.PREVIEW_UPSTREAM_HOST || "(unset)",
       baseUrl: process.env.PREVIEW_BASE_URL || "(unset)",
     },
+    docker: getDockerRuntimeDiagnostics(),
     ai: {
       ...aiDiagnostics,
       deepBuildModel:

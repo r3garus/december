@@ -164,7 +164,9 @@ export interface Message {
   attachments?: Attachment[];
   edits?: {
     applied: number;
-    failed: Array<{ label: string; error: string }>;
+    failed: Array<{ label: string; error: string; trace?: string }>;
+    verifiedWrites?: Array<{ path: string; bytes: number; sha256: string }>;
+    parser?: ApplyCodeOperationsResult["parser"];
   };
 }
 
@@ -199,6 +201,24 @@ interface CodeOperation {
   to?: string;
   packageName?: string;
   version?: string;
+}
+
+interface ApplyCodeOperationsResult {
+  applied: number;
+  failed: Array<{ label: string; error: string; trace?: string }>;
+  verifiedWrites: Array<{
+    path: string;
+    bytes: number;
+    sha256: string;
+  }>;
+  parser: {
+    source: "dec-tags" | "markdown-fences" | "partial-dec-tags" | "none";
+    operationCount: number;
+    writeCount: number;
+    openWriteTags: number;
+    closeWriteTags: number;
+    unbalancedWriteTags: number;
+  };
 }
 
 interface BuildProgress {
@@ -1770,6 +1790,122 @@ function extractCodeOperations(assistantContent: string): CodeOperation[] {
   return operations.sort((left, right) => left.index - right.index);
 }
 
+function countRegexMatches(value: string, pattern: RegExp): number {
+  return Array.from(value.matchAll(pattern)).length;
+}
+
+function getParserDiagnostics(assistantContent: string) {
+  const openWriteTags = countRegexMatches(assistantContent, /<dec-write\b/gi);
+  const closeWriteTags = countRegexMatches(assistantContent, /<\/dec-write>/gi);
+
+  return {
+    openWriteTags,
+    closeWriteTags,
+    unbalancedWriteTags: Math.max(0, openWriteTags - closeWriteTags),
+  };
+}
+
+function extractPartialCodeOperations(assistantContent: string): CodeOperation[] {
+  const operations: CodeOperation[] = [];
+  const openTagPattern = /<dec-write\b([^>]*)>/gi;
+  const nextOperationPattern =
+    /<dec-(?:write|rename|delete|add-dependency)\b|<\/dec-code>/gi;
+  let match: RegExpExecArray | null;
+
+  while ((match = openTagPattern.exec(assistantContent)) !== null) {
+    const tag = match[0] || "";
+    const attributeText = match[1] || "";
+    const contentStart = match.index + tag.length;
+    const closeIndex = assistantContent.indexOf("</dec-write>", contentStart);
+    if (closeIndex !== -1) continue;
+
+    nextOperationPattern.lastIndex = contentStart;
+    const nextOperation = nextOperationPattern.exec(assistantContent);
+    const contentEnd = nextOperation?.index ?? assistantContent.length;
+    const content = assistantContent.slice(contentStart, contentEnd).trim();
+    const path =
+      extractAttribute(attributeText, "path") ||
+      extractAttribute(attributeText, "file_path");
+
+    if (!path || content.length < 40) continue;
+
+    operations.push({
+      type: "write",
+      index: match.index,
+      path,
+      content,
+    });
+  }
+
+  return operations.sort((left, right) => left.index - right.index);
+}
+
+function parseAssistantCodeOperations(assistantContent: string): {
+  operations: CodeOperation[];
+  parser: ApplyCodeOperationsResult["parser"];
+} {
+  const diagnostics = getParserDiagnostics(assistantContent);
+  const taggedOperations = extractCodeOperations(assistantContent);
+
+  if (taggedOperations.length > 0) {
+    return {
+      operations: taggedOperations,
+      parser: {
+        source: "dec-tags",
+        operationCount: taggedOperations.length,
+        writeCount: taggedOperations.filter((operation) => operation.type === "write").length,
+        ...diagnostics,
+      },
+    };
+  }
+
+  const markdownOperations = extractMarkdownCodeOperations(assistantContent);
+  if (markdownOperations.length > 0) {
+    return {
+      operations: markdownOperations,
+      parser: {
+        source: "markdown-fences",
+        operationCount: markdownOperations.length,
+        writeCount: markdownOperations.filter((operation) => operation.type === "write").length,
+        ...diagnostics,
+      },
+    };
+  }
+
+  const partialOperations = extractPartialCodeOperations(assistantContent);
+  if (partialOperations.length > 0) {
+    console.warn("parser_partial_dec_write_recovery", {
+      trace: "parser_partial_dec_write_recovery",
+      operationCount: partialOperations.length,
+      files: partialOperations
+        .map((operation) => operation.path)
+        .filter(Boolean)
+        .slice(0, 12),
+      ...diagnostics,
+    });
+
+    return {
+      operations: partialOperations,
+      parser: {
+        source: "partial-dec-tags",
+        operationCount: partialOperations.length,
+        writeCount: partialOperations.length,
+        ...diagnostics,
+      },
+    };
+  }
+
+  return {
+    operations: [],
+    parser: {
+      source: "none",
+      operationCount: 0,
+      writeCount: 0,
+      ...diagnostics,
+    },
+  };
+}
+
 function extractMarkdownCodeOperations(assistantContent: string): CodeOperation[] {
   const operations: CodeOperation[] = [];
   const filePathPattern =
@@ -1823,17 +1959,11 @@ function shouldForceFallbackPage(
 }
 
 function hasExecutableCodeOperations(assistantContent: string) {
-  return (
-    extractCodeOperations(assistantContent).length > 0 ||
-    extractMarkdownCodeOperations(assistantContent).length > 0
-  );
+  return parseAssistantCodeOperations(assistantContent).operations.length > 0;
 }
 
 function getExecutableCodeOperations(assistantContent: string): CodeOperation[] {
-  const taggedOperations = extractCodeOperations(assistantContent);
-  return taggedOperations.length > 0
-    ? taggedOperations
-    : extractMarkdownCodeOperations(assistantContent);
+  return parseAssistantCodeOperations(assistantContent).operations;
 }
 
 function getExecutableOperationsFingerprint(assistantContent: string): string {
@@ -6099,19 +6229,25 @@ async function applyCodeOperations(
   userMessage: string,
   progress?: ProgressReporter,
   options: BuildOptions = {}
-): Promise<{ applied: number; failed: Array<{ label: string; error: string }> }> {
-  let operations = extractCodeOperations(assistantContent);
+): Promise<ApplyCodeOperationsResult> {
+  const { operations, parser } = parseAssistantCodeOperations(assistantContent);
+  const result: ApplyCodeOperationsResult = {
+    applied: 0,
+    failed: [],
+    verifiedWrites: [],
+    parser,
+  };
 
   if (!operations.length) {
-    operations = extractMarkdownCodeOperations(assistantContent);
+    console.error("ai_code_operation_parser_empty", {
+      trace: "parser_extraction_empty_result",
+      containerId,
+      assistantContentLength: assistantContent.length,
+      assistantContentPreview: clipText(assistantContent, 700),
+      parser,
+    });
+    return result;
   }
-
-  const result: {
-    applied: number;
-    failed: Array<{ label: string; error: string }>;
-  } = { applied: 0, failed: [] };
-
-  if (!operations.length) return result;
 
   const writeOperations = operations.filter((operation) => operation.type === "write");
   const routeWrites = getRouteWriteCount(writeOperations);
@@ -6122,16 +6258,17 @@ async function applyCodeOperations(
     0
   );
 
-  console.log(
-    `Applying ${operations.length} AI code operation(s) to ${containerId}`,
-    {
-      routeWrites,
-      componentWrites,
-      contentWrites,
-      totalWriteChars,
-      files: getOperationFilePaths(assistantContent),
-    }
-  );
+  console.log("ai_code_operations_apply_started", {
+    trace: "ai_code_operations_apply_started",
+    containerId,
+    operationCount: operations.length,
+    parser,
+    routeWrites,
+    componentWrites,
+    contentWrites,
+    totalWriteChars,
+    files: getOperationFilePaths(assistantContent),
+  });
 
   for (const operation of operations) {
     const operationLabel =
@@ -6158,11 +6295,16 @@ async function applyCodeOperations(
 
     try {
       if (operation.type === "write" && operation.path !== undefined) {
-        await fileService.writeFile(
+        const verification = await fileService.writeFile(
           containerId,
           operation.path,
           operation.content || ""
         );
+        result.verifiedWrites.push({
+          path: verification.path,
+          bytes: verification.bytes,
+          sha256: verification.sha256,
+        });
         result.applied += 1;
         await reportAppliedProgress();
         continue;
@@ -6197,20 +6339,46 @@ async function applyCodeOperations(
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
-      console.error(
-        `AI code operation failed (${operation.type}: ${operationLabel}):`,
-        message
-      );
+      const trace =
+        /permission denied|read-only|EROFS|operation not permitted/i.test(message)
+          ? "staged_ai_failed_due_to_permission"
+          : /file_write_verification_failed/i.test(message)
+            ? "container_write_verification_failed"
+            : /no space left|ENOSPC|quota/i.test(message)
+              ? "staged_ai_failed_due_to_storage"
+              : "ai_code_operation_failed";
+
+      console.error("ai_code_operation_failed", {
+        trace,
+        containerId,
+        operationType: operation.type,
+        operationLabel,
+        error: message,
+      });
       result.failed.push({
         label: `${operation.type}: ${operationLabel}`,
         error: message,
+        trace,
       });
     }
   }
 
-  console.log(
-    `AI code operations finished for ${containerId}: ${result.applied} applied, ${result.failed.length} failed`
-  );
+  console.log("ai_code_operations_apply_finished", {
+    trace:
+      result.failed.length > 0
+        ? "ai_code_operations_apply_finished_with_failures"
+        : "ai_code_operations_apply_finished",
+    containerId,
+    applied: result.applied,
+    failed: result.failed.length,
+    parser,
+    verifiedWriteCount: result.verifiedWrites.length,
+    verifiedWrites: result.verifiedWrites.slice(0, 12).map((write) => ({
+      path: write.path,
+      bytes: write.bytes,
+      sha256: write.sha256.slice(0, 16),
+    })),
+  });
 
   return result;
 }
@@ -8183,7 +8351,7 @@ async function runPostApplyQualityGates(params: {
   containerId: string;
   userMessage: string;
   assistantContent: string;
-  applyResult: { applied: number; failed: Array<{ label: string; error: string }> };
+  applyResult: Pick<ApplyCodeOperationsResult, "applied" | "failed">;
   progress?: ProgressReporter;
   options?: BuildOptions;
 }): Promise<string[]> {
@@ -8790,12 +8958,14 @@ ${codeContext}`;
   }
 
   const finalOutputStats = getBuildWriteStats(assistantContent);
+  const expectedParserDiagnostics = parseAssistantCodeOperations(assistantContent).parser;
   console.log("AI builder final output source:", {
     containerId,
     outputSource,
     stagedInlineApply: STAGED_INLINE_APPLY_ENABLED,
     appliedInlineDuringStaging: stagedAppliedInline,
     ...finalOutputStats,
+    expectedParser: expectedParserDiagnostics,
     files: getOperationFilePaths(assistantContent),
   });
 
@@ -8825,6 +8995,18 @@ ${codeContext}`;
           outputSource,
           applied: applyResult.applied,
           failed: applyResult.failed.length,
+          parser: applyResult.parser,
+          verifiedWrites: applyResult.verifiedWrites
+            .slice(0, 40)
+            .map((write) => ({
+              path: write.path,
+              bytes: write.bytes,
+              sha256: write.sha256,
+            })),
+          failedTraces: applyResult.failed
+            .map((item) => item.trace)
+            .filter(Boolean)
+            .slice(0, 20),
           ...finalOutputStats,
           userMessage: clipText(userMessage, 1_000),
           createdAt: new Date().toISOString(),

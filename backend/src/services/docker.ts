@@ -4,6 +4,7 @@ import fs from "fs/promises";
 import net from "net";
 import os from "os";
 import path from "path";
+import { Writable } from "stream";
 import { docker } from "./dockerClient";
 
 const BASE_PORT = 8100;
@@ -15,9 +16,11 @@ const LEGACY_CONTAINER_PREFIX = ["dec", "nextjs"].join("-") + "-";
 const TEMPLATE_IMAGE_NAME =
   process.env.PROJECT_TEMPLATE_IMAGE || "klawpen-workspace-template";
 const TEMPLATE_IMAGE_VERSION = (
-  process.env.PROJECT_TEMPLATE_VERSION || "klawpen-workspace-v4"
+  process.env.PROJECT_TEMPLATE_VERSION || "klawpen-workspace-v7"
 ).replace(/[^a-zA-Z0-9_.-]/g, "-");
 const TEMPLATE_VERSION_LABEL = "klawpen.template.version";
+const TEMPLATE_SOURCE_SHA_LABEL = "klawpen.template.source_sha";
+const TEMPLATE_CMD_LABEL = "klawpen.template.cmd";
 const PROJECT_WORKSPACE_PATH = "/app/my-nextjs-app";
 const DEFAULT_PUBLIC_API_ORIGIN =
   process.env.NODE_ENV === "production"
@@ -73,6 +76,18 @@ const PROJECT_WORKSPACE_VOLUME_ENABLED = readBooleanEnv(
 );
 const PROJECT_WORKSPACE_VOLUME_PREFIX =
   process.env.PROJECT_WORKSPACE_VOLUME_PREFIX || "klawpen-workspace-data-";
+const PROJECT_TEMPLATE_DYNAMIC_TAG = readBooleanEnv(
+  "PROJECT_TEMPLATE_DYNAMIC_TAG",
+  true
+);
+const PROJECT_TEMPLATE_NO_CACHE = readBooleanEnv(
+  "PROJECT_TEMPLATE_NO_CACHE",
+  false
+);
+const PROJECT_TEMPLATE_REBUILD_ALWAYS = readBooleanEnv(
+  "PROJECT_TEMPLATE_REBUILD_ALWAYS",
+  false
+);
 
 async function getAllAssignedPorts(): Promise<number[]> {
   const containers = await docker.listContainers({ all: true });
@@ -170,6 +185,115 @@ function getProjectHostConfig(
   };
 }
 
+async function runContainerDiagnosticCommand(
+  container: Docker.Container,
+  command: string[],
+  workingDir: string = PROJECT_WORKSPACE_PATH
+): Promise<string> {
+  const exec = await container.exec({
+    Cmd: command,
+    WorkingDir: workingDir,
+    AttachStdout: true,
+    AttachStderr: true,
+  });
+
+  const stream = await exec.start({ Detach: false, Tty: false });
+  const stdoutChunks: Buffer[] = [];
+  const stderrChunks: Buffer[] = [];
+  const stdout = new Writable({
+    write(chunk, _encoding, callback) {
+      stdoutChunks.push(Buffer.from(chunk));
+      callback();
+    },
+  });
+  const stderr = new Writable({
+    write(chunk, _encoding, callback) {
+      stderrChunks.push(Buffer.from(chunk));
+      callback();
+    },
+  });
+
+  docker.modem.demuxStream(stream, stdout, stderr);
+
+  await new Promise<void>((resolve, reject) => {
+    stream.on("end", resolve);
+    stream.on("error", reject);
+  });
+
+  const result = await exec.inspect();
+  const output = Buffer.concat(stdoutChunks).toString("utf8");
+  const errorOutput = Buffer.concat(stderrChunks).toString("utf8");
+
+  if (result.ExitCode !== 0) {
+    throw new Error(
+      errorOutput.trim() ||
+        output.trim() ||
+        `Container diagnostic failed with exit code ${result.ExitCode}`
+    );
+  }
+
+  return output || errorOutput;
+}
+
+async function logContainerRuntimeDiagnostics(params: {
+  container: Docker.Container;
+  containerId: string;
+  imageName: string;
+  assignedPort: number;
+  networkMode: string | null;
+  owner: ProjectOwner;
+}) {
+  try {
+    const containerInfo = await params.container.inspect();
+    const workspaceVolume = PROJECT_WORKSPACE_VOLUME_ENABLED
+      ? getWorkspaceVolumeName(params.containerId, params.owner)
+      : "(disabled)";
+    const workspaceState = await runContainerDiagnosticCommand(
+      params.container,
+      [
+        "sh",
+        "-lc",
+        [
+          'printf "pid1="',
+          'tr "\\0" " " < /proc/1/cmdline || true',
+          "echo",
+          'printf "package_json="',
+          'test -f package.json && echo present || echo missing',
+          'printf "page_tsx_bytes="',
+          'test -f src/app/page.tsx && wc -c < src/app/page.tsx || echo missing',
+          'printf "workspace_file_count="',
+          'find . \\( -name node_modules -o -name .next \\) -prune -o -type f -print | wc -l',
+        ].join("; "),
+      ],
+      PROJECT_WORKSPACE_PATH
+    );
+
+    console.log("preview_container_runtime_diagnostics", {
+      trace: "preview_container_runtime_diagnostics",
+      containerId: params.containerId,
+      dockerContainerId: params.container.id,
+      imageName: params.imageName,
+      assignedPort: params.assignedPort,
+      networkMode: params.networkMode || "(default)",
+      workspaceVolume,
+      readonlyRootfs: containerInfo.HostConfig?.ReadonlyRootfs,
+      cmd: containerInfo.Config?.Cmd,
+      entrypoint: containerInfo.Config?.Entrypoint,
+      binds: containerInfo.HostConfig?.Binds || [],
+      tmpfs: Object.keys(containerInfo.HostConfig?.Tmpfs || {}),
+      state: containerInfo.State?.Status,
+      workspaceState,
+    });
+  } catch (error) {
+    console.warn("preview_container_runtime_diagnostics_failed", {
+      trace: "preview_container_runtime_diagnostics_failed",
+      containerId: params.containerId,
+      imageName: params.imageName,
+      error: error instanceof Error ? error.message : error,
+    });
+  }
+}
+
 async function resolveProjectNetwork(): Promise<string | null> {
   if (process.env.PROJECT_CONTAINER_NETWORK) {
     const network = process.env.PROJECT_CONTAINER_NETWORK.trim();
@@ -238,12 +362,149 @@ export function getPreviewProxyOrigin(): string {
   return PUBLIC_PREVIEW_PROXY_ORIGIN;
 }
 
+export function getDockerRuntimeDiagnostics() {
+  return {
+    templateImage: TEMPLATE_IMAGE_NAME,
+    templateVersion: TEMPLATE_IMAGE_VERSION,
+    dynamicTemplateTag: PROJECT_TEMPLATE_DYNAMIC_TAG,
+    templateNoCache: PROJECT_TEMPLATE_NO_CACHE,
+    templateRebuildAlways: PROJECT_TEMPLATE_REBUILD_ALWAYS,
+    workspacePath: PROJECT_WORKSPACE_PATH,
+    workspaceVolumeEnabled: PROJECT_WORKSPACE_VOLUME_ENABLED,
+    workspaceVolumePrefix: PROJECT_WORKSPACE_VOLUME_PREFIX,
+    readonlyRootfs: PROJECT_READONLY_ROOTFS,
+    memoryBytes: PROJECT_CONTAINER_MEMORY_BYTES,
+    nanoCpus: PROJECT_CONTAINER_NANO_CPUS,
+    pidsLimit: PROJECT_CONTAINER_PIDS_LIMIT,
+  };
+}
+
 export function buildRawPreviewUrl(port: number): string {
   return `${process.env.PREVIEW_BASE_URL || "http://localhost"}:${port}`;
 }
 
 export async function getDockerfile(): Promise<string> {
   return await fs.readFile("./src/Dockerfile", "utf-8");
+}
+
+function escapeDockerLabel(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
+}
+
+function getTemplateImageName(sourceSha: string): string {
+  if (!PROJECT_TEMPLATE_DYNAMIC_TAG) return TEMPLATE_IMAGE_NAME;
+
+  const lastSlash = TEMPLATE_IMAGE_NAME.lastIndexOf("/");
+  const lastColon = TEMPLATE_IMAGE_NAME.lastIndexOf(":");
+  const baseName =
+    lastColon > lastSlash ? TEMPLATE_IMAGE_NAME.slice(0, lastColon) : TEMPLATE_IMAGE_NAME;
+  const tag = `${TEMPLATE_IMAGE_VERSION}-${sourceSha.slice(0, 12)}`.replace(
+    /[^a-zA-Z0-9_.-]/g,
+    "-"
+  );
+
+  return `${baseName}:${tag}`;
+}
+
+async function listTemplateContextFiles(rootDir: string): Promise<string[]> {
+  const files: string[] = [];
+
+  async function walk(currentDir: string) {
+    const entries = await fs.readdir(currentDir, { withFileTypes: true });
+
+    for (const entry of entries) {
+      const fullPath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(fullPath);
+      } else if (entry.isFile()) {
+        files.push(fullPath);
+      }
+    }
+  }
+
+  await walk(rootDir);
+  return files.sort();
+}
+
+async function hashTemplateBuildContext(
+  rootDir: string,
+  baseDockerfileContent: string
+): Promise<string> {
+  const hash = crypto.createHash("sha256");
+  hash.update(`template-version:${TEMPLATE_IMAGE_VERSION}\n`);
+  hash.update(baseDockerfileContent);
+
+  for (const filePath of await listTemplateContextFiles(rootDir)) {
+    const relativePath = path.relative(rootDir, filePath).replace(/\\/g, "/");
+    if (relativePath === "Dockerfile") continue;
+
+    hash.update(`\n--- ${relativePath} ---\n`);
+    hash.update(await fs.readFile(filePath));
+  }
+
+  return hash.digest("hex");
+}
+
+async function inspectImageLabels(
+  imageName: string
+): Promise<Record<string, string>> {
+  const imageInfo = await docker.getImage(imageName).inspect();
+  return imageInfo.Config?.Labels || {};
+}
+
+async function canReuseTemplateImage(
+  imageName: string,
+  sourceSha: string
+): Promise<boolean> {
+  if (PROJECT_TEMPLATE_REBUILD_ALWAYS) {
+    console.warn("template_image_cache_bypass", {
+      trace: "template_image_rebuild_forced",
+      imageName,
+      sourceSha: sourceSha.slice(0, 16),
+    });
+    return false;
+  }
+
+  try {
+    const labels = await inspectImageLabels(imageName);
+    const imageVersion = labels[TEMPLATE_VERSION_LABEL];
+    const imageSourceSha = labels[TEMPLATE_SOURCE_SHA_LABEL];
+    const matches =
+      imageVersion === TEMPLATE_IMAGE_VERSION && imageSourceSha === sourceSha;
+
+    if (matches && !PROJECT_TEMPLATE_NO_CACHE) {
+      console.log("template_image_cache_hit", {
+        trace: "template_image_cache_hit",
+        imageName,
+        imageVersion,
+        sourceSha: sourceSha.slice(0, 16),
+        command: labels[TEMPLATE_CMD_LABEL] || "(unknown)",
+      });
+      return true;
+    }
+
+    console.warn("template_image_cache_miss", {
+      trace: "template_image_cache_miss",
+      imageName,
+      expectedVersion: TEMPLATE_IMAGE_VERSION,
+      actualVersion: imageVersion || "(none)",
+      expectedSourceSha: sourceSha.slice(0, 16),
+      actualSourceSha: imageSourceSha ? imageSourceSha.slice(0, 16) : "(none)",
+      noCache: PROJECT_TEMPLATE_NO_CACHE,
+    });
+
+    if (!PROJECT_TEMPLATE_DYNAMIC_TAG || PROJECT_TEMPLATE_NO_CACHE) {
+      await docker.getImage(imageName).remove({ force: true });
+    }
+  } catch (error) {
+    console.warn("template_image_cache_lookup_failed", {
+      trace: "template_image_cache_lookup_failed",
+      imageName,
+      error: error instanceof Error ? error.message : error,
+    });
+  }
+
+  return false;
 }
 
 async function writeTemplateFile(
@@ -503,34 +764,45 @@ export default function Home() {
 }
 
 export async function buildImage(containerId: string): Promise<string> {
-  try {
-    const existingImage = docker.getImage(TEMPLATE_IMAGE_NAME);
-    const imageInfo = await existingImage.inspect();
-    const imageVersion = imageInfo.Config?.Labels?.[TEMPLATE_VERSION_LABEL];
-
-    if (imageVersion === TEMPLATE_IMAGE_VERSION) {
-      console.log(`Using cached template image: ${TEMPLATE_IMAGE_NAME}`);
-      return TEMPLATE_IMAGE_NAME;
-    }
-
-    console.log(
-      `Template image version changed (${imageVersion || "none"} -> ${TEMPLATE_IMAGE_VERSION}); rebuilding.`
-    );
-    await existingImage.remove({ force: true });
-  } catch {
-    // Image does not exist or could not be inspected; build it once and reuse it.
-  }
-
   const tempDir = path.join("/tmp", `docker-app-${containerId}`);
   await fs.mkdir(tempDir, { recursive: true });
 
   try {
-    const dockerfileContent = `${(await getDockerfile()).trimEnd()}\n\nLABEL ${TEMPLATE_VERSION_LABEL}="${TEMPLATE_IMAGE_VERSION}"\n`;
-    await fs.writeFile(path.join(tempDir, "Dockerfile"), dockerfileContent);
+    const baseDockerfileContent = (await getDockerfile()).trimEnd();
     await writeKlawpenWorkspaceTemplate(tempDir);
 
-    const imageName = TEMPLATE_IMAGE_NAME;
-    console.log(`Building image: ${imageName}`);
+    const sourceSha = await hashTemplateBuildContext(
+      tempDir,
+      baseDockerfileContent
+    );
+    const imageName = getTemplateImageName(sourceSha);
+
+    if (await canReuseTemplateImage(imageName, sourceSha)) {
+      await fs.rm(tempDir, { recursive: true, force: true });
+      return imageName;
+    }
+
+    const runtimeCmd = "bun run dev --hostname 0.0.0.0 --port 3000";
+    const dockerfileContent = [
+      baseDockerfileContent,
+      "",
+      `LABEL ${TEMPLATE_VERSION_LABEL}="${escapeDockerLabel(TEMPLATE_IMAGE_VERSION)}"`,
+      `LABEL ${TEMPLATE_SOURCE_SHA_LABEL}="${escapeDockerLabel(sourceSha)}"`,
+      `LABEL ${TEMPLATE_CMD_LABEL}="${escapeDockerLabel(runtimeCmd)}"`,
+      "",
+    ].join("\n");
+    await fs.writeFile(path.join(tempDir, "Dockerfile"), dockerfileContent);
+
+    console.log("template_image_build_started", {
+      trace: "template_image_build_started",
+      imageName,
+      version: TEMPLATE_IMAGE_VERSION,
+      sourceSha: sourceSha.slice(0, 16),
+      dynamicTag: PROJECT_TEMPLATE_DYNAMIC_TAG,
+      noCache: PROJECT_TEMPLATE_NO_CACHE,
+      rebuildAlways: PROJECT_TEMPLATE_REBUILD_ALWAYS,
+      runtimeCmd,
+    });
 
     const tarStream = await docker.buildImage(
       {
@@ -549,6 +821,7 @@ export async function buildImage(containerId: string): Promise<string> {
         t: imageName,
         rm: true,
         forcerm: true,
+        nocache: PROJECT_TEMPLATE_NO_CACHE || PROJECT_TEMPLATE_REBUILD_ALWAYS,
       }
     );
 
@@ -563,7 +836,11 @@ export async function buildImage(containerId: string): Promise<string> {
             console.error("Build output:", buildOutput);
             reject(new Error(`Docker build failed: ${err.message}`));
           } else {
-            console.log("Build completed successfully");
+            console.log("template_image_build_completed", {
+              trace: "template_image_build_completed",
+              imageName,
+              sourceSha: sourceSha.slice(0, 16),
+            });
             resolve();
           }
         },
@@ -581,8 +858,18 @@ export async function buildImage(containerId: string): Promise<string> {
     });
 
     const image = docker.getImage(imageName);
-    await image.inspect();
-    console.log(`Image ${imageName} created successfully`);
+    const imageInfo = await image.inspect();
+    console.log("template_image_created", {
+      trace: "template_image_created",
+      imageName,
+      imageId: imageInfo.Id,
+      version: imageInfo.Config?.Labels?.[TEMPLATE_VERSION_LABEL],
+      sourceSha: imageInfo.Config?.Labels?.[TEMPLATE_SOURCE_SHA_LABEL]?.slice(
+        0,
+        16
+      ),
+      cmd: imageInfo.Config?.Cmd,
+    });
 
     await fs.rm(tempDir, { recursive: true, force: true });
     return imageName;
@@ -624,11 +911,20 @@ export async function createContainer(
       workspaceVolume: PROJECT_WORKSPACE_VOLUME_ENABLED
         ? getWorkspaceVolumeName(containerId, owner)
         : "",
+      templateImage: imageName,
     },
   });
 
   console.log(`Starting container: ${container.id}`);
   await container.start();
+  await logContainerRuntimeDiagnostics({
+    container,
+    containerId,
+    imageName,
+    assignedPort,
+    networkMode,
+    owner,
+  });
 
   return { container, port: assignedPort };
 }

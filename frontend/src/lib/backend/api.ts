@@ -29,7 +29,16 @@ export interface Message {
   attachments?: Attachment[];
   edits?: {
     applied: number;
-    failed: Array<{ label: string; error: string }>;
+    failed: Array<{ label: string; error: string; trace?: string }>;
+    verifiedWrites?: Array<{ path: string; bytes: number; sha256: string }>;
+    parser?: {
+      source: "dec-tags" | "markdown-fences" | "partial-dec-tags" | "none";
+      operationCount: number;
+      writeCount: number;
+      openWriteTags: number;
+      closeWriteTags: number;
+      unbalancedWriteTags: number;
+    };
   };
 }
 
