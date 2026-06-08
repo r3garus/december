@@ -182,6 +182,10 @@ function hashContent(content: string): string {
   return crypto.createHash("sha256").update(content, "utf8").digest("hex");
 }
 
+function normalizeLineEndings(content: string): string {
+  return content.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
+
 async function getContainerFileDigest(
   containerId: string,
   absolutePath: string
@@ -575,6 +579,30 @@ export async function writeFile(
       await getContainerFileDigest(containerId, absolutePath);
 
     if (actualBytes !== expectedBytes || actualHash !== expectedHash) {
+      const writtenContent = await readFile(dockerClient, containerId, absolutePath);
+      const lineEndingEquivalent =
+        normalizeLineEndings(writtenContent) === normalizeLineEndings(content);
+
+      if (lineEndingEquivalent) {
+        console.warn("container_file_write_verified_line_endings_normalized", {
+          containerId,
+          trace: "file_write_verified_line_endings_normalized",
+          path: filePath,
+          absolutePath,
+          expectedBytes,
+          actualBytes,
+          expectedSha256: expectedHash.slice(0, 16),
+          actualSha256: actualHash.slice(0, 16),
+        });
+
+        return {
+          path: filePath,
+          absolutePath,
+          bytes: actualBytes,
+          sha256: actualHash,
+        };
+      }
+
       console.error("container_file_write_verification_failed", {
         containerId,
         trace: "file_write_verification_failed",

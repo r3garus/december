@@ -314,6 +314,8 @@ const chatSessions = new Map<string, ChatSession>();
 
 const POWER_BUILD_AUTO_ENABLED = process.env.KLAWPEN_POWER_BUILD_AUTO !== "false";
 const DEEP_BUILD_AUTO_ENABLED = process.env.KLAWPEN_DEEP_BUILD_AUTO !== "false";
+const BROAD_BUILD_POWER_AUTO_ENABLED =
+  process.env.KLAWPEN_BROAD_BUILD_POWER_AUTO === "true";
 const ARCHITECT_SPEC_ENABLED =
   process.env.KLAWPEN_ENABLE_ARCHITECT_SPEC === "true";
 const BUILD_GATE_ENABLED = process.env.KLAWPEN_ENABLE_BUILD_GATE === "true";
@@ -2577,7 +2579,9 @@ function resolveBuildOptions(
     !explicitlyFast &&
     (explicitlyPower ||
       (POWER_BUILD_AUTO_ENABLED &&
-        (broadBuild || workloadIsHeavy || options.planMode === true)));
+        (workloadIsHeavy ||
+          options.planMode === true ||
+          (BROAD_BUILD_POWER_AUTO_ENABLED && broadBuild))));
   const deepMode =
     !explicitlyFast &&
     DEEP_BUILD_AUTO_ENABLED &&
