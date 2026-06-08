@@ -10,6 +10,23 @@ const MAX_ATTACHMENTS = 4;
 const MAX_ATTACHMENT_BYTES = 8_000_000;
 const MAX_TOTAL_ATTACHMENT_BYTES = 12_000_000;
 const CREDIT_UNIT_CENTS = Number(process.env.KLAWPEN_CORE_CREDIT_CENTS || "100");
+
+function prepareSseResponse(req: express.Request, res: express.Response) {
+  req.setTimeout(0);
+  res.setTimeout(0);
+  res.socket?.setKeepAlive?.(true);
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders?.();
+  res.write(": klawpen-stream-connected\n\n");
+}
+
+function writeSseData(res: express.Response, payload: unknown) {
+  res.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
 const TURKISH_HINT_PATTERN = /[Ã§ÄŸÄ±Ä°Ã¶ÅŸÃ¼]/i;
 const TURKISH_WORD_PATTERN = /\b(merhaba|selam|kanka|tesisat|site|yap|oluÅŸtur|tasarla|dÃ¼zenle|deÄŸiÅŸtir|lÃ¼tfen|iÃ§in)\b/i;
 
@@ -188,17 +205,13 @@ router.post("/:containerId/messages", async (req, res) => {
         llmService.addConversationalMessage(containerId, message, shortcutReply);
 
       if (shouldStream) {
-        res.setHeader("Content-Type", "text/event-stream");
-        res.setHeader("Cache-Control", "no-cache");
-        res.setHeader("Connection", "keep-alive");
-        res.write(`data: ${JSON.stringify({ type: "user", data: userMessage })}\n\n`);
-        res.write(
-          `data: ${JSON.stringify({
-            type: "assistant",
-            data: assistantMessage,
-          })}\n\n`
-        );
-        res.write(`data: ${JSON.stringify({ type: "done", data: assistantMessage })}\n\n`);
+        prepareSseResponse(req, res);
+        writeSseData(res, { type: "user", data: userMessage });
+        writeSseData(res, {
+          type: "assistant",
+          data: assistantMessage,
+        });
+        writeSseData(res, { type: "done", data: assistantMessage });
         res.write("data: [DONE]\n\n");
         res.end();
         return;
@@ -225,17 +238,13 @@ router.post("/:containerId/messages", async (req, res) => {
         );
 
       if (shouldStream) {
-        res.setHeader("Content-Type", "text/event-stream");
-        res.setHeader("Cache-Control", "no-cache");
-        res.setHeader("Connection", "keep-alive");
-        res.write(`data: ${JSON.stringify({ type: "user", data: userMessage })}\n\n`);
-        res.write(
-          `data: ${JSON.stringify({
-            type: "assistant",
-            data: assistantMessage,
-          })}\n\n`
-        );
-        res.write(`data: ${JSON.stringify({ type: "done", data: assistantMessage })}\n\n`);
+        prepareSseResponse(req, res);
+        writeSseData(res, { type: "user", data: userMessage });
+        writeSseData(res, {
+          type: "assistant",
+          data: assistantMessage,
+        });
+        writeSseData(res, { type: "done", data: assistantMessage });
         res.write("data: [DONE]\n\n");
         res.end();
         return;
@@ -309,17 +318,13 @@ router.post("/:containerId/messages", async (req, res) => {
         );
 
       if (shouldStream) {
-        res.setHeader("Content-Type", "text/event-stream");
-        res.setHeader("Cache-Control", "no-cache");
-        res.setHeader("Connection", "keep-alive");
-        res.write(`data: ${JSON.stringify({ type: "user", data: userMessage })}\n\n`);
-        res.write(
-          `data: ${JSON.stringify({
-            type: "assistant",
-            data: assistantMessage,
-          })}\n\n`
-        );
-        res.write(`data: ${JSON.stringify({ type: "done", data: assistantMessage })}\n\n`);
+        prepareSseResponse(req, res);
+        writeSseData(res, { type: "user", data: userMessage });
+        writeSseData(res, {
+          type: "assistant",
+          data: assistantMessage,
+        });
+        writeSseData(res, { type: "done", data: assistantMessage });
         res.write("data: [DONE]\n\n");
         res.end();
         return;
@@ -333,10 +338,7 @@ router.post("/:containerId/messages", async (req, res) => {
     }
 
     if (shouldStream) {
-      res.setHeader("Content-Type", "text/event-stream");
-      res.setHeader("Cache-Control", "no-cache");
-      res.setHeader("Connection", "keep-alive");
-      res.flushHeaders?.();
+      prepareSseResponse(req, res);
 
       const messageStream = llmService.sendMessageStream(
         containerId,
@@ -348,7 +350,7 @@ router.post("/:containerId/messages", async (req, res) => {
       );
 
       for await (const chunk of messageStream) {
-        res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+        writeSseData(res, chunk);
       }
 
       res.write("data: [DONE]\n\n");
@@ -372,14 +374,15 @@ router.post("/:containerId/messages", async (req, res) => {
   } catch (error) {
     console.log(error);
     if (shouldStream) {
-      res.write(
-        `data: ${JSON.stringify({
-          type: "error",
-          data: {
-            error: error instanceof Error ? error.message : "Unknown error",
-          },
-        })}\n\n`
-      );
+      if (!res.headersSent) {
+        prepareSseResponse(req, res);
+      }
+      writeSseData(res, {
+        type: "error",
+        data: {
+          error: error instanceof Error ? error.message : "Unknown error",
+        },
+      });
       res.end();
     } else {
       res.status(500).json({

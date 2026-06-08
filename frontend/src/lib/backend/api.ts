@@ -4,6 +4,35 @@ export const API_BASE_URL = (
   process.env.NEXT_PUBLIC_API_URL || "https://api.builder.klawpen.com"
 ).replace(/\/$/, "");
 
+function prefersTurkishUi() {
+  if (typeof window === "undefined") return false;
+
+  const storedLanguage = window.localStorage.getItem("klawpen:ui-language");
+  if (storedLanguage === "tr") return true;
+  if (storedLanguage === "en") return false;
+
+  const primaryLanguage = (
+    navigator.languages?.[0] ||
+    navigator.language ||
+    "en"
+  ).toLowerCase();
+
+  return primaryLanguage.startsWith("tr");
+}
+
+function getFriendlyStreamError(rawMessage: string) {
+  const isConnectionIssue =
+    /network|failed to fetch|load failed|connection|stream ended/i.test(
+      rawMessage
+    );
+
+  if (!isConnectionIssue) return rawMessage || "Connection error";
+
+  return prefersTurkishUi()
+    ? "Klawpen Core bağlantısı proje oluşturulurken kesildi. Lütfen tekrar dene; son kaydedilen dosyalar ve checkpoint korunur."
+    : "Connection to Klawpen Core was interrupted while the project was being generated. Please try again; your last saved files/checkpoint will stay available.";
+}
+
 export interface Container {
   id: string;
   name: string;
@@ -268,6 +297,7 @@ export function sendChatMessageStream(
 
       const decoder = new TextDecoder();
       let buffer = "";
+      let completed = false;
 
       try {
         while (true) {
@@ -282,6 +312,7 @@ export function sendChatMessageStream(
             if (line.startsWith("data: ")) {
               const data = line.slice(6).trim();
               if (data === "[DONE]") {
+                completed = true;
                 onComplete?.();
                 return;
               }
@@ -296,6 +327,15 @@ export function sendChatMessageStream(
                     onError?.(errorMessage);
                     return;
                   }
+                  if (parsed?.type === "heartbeat") {
+                    continue;
+                  }
+                  if (parsed?.type === "done") {
+                    completed = true;
+                    onMessage(parsed);
+                    onComplete?.();
+                    return;
+                  }
                   onMessage(parsed);
                 } catch (e) {
                   console.error("Failed to parse SSE data:", data, e);
@@ -303,6 +343,10 @@ export function sendChatMessageStream(
               }
             }
           }
+        }
+
+        if (!completed) {
+          throw new Error("Network stream ended before Klawpen Core finished.");
         }
       } catch (error) {
         if (error instanceof Error && error.name === "AbortError") {
@@ -316,7 +360,8 @@ export function sendChatMessageStream(
         return;
       }
       console.error("Stream error:", error);
-      onError?.(error.message || "Connection error");
+      const rawMessage = error instanceof Error ? error.message : String(error || "");
+      onError?.(getFriendlyStreamError(rawMessage));
     });
 
   return () => {

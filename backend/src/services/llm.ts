@@ -131,6 +131,10 @@ const AI_STREAM_IDLE_TIMEOUT_MS = clampTimeout(
   ),
   120_000
 );
+const STREAM_HEARTBEAT_MS = readPositiveInt(
+  process.env.KLAWPEN_STREAM_HEARTBEAT_MS,
+  10_000
+);
 const AI_STREAM_FALLBACK_MODELS = readCsvList(
   process.env.AI_STREAM_FALLBACK_MODELS ||
     process.env.KLAWPEN_LLM_FALLBACK_MODELS,
@@ -1055,6 +1059,10 @@ Deliver production-minded quality:
 - typography craft rule: do not use font-black/extrabold or heavy display weight as the default. Prefer font-semibold/font-bold, relaxed tracking, readable line-height, and expressive contrast through layout, color, spacing, and imagery rather than brute weight.
 - never stack huge words with leading below 0.9 for normal business sites; hero headings should usually stay around clamp(2.4rem, 5vw, 4.8rem) with max-width that keeps Turkish copy readable.
 - build visually useful sections, not generic "01 / signal / strategic story" rails. If the domain is commerce, restaurant, clinic, legal, local service, fitness, event, or blog, create modules that users expect in that domain.
+- senior craft rule: code like a real senior product engineer, not a prompt-to-template generator. Use typed content models, domain-specific component names, route-specific modules, reusable layout primitives, and clean imports.
+- anti-AI-template rule: do not lean on the common AI aesthetic of giant glass cards, blur blobs, generic gradients, emoji decoration, fake stats, "next-generation/seamless/elevate" copy, or repeated three-card grids.
+- interaction craft rule: add realistic states where relevant: form validation/success, tabs/filters, booking/request flows, article/category filters, store/product states, dashboard empty/loading states, or equivalent domain interactions.
+- content density rule: every route must carry useful public content, not decorative panels. A page should still feel valuable if all decorative shapes are removed.
 - before writing code, internally run a design critique: "Would a real premium agency ship this screenshot?" If the answer is no, revise the layout before returning.
 - every page must feel like a finished public-facing website for a real client: no internal planning labels, no "we are building this", no "design direction", no "first version", no placeholder/fallback wording
 - design-token contract: every generated workspace includes Tailwind klawpen-branding tokens. Use the klawpen-* token namespace as the visual source of truth: bg-klawpen-ink, bg-klawpen-coal, bg-klawpen-panel, bg-klawpen-mist, text-klawpen-steel, text-klawpen-ocean, border-klawpen-ocean, rounded-klawpen-panel, rounded-klawpen-hero, px-klawpen-shell, py-klawpen-section, font-klawpen-sans, and font-klawpen-display.
@@ -1110,6 +1118,9 @@ Rules:
 - FAIL outputs with ultra-tight tracking/line-height that makes Turkish headings look squeezed, amateur, or hard to read.
 - FAIL outputs that show generic fallback labels like "Sinyal 01", "Signal 01", "Stratejik anlatı", "Visual system", or "Conversion CTA" for ordinary customer websites.
 - FAIL outputs where the screenshot would still look bad after swapping only the brand name and hero headline.
+- FAIL outputs that look AI-generated because they overuse glassmorphism, blur blobs, generic gradients, emoji decoration, repeated three-card grids, fake metrics, or vague marketing cliches.
+- FAIL code that is mostly a giant page blob with abstract Hero/Features/Stats/FinalCta components instead of typed content, domain-specific modules, and route-specific public pages.
+- FAIL route pages that are visually present but content-thin, placeholder-like, auth-gated, JSON/API-like, or only decorative.
 - Keep feedback specific and actionable.
 `;
 
@@ -3120,6 +3131,92 @@ function hasGenericFallbackCopy(assistantContent: string) {
   );
 }
 
+function getSeniorCraftIssues(assistantContent: string): string[] {
+  const issues: string[] = [];
+  const combined = getCombinedWrittenContent(assistantContent);
+  const visibleCopy = getLikelyVisibleUiCopy(assistantContent);
+
+  if (!combined) return issues;
+
+  const visualClicheCount = [
+    /\bbackdrop-blur(?:-\w+)?\b/g,
+    /\bblur-3xl\b/g,
+    /\bbg-gradient-to-[a-z]+\b/g,
+    /\bshadow-2xl\b/g,
+    /\brounded-\[2(?:\.\d+)?rem\]/g,
+    /\brounded-3xl\b/g,
+    /\bfrom-[\w[\]/.-]+\b/g,
+    /\bvia-[\w[\]/.-]+\b/g,
+    /\bto-[\w[\]/.-]+\b/g,
+  ].reduce((count, pattern) => count + (combined.match(pattern) || []).length, 0);
+  const abstractComponentCount = (
+    combined.match(
+      /\b(Hero|HeroSection|FeatureGrid|FeaturesSection|StatsBand|StatsSection|ProcessSection|ProofSection|ExperienceSection|FinalCta|CTASection|SectionHeader|PageShell|LandingShell)\b/g
+    ) || []
+  ).length;
+  const genericMarketingCopyCount = (
+    visibleCopy.match(
+      /\b(seamless|next-generation|future-ready|all-in-one|end-to-end|unlock|transform your|crafted for|built for scale|strategic|premium experience|elevate|modern experience|uçtan uca|stratejik|ölçeklenebilir|deneyimi dönüştür|modern deneyim|premium deneyim)\b/gi
+    ) || []
+  ).length;
+  const repetitiveThreeGridCount = (
+    combined.match(/\b(?:md|lg):grid-cols-3\b/g) || []
+  ).length;
+  const emojiCount = (
+    combined.match(
+      /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu
+    ) || []
+  ).length;
+  const domainSpecificCount = (
+    combined.match(
+      /\b(menu|reservation|booking|randevu|appointment|catalog|cart|checkout|article|author|editor|newsletter|treatment|clinic|case|contract|schedule|speaker|venue|store|campaign|floor|map|terminal|api|endpoint|integration|dashboard|metric|chart|class|trainer|room|amenity|lawyer|hearing|portfolio|gallery|katalog|sepet|makale|yazar|klinik|tedavi|dava|sözleşme|magaza|mağaza|kampanya|etkinlik|rezervasyon)\b/gi
+    ) || []
+  ).length;
+
+  if (emojiCount >= 5) {
+    issues.push(
+      "The UI leans on emoji decoration; replace emojis with composed CSS/HTML visual details and domain-specific UI elements."
+    );
+  }
+
+  if (
+    visualClicheCount >= 24 ||
+    (visualClicheCount >= 15 && repetitiveThreeGridCount >= 4)
+  ) {
+    issues.push(
+      "The visual language overuses AI-template effects like gradients, blur/glass panels, oversized rounding, and repeated three-column cards."
+    );
+  }
+
+  if (abstractComponentCount >= 16 && domainSpecificCount < 18) {
+    issues.push(
+      "The code architecture uses abstract landing-page sections more than domain-specific modules; rename and reshape modules around real business concepts."
+    );
+  }
+
+  if (genericMarketingCopyCount >= 8 && domainSpecificCount < 20) {
+    issues.push(
+      "The visible copy relies on generic marketing cliches; write concrete customer-facing copy tied to the requested sector."
+    );
+  }
+
+  if (
+    repetitiveThreeGridCount >= 6 &&
+    abstractComponentCount >= 10 &&
+    domainSpecificCount < 20
+  ) {
+    issues.push(
+      "The layout repeats generic three-card landing patterns instead of a senior, route-specific information architecture."
+    );
+  }
+
+  return issues;
+}
+
+function hasAiGeneratedAestheticSmell(assistantContent: string): boolean {
+  return getSeniorCraftIssues(assistantContent).length > 0;
+}
+
 function hasGenericLandingSkeleton(assistantContent: string): boolean {
   const combined = getCombinedWrittenContent(assistantContent);
   if (!combined) return false;
@@ -3267,6 +3364,8 @@ function getVisualDiversityIssues(
       "The UI contains generic fallback-style labels such as Signal/Strategic story; replace them with domain-specific customer-facing content."
     );
   }
+
+  issues.push(...getSeniorCraftIssues(assistantContent));
 
   if (
     /\b(blog|magazin|magazine|haber|news|article|makale|yazar|icerik|içerik|publishing|yayin|yayın)\b/.test(
@@ -6838,6 +6937,9 @@ GLOBAL QUALITY CONTRACT:
 - Use refined proportions, responsive layout, purposeful motion, and domain-specific modules.
 - Do not use generated-site, GeneratedLandingPage, site-experience fallback architecture, or route wrappers around one shared generated page.
 - Do not create generic site-content.ts/site-routes.ts/site-shell.tsx/site-sections.tsx unless the stage file plan explicitly lists them.
+- Code like a senior engineer: typed content/data models, clean imports, domain-specific component names, route-specific modules, and no giant one-file page blob.
+- Avoid AI-template aesthetics: glass/blur/gradient spam, emoji decoration, fake metrics, vague marketing cliches, and repeated three-card grids.
+- Add realistic domain interactions/states when relevant: validation, success/empty states, tabs/filters, booking/request flows, article/store/product states, or dashboard panels.
 - Across all stages, target ${requirements.routes}+ real routes, ${requirements.components}+ shared components, ${requirements.contentFiles}+ content/config files, and ${requirements.writes}+ meaningful writes.
 
 STAGE ${stageIndex + 1}/${stages.length}: ${stage.title.toUpperCase()}
@@ -7934,6 +8036,11 @@ function validateBuildAgainstSpec(params: {
     );
   }
 
+  const seniorCraftIssues = getSeniorCraftIssues(assistantContent);
+  if (seniorCraftIssues.length > 0) {
+    issues.push(...seniorCraftIssues);
+  }
+
   if (hasFallbackArchitectureSignature(assistantContent)) {
     issues.push(
       "Implementation reuses the generic fallback architecture signature; generate prompt-specific architecture instead."
@@ -8354,6 +8461,9 @@ async function createBuilderResponse(
         "FORBIDDEN VISIBLE META WORDS: prompt, generated, AI, yapay zeka, Klawpen, Core, Builder, template, şablon, fallback, component, design direction, tasarım yönü, first version, ilk sürüm, launch-ready, yayına hazır, freelancer, proposal, gelişmiş studio.",
         "FORBIDDEN SCAFFOLD: do not write src/components/generated-site.tsx, src/lib/generated-site-content.ts, import generated-site-content, define/use GeneratedLandingPage, or make route files that only return one shared generated page.",
         "REFINED SCALE CONTRACT: no huge crude headings/buttons/cards. Use tasteful clamp ranges, compact nav, normal-sized CTAs, useful card content, balanced whitespace, and realistic density.",
+        "SENIOR IMPLEMENTATION CONTRACT: avoid giant one-file page blobs and abstract landing names. Use typed content/config, domain-specific components, real route modules, clean imports, and route-specific public content.",
+        "ANTI-AI AESTHETIC CONTRACT: avoid glass/blur/gradient spam, emoji decoration, fake metrics, generic 'seamless/next-generation/elevate' copy, and repeated three-card grids unless the domain truly calls for it.",
+        "REAL INTERACTION CONTRACT: add practical states/interactions for the domain when relevant: form validation/success, tabs/filters, booking/request flows, article categories, product/store states, dashboard empty/loading states, or equivalent.",
         "PROFESSIONAL DESIGN METHOD: before writing files, internally compare at least 3 layout directions for this domain, choose the strongest one, then implement. Do not reveal this reasoning.",
         "QUALITY RUBRIC THAT MUST PASS: refined typography, readable Turkish/English copy, domain-specific modules, real multi-route IA, useful content density, purposeful motion, accessible responsive UI, no generic fallback labels, no oversized/heavy-font screenshot.",
         isBroadBuildRequest(userMessage, options) &&
@@ -8902,6 +9012,26 @@ ${currentDraft}
       continue;
     }
 
+    const seniorCraftIssues = getSeniorCraftIssues(currentDraft);
+    if (seniorCraftIssues.length > 0) {
+      currentDraft = await reviseBuildAfterLocalQualityGate({
+        userMessage: params.userMessage,
+        plannerBrief: params.plannerBrief,
+        architectSpec: params.architectSpec || null,
+        implementationBlueprint: params.implementationBlueprint || null,
+        codeContext: params.codeContext,
+        draft: currentDraft,
+        provider: params.provider,
+        options: params.options,
+        reason: [
+          "The implementation still looks AI-generated instead of senior-crafted.",
+          ...seniorCraftIssues,
+          "Rebuild with domain-specific modules, restrained visual effects, real interactions/states, and refined production-style code organization.",
+        ].join(" "),
+      });
+      continue;
+    }
+
     let critic: CriticResult;
     try {
       critic = await createCriticReview(criticInput, reviewerProvider);
@@ -9028,6 +9158,8 @@ async function repairMissingExecutableEdits(params: {
   const oversizedVisualSystem =
     isBroadBuildRequest(params.userMessage, params.options) &&
     hasOversizedCrudeVisualSystem(params.draft);
+  const seniorCraftIssues = getSeniorCraftIssues(params.draft);
+  const aiAestheticSmell = seniorCraftIssues.length > 0;
   const requirements = getBroadBuildRequirements(params.options);
 
   if (
@@ -9036,7 +9168,8 @@ async function repairMissingExecutableEdits(params: {
     !reusedBuilderBrand &&
     !builderMetaCopy &&
     !languageMismatch &&
-    !oversizedVisualSystem
+    !oversizedVisualSystem &&
+    !aiAestheticSmell
   ) {
     return params.draft;
   }
@@ -9050,6 +9183,8 @@ async function repairMissingExecutableEdits(params: {
       builderMetaCopy,
       languageMismatch,
       oversizedVisualSystem,
+      aiAestheticSmell,
+      seniorCraftIssues,
     }
   );
 
@@ -9063,6 +9198,8 @@ async function repairMissingExecutableEdits(params: {
           ? "The previous assistant output used builder/meta language in customer-visible UI copy."
           : oversizedVisualSystem
             ? "The previous assistant output used oversized, low-density typography/cards/buttons that made the preview look crude and AI-generated."
+            : aiAestheticSmell
+              ? `The previous assistant output still looked AI-generated instead of senior-crafted: ${seniorCraftIssues.join(" ")}`
             : "The previous assistant output used visible UI copy in a different language than the user's prompt.";
 
   const repairInput = `
@@ -9092,6 +9229,8 @@ Customer-facing copy rule:
 Refined design rule:
 - Avoid giant headings, huge CTA buttons, empty decorative cards, and oversized rounded boxes.
 - Use compact navigation/buttons, balanced card sizes, realistic content density, refined typography scale, and purposeful animation.
+- Avoid AI-template aesthetics: no glass/blur/gradient spam, emoji decoration, fake stats, vague marketing cliches, or repeated three-card grids.
+- Use senior code organization: typed content/config files, domain-specific components, route-specific public pages, realistic states/interactions, and clean imports.
 - Do not patch the old bad layout cosmetically; if the screenshot would still look amateur, replace the composition with a stronger domain-specific layout.
 - Quality rubric: refined typography, readable line-height, domain modules, useful content density, responsive polish, purposeful motion, and customer-facing copy must all pass.
 Visible UI language requirement:
@@ -9137,7 +9276,8 @@ ${clipText(params.codeContext, 60_000)}
         !shouldRepairGeneratedBrandReuse(params.userMessage, repaired) &&
         !hasBuilderMetaVisibleCopy(params.userMessage, repaired) &&
         !shouldRepairVisibleLanguageMismatch(params.userMessage, repaired) &&
-        !hasOversizedCrudeVisualSystem(repaired)
+        !hasOversizedCrudeVisualSystem(repaired) &&
+        !hasAiGeneratedAestheticSmell(repaired)
       ) {
         return repaired;
       }
@@ -9164,7 +9304,8 @@ ${clipText(params.codeContext, 60_000)}
         !shouldRepairGeneratedBrandReuse(params.userMessage, premiumAttempt) &&
         !hasBuilderMetaVisibleCopy(params.userMessage, premiumAttempt) &&
         !shouldRepairVisibleLanguageMismatch(params.userMessage, premiumAttempt) &&
-        !hasOversizedCrudeVisualSystem(premiumAttempt)
+        !hasOversizedCrudeVisualSystem(premiumAttempt) &&
+        !hasAiGeneratedAestheticSmell(premiumAttempt)
       ) {
         return premiumAttempt;
       }
@@ -10388,7 +10529,10 @@ export async function* sendMessageStream(
   workloadEstimate?: AiWorkloadEstimate,
   options: BuildOptions = {},
   account?: AuthenticatedAccount
-): AsyncGenerator<{ type: "user" | "assistant" | "progress" | "done"; data: any }> {
+): AsyncGenerator<{
+  type: "user" | "assistant" | "progress" | "heartbeat" | "done";
+  data: any;
+}> {
   const session = getOrCreateChatSession(containerId);
   removeTrailingUnansweredUserMessage(session, userMessage);
 
@@ -10433,12 +10577,31 @@ export async function* sendMessageStream(
 
     if (buildFinished) break;
 
-    await Promise.race([
-      buildPromise.then(() => undefined).catch(() => undefined),
-      new Promise<void>((resolve) => {
-        wakeProgressReader = resolve;
+    const waitResult = await Promise.race([
+      buildPromise.then(() => "done" as const).catch(() => "done" as const),
+      new Promise<"progress">((resolve) => {
+        wakeProgressReader = () => resolve("progress");
       }),
+      sleep(STREAM_HEARTBEAT_MS).then(() => "heartbeat" as const),
     ]);
+
+    if (waitResult !== "progress") {
+      wakeProgressReader = null;
+    }
+
+    if (
+      waitResult === "heartbeat" &&
+      !buildFinished &&
+      progressQueue.length === 0
+    ) {
+      yield {
+        type: "heartbeat",
+        data: {
+          timestamp: new Date().toISOString(),
+          containerId,
+        },
+      };
+    }
   }
 
   const { assistantMessage } = await buildPromise;
