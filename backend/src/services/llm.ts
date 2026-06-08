@@ -302,6 +302,7 @@ type BuildOutputSource =
   | "critic_ai"
   | "spec_repair_ai"
   | "executable_repair_ai"
+  | "runtime_repair_ai"
   | "timeout_recovery_ai"
   | "premium_recovery_ai"
   | "bootstrap_rescue_ai"
@@ -320,6 +321,20 @@ const ARCHITECT_SPEC_ENABLED =
   process.env.KLAWPEN_ENABLE_ARCHITECT_SPEC === "true";
 const BUILD_GATE_ENABLED = process.env.KLAWPEN_ENABLE_BUILD_GATE === "true";
 const PREVIEW_CHECK_ENABLED = process.env.KLAWPEN_ENABLE_PREVIEW_CHECK === "true";
+const PREVIEW_SMOKE_CHECK_ENABLED =
+  process.env.KLAWPEN_PREVIEW_SMOKE_CHECK !== "false";
+const PREVIEW_SMOKE_ATTEMPTS = readPositiveInt(
+  process.env.KLAWPEN_PREVIEW_SMOKE_ATTEMPTS,
+  3
+);
+const PREVIEW_SMOKE_DELAY_MS = readPositiveInt(
+  process.env.KLAWPEN_PREVIEW_SMOKE_DELAY_MS,
+  2_500
+);
+const PREVIEW_SMOKE_TIMEOUT_MS = readPositiveInt(
+  process.env.KLAWPEN_PREVIEW_SMOKE_TIMEOUT_MS,
+  15_000
+);
 const CROSS_REVIEW_ENABLED = process.env.KLAWPEN_ENABLE_CROSS_REVIEW !== "false";
 const DETERMINISTIC_RUNTIME_FALLBACK_ENABLED =
   process.env.KLAWPEN_DETERMINISTIC_RUNTIME_FALLBACK === "true";
@@ -8908,6 +8923,277 @@ ${clipText(params.codeContext, 60_000)}
   }
 }
 
+interface PreviewSmokeResult {
+  ok: boolean;
+  url?: string;
+  status?: number;
+  error?: string;
+  htmlPreview?: string;
+  trace: string;
+}
+
+function getPreviewSmokeCandidateUrls(runtime: {
+  port: number;
+  upstreamUrls?: string[];
+}): string[] {
+  return Array.from(
+    new Set([
+      ...(runtime.upstreamUrls || []),
+      dockerService.buildRawPreviewUrl(runtime.port),
+    ])
+  ).filter(Boolean);
+}
+
+function getPreviewRuntimeError(html: string, status: number) {
+  const normalized = html.replace(/\s+/g, " ").trim();
+  const digestMatch = normalized.match(/\bDigest:\s*([a-z0-9-]+)/i);
+  const serverException =
+    /Application error:\s*a server-side exception has occurred/i.test(normalized) ||
+    /server-side exception has occurred/i.test(normalized);
+  const nextRuntimeError =
+    /\b(ReferenceError|TypeError|SyntaxError|RangeError|Module not found|Cannot find module|Unhandled Runtime Error)\b/i.test(
+      normalized
+    );
+
+  if (serverException || digestMatch || nextRuntimeError || status >= 500) {
+    return [
+      `Preview runtime failed with status ${status}.`,
+      digestMatch ? `Digest: ${digestMatch[1]}.` : "",
+      serverException ? "Next.js reported a server-side exception." : "",
+      nextRuntimeError ? "The HTML contains a runtime/build error signature." : "",
+      `Preview excerpt: ${clipText(normalized, 700)}`,
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  if (!html || html.length < 300) {
+    return `Preview runtime returned an unexpectedly small HTML response (${html.length} chars).`;
+  }
+
+  return "";
+}
+
+async function runPreviewSmokeCheck(params: {
+  containerId: string;
+  userMessage: string;
+  progress?: ProgressReporter;
+  percent?: number;
+}): Promise<PreviewSmokeResult> {
+  if (!PREVIEW_SMOKE_CHECK_ENABLED) {
+    return { ok: true, trace: "preview_smoke_check_disabled" };
+  }
+
+  await params.progress?.(
+    getBuildProgressCopy(params.userMessage, "verify", params.percent ?? 92)
+  );
+
+  let lastResult: PreviewSmokeResult = {
+    ok: false,
+    trace: "preview_smoke_check_not_started",
+  };
+
+  for (let attempt = 1; attempt <= PREVIEW_SMOKE_ATTEMPTS; attempt++) {
+    try {
+      const runtime = await dockerService.getPreviewRuntime(params.containerId);
+      const urls = getPreviewSmokeCandidateUrls(runtime);
+      const urlFailures: PreviewSmokeResult[] = [];
+      const passed = await Promise.any(
+        urls.map(async (url) => {
+          try {
+            const response = await withTimeout(
+              fetch(url, {
+                headers: {
+                  "cache-control": "no-cache",
+                  pragma: "no-cache",
+                },
+              }),
+              PREVIEW_SMOKE_TIMEOUT_MS,
+              `preview smoke check ${url}`
+            );
+            const html = await response.text();
+            const runtimeError = getPreviewRuntimeError(html, response.status);
+
+            if (!runtimeError) {
+              return {
+                ok: true,
+                trace: "preview_smoke_check_passed",
+                url,
+                status: response.status,
+              } satisfies PreviewSmokeResult;
+            }
+
+            const failedResult: PreviewSmokeResult = {
+              ok: false,
+              trace: "preview_smoke_check_failed",
+              url,
+              status: response.status,
+              error: runtimeError,
+              htmlPreview: clipText(html, 1_200),
+            };
+            urlFailures.push(failedResult);
+            throw new Error(runtimeError);
+          } catch (error) {
+            const failedResult: PreviewSmokeResult = {
+              ok: false,
+              trace: "preview_smoke_check_error",
+              url,
+              error: getErrorMessage(error),
+            };
+            urlFailures.push(failedResult);
+            throw error;
+          }
+        })
+      ).catch(() => null);
+
+      if (passed) {
+        console.log("preview_smoke_check_passed", {
+          trace: passed.trace,
+          containerId: params.containerId,
+          attempt,
+          url: passed.url,
+          status: passed.status,
+          checkedUrls: urls,
+        });
+        return passed;
+      }
+
+      lastResult = urlFailures[0] || {
+        ok: false,
+        trace: "preview_smoke_check_failed",
+        error: "No preview upstream URL returned a healthy HTML response.",
+      };
+      console.warn("preview_smoke_check_failed", {
+        trace: lastResult.trace,
+        containerId: params.containerId,
+        attempt,
+        checkedUrls: urls,
+        failures: urlFailures.slice(0, 6),
+      });
+    } catch (error) {
+      lastResult = {
+        ok: false,
+        trace: "preview_smoke_check_error",
+        error: getErrorMessage(error),
+      };
+      console.warn("preview_smoke_check_error", {
+        trace: "preview_smoke_check_error",
+        containerId: params.containerId,
+        attempt,
+        error: getErrorMessage(error),
+      });
+    }
+
+    if (attempt < PREVIEW_SMOKE_ATTEMPTS) {
+      await sleep(PREVIEW_SMOKE_DELAY_MS);
+    }
+  }
+
+  return lastResult;
+}
+
+function mergeApplyResults(
+  base: ApplyCodeOperationsResult,
+  extra: ApplyCodeOperationsResult
+): ApplyCodeOperationsResult {
+  return {
+    applied: base.applied + extra.applied,
+    failed: [...base.failed, ...extra.failed],
+    verifiedWrites: [...base.verifiedWrites, ...extra.verifiedWrites],
+    parser: {
+      ...extra.parser,
+      operationCount: base.parser.operationCount + extra.parser.operationCount,
+      writeCount: base.parser.writeCount + extra.parser.writeCount,
+      openWriteTags: base.parser.openWriteTags + extra.parser.openWriteTags,
+      closeWriteTags: base.parser.closeWriteTags + extra.parser.closeWriteTags,
+      unbalancedWriteTags:
+        base.parser.unbalancedWriteTags + extra.parser.unbalancedWriteTags,
+    },
+  };
+}
+
+async function createRuntimePreviewRepairAttempt(params: {
+  containerId: string;
+  userMessage: string;
+  plannerBrief: string;
+  architectSpec?: ArchitectSpec | null;
+  implementationBlueprint?: ImplementationBlueprint | null;
+  provider: AiProviderConfig;
+  options?: BuildOptions;
+  previewError: string;
+}): Promise<string | null> {
+  const currentTree = await fileService.getFileContentTree(
+    dockerService.docker,
+    params.containerId
+  );
+  const currentCodeContext = clipText(JSON.stringify(currentTree, null, 2), 70_000);
+  const turkish = isLikelyTurkish(params.userMessage);
+  const system = `
+${BUILDER_SYSTEM_PROMPT}
+
+You are repairing a Next.js App Router project that was already applied to the preview container, but the live preview now crashes.
+Return exactly one <dec-code> block with executable edit tags only. No markdown fences.
+
+RUNTIME FAILURE:
+${params.previewError}
+
+Repair rules:
+- Fix the actual runtime/server-side exception; do not redesign the whole site unless the broken structure requires it.
+- Keep the generated brand/domain and all requested pages.
+- Preserve the current visual direction, but make imports, component exports, client/server boundaries, data usage, and JSX valid.
+- If a component uses React state, events, browser APIs, or form handlers, ensure the file has "use client".
+- Do not reference undefined variables, missing arrays, missing imports, or non-existent route/content modules.
+- Prefer small, surgical patches across the broken files plus any missing helper files.
+- The preview must render without "Application error" or a Digest page.
+- Visible UI copy must remain ${turkish ? "Turkish with correct Turkish characters" : "English"}.
+`;
+  const user = `
+USER_REQUEST:
+${params.userMessage}
+
+PLANNER_BRIEF:
+${clipText(params.plannerBrief, 4_000)}
+
+ARCHITECT_SPEC:
+${clipText(formatArchitectSpec(params.architectSpec || null), 4_000)}
+
+IMPLEMENTATION_BLUEPRINT:
+${clipText(formatImplementationBlueprint(params.implementationBlueprint || null), 4_000)}
+
+CURRENT_CONTAINER_CODE:
+${currentCodeContext}
+`;
+
+  try {
+    const response = await createAiChatText({
+      provider: params.provider,
+      system,
+      user,
+      temperature: 0.08,
+      retries: 0,
+      timeoutMs: Math.min(AI_RECOVERY_BUILD_TIMEOUT_MS, 150_000),
+      maxOutputTokens: Math.min(AI_RECOVERY_MAX_OUTPUT_TOKENS, 18_000),
+      modelOverride: getBuilderModelOverride(params.options),
+    });
+
+    if (hasExecutableCodeOperations(response)) return response;
+
+    console.warn("Runtime preview repair returned no executable edits.", {
+      trace: "runtime_preview_repair_empty",
+      containerId: params.containerId,
+      responsePreview: clipText(response, 700),
+    });
+    return null;
+  } catch (error) {
+    console.warn("Runtime preview repair failed:", {
+      trace: "runtime_preview_repair_failed",
+      containerId: params.containerId,
+      error: getErrorMessage(error),
+    });
+    return null;
+  }
+}
+
 async function runPostApplyQualityGates(params: {
   containerId: string;
   userMessage: string;
@@ -9132,6 +9418,10 @@ async function buildAssistantMessageFromSession(
 
     return candidate;
   };
+  let selectedProvider: AiProviderConfig | null = null;
+  let plannerBrief = createLocalPlannerBrief(userMessage, resolvedOptions);
+  let architectSpec: ArchitectSpec | null = null;
+  let implementationBlueprint: ImplementationBlueprint | null = null;
 
   if (
     DETERMINISTIC_RUNTIME_FALLBACK_ENABLED &&
@@ -9150,6 +9440,7 @@ async function buildAssistantMessageFromSession(
     outputSource = "runtime_repair_blocked";
   } else {
     const provider = selectAiProvider(workloadEstimate);
+    selectedProvider = provider;
     console.log("AI builder request selected provider:", {
       containerId,
       workloadTier: workloadEstimate?.tier || "unknown",
@@ -9163,9 +9454,6 @@ async function buildAssistantMessageFromSession(
       .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
       .join("\n");
 
-    let plannerBrief = createLocalPlannerBrief(userMessage, resolvedOptions);
-    let architectSpec: ArchitectSpec | null = null;
-    let implementationBlueprint: ImplementationBlueprint | null = null;
     await progress?.(getBuildProgressCopy(userMessage, "plan", 18));
     try {
       plannerBrief = await createPlannerBrief(
@@ -9518,7 +9806,7 @@ ${codeContext}`;
     );
   }
 
-  const finalOutputStats = getBuildWriteStats(assistantContent);
+  let finalOutputStats = getBuildWriteStats(assistantContent);
   const expectedParserDiagnostics = parseAssistantCodeOperations(assistantContent).parser;
   console.log("AI builder final output source:", {
     containerId,
@@ -9538,13 +9826,107 @@ ${codeContext}`;
       getOperationFilePaths(assistantContent)
     )
   );
-  const applyResult = await applyCodeOperations(
+  let applyResult = await applyCodeOperations(
     containerId,
     assistantContent,
     userMessage,
     progress,
     resolvedOptions
   );
+
+  if (applyResult.applied > 0 && applyResult.failed.length === 0) {
+    const previewSmoke = await runPreviewSmokeCheck({
+      containerId,
+      userMessage,
+      progress,
+      percent: 91,
+    });
+
+    if (!previewSmoke.ok) {
+      console.warn("runtime_preview_repair_triggered", {
+        trace: "runtime_preview_repair_triggered",
+        containerId,
+        outputSource,
+        smokeTrace: previewSmoke.trace,
+        previewUrl: previewSmoke.url,
+        previewStatus: previewSmoke.status,
+        error: previewSmoke.error,
+      });
+
+      if (selectedProvider) {
+        await progress?.(
+          getBuildProgressCopy(userMessage, "repair", 93, [
+            "src/app/page.tsx",
+          ])
+        );
+
+        const repairContent = await createRuntimePreviewRepairAttempt({
+          containerId,
+          userMessage,
+          plannerBrief,
+          architectSpec,
+          implementationBlueprint,
+          provider: selectedProvider,
+          options: resolvedOptions,
+          previewError:
+            previewSmoke.error ||
+            "Preview smoke check failed after applying generated files.",
+        });
+
+        if (repairContent) {
+          const repairApplyResult = await applyCodeOperations(
+            containerId,
+            repairContent,
+            userMessage,
+            progress,
+            resolvedOptions
+          );
+          applyResult = mergeApplyResults(applyResult, repairApplyResult);
+          assistantContent += `\n\n${repairContent}`;
+
+          if (repairApplyResult.applied > 0) {
+            outputSource = "runtime_repair_ai";
+            finalOutputStats = getBuildWriteStats(assistantContent);
+            const repairedSmoke = await runPreviewSmokeCheck({
+              containerId,
+              userMessage,
+              progress,
+              percent: 95,
+            });
+
+            if (!repairedSmoke.ok) {
+              console.warn("runtime_preview_repair_still_failing", {
+                trace: "runtime_preview_repair_still_failing",
+                containerId,
+                smokeTrace: repairedSmoke.trace,
+                previewUrl: repairedSmoke.url,
+                previewStatus: repairedSmoke.status,
+                error: repairedSmoke.error,
+              });
+              assistantContent += `\n<dec-error>Preview runtime still failed after automatic repair. Trace: ${repairedSmoke.trace}. ${clipText(
+                repairedSmoke.error || "No runtime error details were returned.",
+                1_200
+              )}</dec-error>`;
+            } else {
+              assistantContent += `\n<dec-verification>Preview runtime smoke check passed after automatic repair.</dec-verification>`;
+            }
+          } else {
+            console.warn("runtime_preview_repair_apply_empty", {
+              trace: "runtime_preview_repair_apply_empty",
+              containerId,
+              parser: repairApplyResult.parser,
+              failed: repairApplyResult.failed,
+            });
+            assistantContent += `\n<dec-error>Preview runtime failed and automatic repair returned no applied file changes. Trace: runtime_preview_repair_apply_empty.</dec-error>`;
+          }
+        } else {
+          assistantContent += `\n<dec-error>Preview runtime failed and automatic repair could not produce executable edits. Trace: runtime_preview_repair_empty.</dec-error>`;
+        }
+      } else {
+        assistantContent += `\n<dec-error>Preview runtime failed, but no AI provider was available for automatic repair. Trace: runtime_preview_repair_provider_missing.</dec-error>`;
+      }
+    }
+  }
 
   if (account && applyResult.applied > 0) {
     try {
