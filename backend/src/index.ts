@@ -165,7 +165,7 @@ app.get("/health", (_req, res) => {
   res.json({
     success: true,
     service: "klawpen-builder-api",
-    marker: "provider-diagnostics-design-fallback-v4",
+    marker: "ai-output-source-no-template-fallback-v6",
     timestamp: new Date().toISOString(),
   });
 });
@@ -184,14 +184,17 @@ app.get("/diagnostics", (_req, res) => {
   res.json({
     success: true,
     service: "klawpen-builder-api",
-    marker: "provider-diagnostics-design-fallback-v4",
+    marker: "ai-output-source-no-template-fallback-v6",
     build: {
       stagedBuild: process.env.KLAWPEN_STAGED_BUILD !== "false",
+      stagedInlineApply: process.env.KLAWPEN_STAGED_INLINE_APPLY === "true",
       promptAwareLocalFallback:
-        process.env.KLAWPEN_PROMPT_AWARE_LOCAL_FALLBACK !== "false",
+        process.env.KLAWPEN_PROMPT_AWARE_LOCAL_FALLBACK === "true" &&
+        process.env.KLAWPEN_ALLOW_LOCAL_TEMPLATE_FALLBACK === "true",
       localEmergencyBuild:
         process.env.KLAWPEN_LOCAL_EMERGENCY_BUILD === "true" &&
         process.env.KLAWPEN_ALLOW_LOCAL_TEMPLATE_FALLBACK === "true",
+      localTemplateFallbackDefault: "disabled",
       localEmergencyEnvValue:
         process.env.KLAWPEN_LOCAL_EMERGENCY_BUILD || "(unset)",
       localTemplateFallbackAllowed:

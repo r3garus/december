@@ -228,6 +228,21 @@ interface BuildOptions {
   powerMode?: boolean;
 }
 
+type BuildOutputSource =
+  | "runtime_repair_blocked"
+  | "staged_ai"
+  | "primary_ai"
+  | "critic_ai"
+  | "spec_repair_ai"
+  | "executable_repair_ai"
+  | "timeout_recovery_ai"
+  | "premium_recovery_ai"
+  | "bootstrap_rescue_ai"
+  | "last_valid_ai_draft"
+  | "local_template_fallback"
+  | "local_fallback_disabled_error"
+  | "unknown";
+
 const chatSessions = new Map<string, ChatSession>();
 
 const POWER_BUILD_AUTO_ENABLED = process.env.KLAWPEN_POWER_BUILD_AUTO !== "false";
@@ -247,9 +262,12 @@ const LOCAL_EMERGENCY_BUILD_ENABLED =
   process.env.KLAWPEN_LOCAL_EMERGENCY_BUILD === "true" &&
   process.env.KLAWPEN_ALLOW_LOCAL_TEMPLATE_FALLBACK === "true";
 const PROMPT_AWARE_LOCAL_FALLBACK_ENABLED =
-  process.env.KLAWPEN_PROMPT_AWARE_LOCAL_FALLBACK !== "false";
+  process.env.KLAWPEN_PROMPT_AWARE_LOCAL_FALLBACK === "true" &&
+  process.env.KLAWPEN_ALLOW_LOCAL_TEMPLATE_FALLBACK === "true";
 const STAGED_BUILD_ENABLED =
   process.env.KLAWPEN_STAGED_BUILD !== "false";
+const STAGED_INLINE_APPLY_ENABLED =
+  process.env.KLAWPEN_STAGED_INLINE_APPLY === "true";
 const STAGED_BUILD_TIMEOUT_MS = readPositiveInt(
   process.env.AI_STAGED_BUILD_TIMEOUT_MS,
   120_000
@@ -1972,6 +1990,22 @@ function getContentWriteCount(writes: CodeOperation[]) {
       normalizeProjectPath(operation.path || "")
     )
   ).length;
+}
+
+function getBuildWriteStats(assistantContent: string) {
+  const writes = getWriteOperations(assistantContent);
+
+  return {
+    writeCount: writes.length,
+    routeWrites: getRouteWriteCount(writes),
+    supportingRouteWrites: getSupportingRouteWriteCount(writes),
+    componentWrites: getComponentWriteCount(writes),
+    contentWrites: getContentWriteCount(writes),
+    totalWriteChars: writes.reduce(
+      (total, operation) => total + (operation.content || "").length,
+      0
+    ),
+  };
 }
 
 function hasContentStructure(writes: CodeOperation[]) {
@@ -5894,11 +5928,25 @@ async function createStagedBuildAttempt(params: {
   const turkish = isLikelyTurkish(params.userMessage);
   const requirements = getBroadBuildRequirements(params.options);
   let accumulated = "";
-  let appliedStageCount = 0;
-  const canUsePartialStagedBuild = () =>
-    appliedStageCount > 0 &&
-    hasExecutableCodeOperations(accumulated) &&
-    getRouteWriteCount(getWriteOperations(accumulated)) > 0;
+  const acceptedStageKeys = new Set<StagedBuildStageKey>();
+  const canUsePartialStagedBuild = () => {
+    if (!hasExecutableCodeOperations(accumulated)) return false;
+
+    const stats = getBuildWriteStats(accumulated);
+    const hasDeepStages =
+      acceptedStageKeys.has("foundation") &&
+      acceptedStageKeys.has("components") &&
+      acceptedStageKeys.has("route");
+
+    return (
+      hasDeepStages &&
+      stats.routeWrites >= Math.min(3, requirements.routes) &&
+      stats.componentWrites >= Math.min(2, requirements.components) &&
+      stats.contentWrites >= Math.min(1, requirements.contentFiles) &&
+      stats.writeCount >= Math.min(6, requirements.writes) &&
+      stats.totalWriteChars >= Math.min(18_000, requirements.writtenBytes)
+    );
+  };
 
   for (const [stageIndex, stage] of stages.entries()) {
     await params.progress?.(
@@ -6001,7 +6049,7 @@ ${buildStagedContextSummary(accumulated)}
         )
       );
 
-      if (params.containerId) {
+      if (params.containerId && STAGED_INLINE_APPLY_ENABLED) {
         const stageApplyResult = await applyCodeOperations(
           params.containerId,
           response,
@@ -6017,7 +6065,7 @@ ${buildStagedContextSummary(accumulated)}
         }
 
         if (stageApplyResult.applied > 0) {
-          appliedStageCount += 1;
+          acceptedStageKeys.add(stage.key);
         }
 
         await params.progress?.(
@@ -6028,6 +6076,8 @@ ${buildStagedContextSummary(accumulated)}
             writtenFiles.length ? writtenFiles : stage.files
           )
         );
+      } else {
+        acceptedStageKeys.add(stage.key);
       }
 
       accumulated = [accumulated, response].filter(Boolean).join("\n\n");
@@ -6040,7 +6090,7 @@ ${buildStagedContextSummary(accumulated)}
     }
   }
 
-  return hasExecutableCodeOperations(accumulated) ? accumulated : null;
+  return canUsePartialStagedBuild() ? accumulated : null;
 }
 
 async function applyCodeOperations(
@@ -8328,12 +8378,18 @@ async function buildAssistantMessageFromSession(
   const rawContext = JSON.stringify(contextTree, null, 2);
   const codeContext = clipText(rawContext, 60_000);
   let assistantContent: string;
+  let outputSource: BuildOutputSource = "unknown";
   let lastExecutableDraft: string | null = null;
   let stagedAppliedInline = false;
   let stagedInlineFingerprint: string | null = null;
-  const preserveExecutableDraft = (candidate: string, label: string) => {
+  const preserveExecutableDraft = (
+    candidate: string,
+    label: string,
+    source?: BuildOutputSource
+  ) => {
     if (hasExecutableCodeOperations(candidate)) {
       lastExecutableDraft = candidate;
+      if (source) outputSource = source;
       return candidate;
     }
 
@@ -8341,6 +8397,7 @@ async function buildAssistantMessageFromSession(
       console.warn(
         `${label} returned no executable edit tags; preserving the last valid executable draft.`
       );
+      outputSource = "last_valid_ai_draft";
       return lastExecutableDraft;
     }
 
@@ -8361,6 +8418,7 @@ async function buildAssistantMessageFromSession(
       userMessage,
       "Replace the broken runtime page with a known-good structured Klawpen build."
     );
+    outputSource = "runtime_repair_blocked";
   } else {
     const provider = selectAiProvider(workloadEstimate);
     console.log("AI builder request selected provider:", {
@@ -8473,7 +8531,7 @@ ${codeContext}`;
       });
 
       const usedStagedBuild = Boolean(stagedContent);
-      stagedAppliedInline = usedStagedBuild;
+      stagedAppliedInline = usedStagedBuild && STAGED_INLINE_APPLY_ENABLED;
 
       if (stagedContent) {
         assistantContent = stagedContent;
@@ -8515,34 +8573,39 @@ ${codeContext}`;
       }
       assistantContent = preserveExecutableDraft(
         assistantContent,
-        usedStagedBuild ? "Staged AI build" : "Primary AI build"
+        usedStagedBuild ? "Staged AI build" : "Primary AI build",
+        usedStagedBuild ? "staged_ai" : "primary_ai"
       );
 
       if (!usedStagedBuild) {
-      try {
-        await progress?.(getBuildProgressCopy(userMessage, "review", 62));
-        assistantContent = await improveWithCriticLoop({
-          userMessage,
-          plannerBrief,
-          architectSpec,
-          implementationBlueprint,
-          codeContext,
-          recentMessages: clipText(recentMessages, 10_000),
-          draft: assistantContent,
-          provider,
-          options: resolvedOptions,
-        });
-        assistantContent = preserveExecutableDraft(
-          assistantContent,
-          "AI critic/revision pass"
-        );
-      } catch (error) {
-        console.warn(
-          "AI critic/revision pass failed; preserving the current executable draft:",
-          getErrorMessage(error)
-        );
-        if (lastExecutableDraft) assistantContent = lastExecutableDraft;
-      }
+        try {
+          await progress?.(getBuildProgressCopy(userMessage, "review", 62));
+          assistantContent = await improveWithCriticLoop({
+            userMessage,
+            plannerBrief,
+            architectSpec,
+            implementationBlueprint,
+            codeContext,
+            recentMessages: clipText(recentMessages, 10_000),
+            draft: assistantContent,
+            provider,
+            options: resolvedOptions,
+          });
+          assistantContent = preserveExecutableDraft(
+            assistantContent,
+            "AI critic/revision pass",
+            "critic_ai"
+          );
+        } catch (error) {
+          console.warn(
+            "AI critic/revision pass failed; preserving the current executable draft:",
+            getErrorMessage(error)
+          );
+          if (lastExecutableDraft) {
+            assistantContent = lastExecutableDraft;
+            outputSource = "last_valid_ai_draft";
+          }
+        }
       }
 
       if (!usedStagedBuild && shouldUsePowerBuildLayer(resolvedOptions)) {
@@ -8560,14 +8623,18 @@ ${codeContext}`;
           });
           assistantContent = preserveExecutableDraft(
             assistantContent,
-            "Architect/spec validation repair"
+            "Architect/spec validation repair",
+            "spec_repair_ai"
           );
         } catch (error) {
           console.warn(
             "Architect/spec validation repair failed; preserving the current executable draft:",
             getErrorMessage(error)
           );
-          if (lastExecutableDraft) assistantContent = lastExecutableDraft;
+          if (lastExecutableDraft) {
+            assistantContent = lastExecutableDraft;
+            outputSource = "last_valid_ai_draft";
+          }
         }
       }
 
@@ -8585,14 +8652,18 @@ ${codeContext}`;
         });
         assistantContent = preserveExecutableDraft(
           assistantContent,
-          "Executable edit repair"
+          "Executable edit repair",
+          "executable_repair_ai"
         );
       } catch (error) {
         console.warn(
           "Executable edit repair failed; preserving the current executable draft:",
           getErrorMessage(error)
         );
-        if (lastExecutableDraft) assistantContent = lastExecutableDraft;
+        if (lastExecutableDraft) {
+          assistantContent = lastExecutableDraft;
+          outputSource = "last_valid_ai_draft";
+        }
       }
 
       if (!hasExecutableCodeOperations(assistantContent)) {
@@ -8600,22 +8671,16 @@ ${codeContext}`;
           "AI pipeline returned no executable edit operations after repair"
         );
       }
-      const finalWrites = getWriteOperations(assistantContent);
+      const finalStats = getBuildWriteStats(assistantContent);
       console.log("AI builder final executable output ready:", {
         containerId,
+        outputSource,
         usedStagedBuild,
-        writeCount: finalWrites.length,
-        routeWrites: getRouteWriteCount(finalWrites),
-        componentWrites: getComponentWriteCount(finalWrites),
-        contentWrites: getContentWriteCount(finalWrites),
-        totalWriteChars: finalWrites.reduce(
-          (total, operation) => total + (operation.content || "").length,
-          0
-        ),
+        ...finalStats,
       });
     } catch (error) {
       console.error(
-        "AI builder generation failed; trying recovery build before local fallback:",
+        "AI builder generation failed; trying AI recovery before final error response:",
         getErrorMessage(error)
       );
       const transientFailure = isTransientAiProviderError(error);
@@ -8628,27 +8693,32 @@ ${codeContext}`;
           "Using the last valid executable draft instead of returning a non-applied fallback."
         );
         assistantContent = lastExecutableDraft;
+        outputSource = "last_valid_ai_draft";
       } else {
         await progress?.(getBuildProgressCopy(userMessage, "repair", 74));
-        assistantContent =
-          (await withProgressPulse({
-            task: createTimeoutRecoveryAttempt({
-              userMessage,
-              plannerBrief,
-              architectSpec,
-              implementationBlueprint,
-              codeContext,
-              provider,
-              options: resolvedOptions,
-              reason: failureReason,
-            }),
-            progress,
+        const timeoutRecovery = await withProgressPulse({
+          task: createTimeoutRecoveryAttempt({
             userMessage,
-            stage: "repair",
-            percents: [76, 78, 80, 82],
-            intervalMs: 30_000,
-          })) ||
-          (await withProgressPulse({
+            plannerBrief,
+            architectSpec,
+            implementationBlueprint,
+            codeContext,
+            provider,
+            options: resolvedOptions,
+            reason: failureReason,
+          }),
+          progress,
+          userMessage,
+          stage: "repair",
+          percents: [76, 78, 80, 82],
+          intervalMs: 30_000,
+        });
+
+        if (timeoutRecovery) {
+          assistantContent = timeoutRecovery;
+          outputSource = "timeout_recovery_ai";
+        } else {
+          const premiumRecovery = await withProgressPulse({
             task: createPremiumFallbackAttempt({
               userMessage,
               plannerBrief,
@@ -8664,28 +8734,43 @@ ${codeContext}`;
             stage: "repair",
             percents: [83, 84, 85],
             intervalMs: 30_000,
-          })) ||
-          (await withProgressPulse({
-            task: createBootstrapRescueAttempt({
+          });
+
+          if (premiumRecovery) {
+            assistantContent = premiumRecovery;
+            outputSource = "premium_recovery_ai";
+          } else {
+            const bootstrapRecovery = await withProgressPulse({
+              task: createBootstrapRescueAttempt({
+                userMessage,
+                plannerBrief,
+                codeContext,
+                provider,
+                options: resolvedOptions,
+                reason: failureReason,
+              }),
+              progress,
               userMessage,
-              plannerBrief,
-              codeContext,
-              provider,
-              options: resolvedOptions,
-              reason: failureReason,
-            }),
-            progress,
-            userMessage,
-            stage: "repair",
-            percents: [86, 88, 90],
-            intervalMs: 18_000,
-          })) ||
-          buildLocalEmergencyAssistantContent(
-            userMessage,
-            transientFailure
-              ? "AI provider timed out or returned a transient gateway error; staged build, timeout recovery, and bootstrap rescue failed before returning valid executable customer code. Automatic template fallback is disabled, so no ready-made design was applied."
-              : "AI provider failed before returning a valid executable build; staged build, recovery, and bootstrap rescue failed. Automatic template fallback is disabled, so no ready-made design was applied."
-          );
+              stage: "repair",
+              percents: [86, 88, 90],
+              intervalMs: 18_000,
+            });
+
+            assistantContent =
+              bootstrapRecovery ||
+              buildLocalEmergencyAssistantContent(
+                userMessage,
+                transientFailure
+                  ? "AI provider timed out or returned a transient gateway error; staged build, timeout recovery, and bootstrap rescue failed before returning valid executable customer code. Automatic template fallback is disabled, so no ready-made design was applied."
+                  : "AI provider failed before returning a valid executable build; staged build, recovery, and bootstrap rescue failed. Automatic template fallback is disabled, so no ready-made design was applied."
+              );
+            outputSource = bootstrapRecovery
+              ? "bootstrap_rescue_ai"
+              : hasExecutableCodeOperations(assistantContent)
+                ? "local_template_fallback"
+                : "local_fallback_disabled_error";
+          }
+        }
       }
     }
   }
@@ -8703,6 +8788,16 @@ ${codeContext}`;
       "Staged build was applied inline, but later repair changed executable edits; applying final repaired output."
     );
   }
+
+  const finalOutputStats = getBuildWriteStats(assistantContent);
+  console.log("AI builder final output source:", {
+    containerId,
+    outputSource,
+    stagedInlineApply: STAGED_INLINE_APPLY_ENABLED,
+    appliedInlineDuringStaging: stagedAppliedInline,
+    ...finalOutputStats,
+    files: getOperationFilePaths(assistantContent),
+  });
 
   await progress?.(
     getBuildProgressCopy(
@@ -8727,8 +8822,10 @@ ${codeContext}`;
         account,
         metadata: {
           source: "ai_apply",
+          outputSource,
           applied: applyResult.applied,
           failed: applyResult.failed.length,
+          ...finalOutputStats,
           userMessage: clipText(userMessage, 1_000),
           createdAt: new Date().toISOString(),
         },
