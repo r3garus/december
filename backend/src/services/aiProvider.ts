@@ -22,6 +22,7 @@ export interface AiWorkloadEstimate {
 export type AiProviderPurpose = "build" | "chat";
 
 const DEFAULT_BASE_URL = "https://api.gptclubapi.xyz/openai/v1";
+const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 const DEFAULT_CR_MODEL = "gpt-5.3-codex";
 const DEFAULT_SK_MODEL = "anthropic/claude-haiku-4.5";
 
@@ -33,6 +34,16 @@ function readInt(value: string | undefined, fallback: number) {
 function readProviderHint(...values: Array<string | undefined>): AiProviderKey | "" {
   const raw = values.find((value) => value?.trim())?.trim().toLowerCase() || "";
   return /^[a-z0-9_.:-]+$/i.test(raw) ? raw : "";
+}
+
+function looksLikeOpenRouterKey(apiKey: string) {
+  return /^sk-or-v1-/i.test(apiKey.trim());
+}
+
+function resolveProviderBaseUrl(apiKey: string, explicitBaseUrl: string) {
+  if (explicitBaseUrl) return explicitBaseUrl;
+  if (looksLikeOpenRouterKey(apiKey)) return OPENROUTER_BASE_URL;
+  return process.env.AI_BASE_URL || DEFAULT_BASE_URL;
 }
 
 export const BUILD_PROVIDER_HINT = readProviderHint(
@@ -85,11 +96,12 @@ function readProviderConfig(
     key,
     displayName: "Klawpen Core",
     envPrefix,
-    baseUrl:
+    baseUrl: resolveProviderBaseUrl(
+      apiKey,
       process.env[`${envPrefix}_AI_BASE_URL`] ||
-      process.env[`${envPrefix}_BASE_URL`] ||
-      process.env.AI_BASE_URL ||
-      DEFAULT_BASE_URL,
+        process.env[`${envPrefix}_BASE_URL`] ||
+        ""
+    ),
     apiKey,
     model:
       process.env[`${envPrefix}_AI_MODEL`] ||
@@ -133,10 +145,12 @@ function readJsonProviderPool(): AiProviderConfig[] {
           key,
           displayName: "Klawpen Core",
           envPrefix: key.toUpperCase(),
-          baseUrl:
+          baseUrl: resolveProviderBaseUrl(
+            apiKey,
             (typeof value.baseUrl === "string" && value.baseUrl) ||
-            (typeof value.baseURL === "string" && value.baseURL) ||
-            DEFAULT_BASE_URL,
+              (typeof value.baseURL === "string" && value.baseURL) ||
+              ""
+          ),
           apiKey,
           model:
             (typeof value.model === "string" && value.model) ||
@@ -187,7 +201,7 @@ export function getAiProviders(): AiProviderConfig[] {
       key: "cr",
       displayName: "Klawpen Core",
       envPrefix: "CR",
-      baseUrl: process.env.AI_BASE_URL || DEFAULT_BASE_URL,
+      baseUrl: resolveProviderBaseUrl(legacyApiKey, process.env.AI_BASE_URL || ""),
       apiKey: legacyApiKey,
       model: process.env.AI_MODEL || DEFAULT_CR_MODEL,
       dailyRequestLimit: readInt(process.env.AI_DAILY_REQUEST_LIMIT, 1000),

@@ -112,10 +112,57 @@ const AI_REQUEST_TIMEOUT_HARD_CAP_MS = readPositiveInt(
   process.env.AI_REQUEST_TIMEOUT_HARD_CAP_MS,
   240_000
 );
+const AI_STREAMING_CHAT_ENABLED =
+  process.env.KLAWPEN_LLM_STREAMING !== "false" &&
+  process.env.AI_LLM_STREAMING !== "false";
+const AI_STREAM_TTFB_TIMEOUT_MS = clampTimeout(
+  readPositiveInt(
+    process.env.AI_STREAM_TTFB_TIMEOUT_MS ||
+      process.env.KLAWPEN_STREAM_TTFB_TIMEOUT_MS,
+    18_000
+  ),
+  60_000
+);
+const AI_STREAM_IDLE_TIMEOUT_MS = clampTimeout(
+  readPositiveInt(
+    process.env.AI_STREAM_IDLE_TIMEOUT_MS ||
+      process.env.KLAWPEN_STREAM_IDLE_TIMEOUT_MS,
+    20_000
+  ),
+  120_000
+);
+const AI_STREAM_FALLBACK_MODELS = readCsvList(
+  process.env.AI_STREAM_FALLBACK_MODELS ||
+    process.env.KLAWPEN_LLM_FALLBACK_MODELS,
+  ["deepseek/deepseek-chat", "anthropic/claude-3.5-sonnet"]
+);
+const AI_STREAM_MAX_PROVIDER_ATTEMPTS_PER_MODEL = readPositiveInt(
+  process.env.AI_STREAM_MAX_PROVIDER_ATTEMPTS_PER_MODEL ||
+    process.env.KLAWPEN_STREAM_MAX_PROVIDER_ATTEMPTS_PER_MODEL,
+  2
+);
+const AI_ALLOW_BLOCKING_CHAT_FALLBACK =
+  process.env.KLAWPEN_ALLOW_BLOCKING_LLM_FALLBACK === "true" ||
+  process.env.AI_ALLOW_BLOCKING_LLM_FALLBACK === "true";
+const AI_STREAM_CROSS_PROVIDER_FALLBACK =
+  process.env.KLAWPEN_LLM_CROSS_PROVIDER_FALLBACK !== "false" &&
+  process.env.AI_LLM_CROSS_PROVIDER_FALLBACK !== "false";
+const AI_STREAM_ANY_GATEWAY_MODEL_FALLBACK =
+  process.env.KLAWPEN_ALLOW_ANY_GATEWAY_MODEL_FALLBACK === "true" ||
+  process.env.AI_ALLOW_ANY_GATEWAY_MODEL_FALLBACK === "true";
 
 function readPositiveInt(value: string | undefined, fallback: number) {
   const parsed = Number.parseInt(value || "", 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function readCsvList(value: string | undefined, fallback: string[]) {
+  const parsed = (value || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  return parsed.length > 0 ? parsed : fallback;
 }
 
 function clampTimeout(timeoutMs: number, hardCapMs: number) {
@@ -1211,6 +1258,502 @@ function extractChatCompletionText(resp: any): string {
     : "Sorry, I could not generate a response.";
 }
 
+interface AiChatTextParams {
+  provider: AiProviderConfig;
+  system: string;
+  user: string | any[];
+  temperature?: number;
+  retries?: number;
+  timeoutMs?: number;
+  maxOutputTokens?: number;
+  modelOverride?: string;
+}
+
+interface AiChatAttempt {
+  provider: AiProviderConfig;
+  model: string;
+  reason: "primary" | "model-fallback" | "provider-fallback";
+}
+
+class AiStreamFailure extends Error {
+  partialText: string;
+  trace: string;
+  providerKey: string;
+  model: string;
+
+  constructor(params: {
+    message: string;
+    partialText?: string;
+    trace: string;
+    provider: AiProviderConfig;
+    model: string;
+  }) {
+    super(params.message);
+    this.name = "AiStreamFailure";
+    this.partialText = params.partialText || "";
+    this.trace = params.trace;
+    this.providerKey = params.provider.key;
+    this.model = params.model;
+  }
+}
+
+function getProviderIdentity(provider: AiProviderConfig) {
+  return `${provider.key}:${provider.baseUrl}`;
+}
+
+function isOpenRouterProvider(provider: AiProviderConfig) {
+  try {
+    return new URL(provider.baseUrl).host.toLowerCase().includes("openrouter.ai");
+  } catch {
+    return provider.baseUrl.toLowerCase().includes("openrouter.ai");
+  }
+}
+
+function isNamespacedGatewayModel(model: string) {
+  return model.includes("/");
+}
+
+function canAttemptModelOnProvider(
+  provider: AiProviderConfig,
+  model: string,
+  isPrimaryModel: boolean
+) {
+  if (isPrimaryModel) return true;
+  if (provider.model === model) return true;
+  if (isOpenRouterProvider(provider)) return true;
+  if (!isNamespacedGatewayModel(model)) return true;
+  return AI_STREAM_ANY_GATEWAY_MODEL_FALLBACK;
+}
+
+function buildStreamingChatAttempts(
+  primaryProvider: AiProviderConfig,
+  primaryModel: string
+): AiChatAttempt[] {
+  const attempts: AiChatAttempt[] = [];
+  const seen = new Set<string>();
+  const configuredProviders = AI_STREAM_CROSS_PROVIDER_FALLBACK
+    ? getAiProviders()
+    : [];
+  const orderedProviders = [
+    primaryProvider,
+    ...configuredProviders.filter(
+      (provider) => getProviderIdentity(provider) !== getProviderIdentity(primaryProvider)
+    ),
+  ];
+
+  const pushAttempt = (
+    provider: AiProviderConfig,
+    model: string,
+    reason: AiChatAttempt["reason"]
+  ) => {
+    const normalizedModel = model.trim();
+    if (!normalizedModel) return;
+
+    const key = `${getProviderIdentity(provider)}:${normalizedModel}`;
+    if (seen.has(key)) return;
+
+    seen.add(key);
+    attempts.push({ provider, model: normalizedModel, reason });
+  };
+
+  pushAttempt(primaryProvider, primaryModel, "primary");
+
+  for (const fallbackModel of AI_STREAM_FALLBACK_MODELS) {
+    const candidates = orderedProviders
+      .filter((provider) =>
+        canAttemptModelOnProvider(provider, fallbackModel, fallbackModel === primaryModel)
+      )
+      .slice(0, AI_STREAM_MAX_PROVIDER_ATTEMPTS_PER_MODEL);
+
+    for (const provider of candidates) {
+      pushAttempt(provider, fallbackModel, "model-fallback");
+    }
+  }
+
+  if (AI_STREAM_CROSS_PROVIDER_FALLBACK) {
+    for (const provider of orderedProviders.slice(1)) {
+      pushAttempt(provider, provider.model, "provider-fallback");
+    }
+  }
+
+  return attempts;
+}
+
+function getTextFromStreamValue(value: any): string {
+  if (!value) return "";
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(getTextFromStreamValue).join("");
+
+  if (typeof value === "object") {
+    if (typeof value.text === "string") return value.text;
+    if (typeof value.content === "string") return value.content;
+    if (typeof value.value === "string") return value.value;
+    if (typeof value.output_text === "string") return value.output_text;
+  }
+
+  return "";
+}
+
+function extractChatStreamChunkText(chunk: any): string {
+  const choices = Array.isArray(chunk?.choices) ? chunk.choices : [];
+  return choices
+    .map((choice: any) =>
+      [
+        choice?.delta?.content,
+        choice?.delta?.text,
+        choice?.message?.content,
+        choice?.text,
+      ]
+        .map(getTextFromStreamValue)
+        .join("")
+    )
+    .join("");
+}
+
+function buildChatCompletionPayload(params: {
+  system: string;
+  user: string | any[];
+  temperature: number;
+  maxOutputTokens: number;
+  tokenParameter: string;
+  provider: AiProviderConfig;
+  model: string;
+  stream?: boolean;
+}): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    model: params.model,
+    messages: [
+      { role: "system", content: params.system },
+      { role: "user", content: params.user },
+    ],
+    temperature: params.temperature,
+    [params.tokenParameter]: params.maxOutputTokens,
+  };
+
+  if (params.stream) {
+    payload.stream = true;
+  }
+
+  if (shouldSendReasoningEffort(params.provider)) {
+    payload.reasoning_effort = AI_REASONING_EFFORT;
+  }
+
+  return payload;
+}
+
+function logParserRecoveryIfNeeded(
+  assistantContent: string,
+  context: Record<string, unknown>
+) {
+  const parser = parseAssistantCodeOperations(assistantContent).parser;
+  if (parser.source === "partial-dec-tags" || parser.unbalancedWriteTags > 0) {
+    console.warn("parser_recovery_triggered", {
+      trace: "parser_recovery_triggered",
+      ...context,
+      parser,
+    });
+  }
+}
+
+async function collectStreamingChatText(params: {
+  provider: AiProviderConfig;
+  system: string;
+  user: string | any[];
+  temperature: number;
+  timeoutMs: number;
+  maxOutputTokens: number;
+  model: string;
+  tokenParameter: string;
+  attemptIndex: number;
+  totalAttempts: number;
+  attemptReason: AiChatAttempt["reason"];
+}): Promise<string> {
+  const client = getAiClient(params.provider);
+  const controller = new AbortController();
+  const startedAt = Date.now();
+  const chunks: string[] = [];
+  let firstTokenReceived = false;
+  let ttfbTimedOut = false;
+  let totalTimedOut = false;
+  let idleTimedOut = false;
+  let chunkCount = 0;
+
+  const context = {
+    ...getProviderLogContext({ ...params.provider, model: params.model }),
+    attemptIndex: params.attemptIndex,
+    totalAttempts: params.totalAttempts,
+    attemptReason: params.attemptReason,
+    timeoutMs: params.timeoutMs,
+    ttfbTimeoutMs: AI_STREAM_TTFB_TIMEOUT_MS,
+    idleTimeoutMs: AI_STREAM_IDLE_TIMEOUT_MS,
+    tokenParameter: params.tokenParameter,
+  };
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  const resetIdleTimer = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      if (!firstTokenReceived) return;
+      idleTimedOut = true;
+      console.warn("llm_stream_idle_timeout_triggered", {
+        trace: "llm_stream_idle_timeout_triggered",
+        ...context,
+        elapsedMs: Date.now() - startedAt,
+        chunkCount,
+      });
+      controller.abort();
+    }, AI_STREAM_IDLE_TIMEOUT_MS);
+  };
+
+  const ttfbTimer = setTimeout(() => {
+    if (firstTokenReceived) return;
+    ttfbTimedOut = true;
+    console.warn("ttfb_timeout_triggered", {
+      trace: "ttfb_timeout_triggered",
+      ...context,
+      elapsedMs: Date.now() - startedAt,
+    });
+    controller.abort();
+  }, AI_STREAM_TTFB_TIMEOUT_MS);
+
+  const totalTimer = setTimeout(() => {
+    totalTimedOut = true;
+    console.warn("llm_stream_total_timeout_triggered", {
+      trace: "llm_stream_total_timeout_triggered",
+      ...context,
+      elapsedMs: Date.now() - startedAt,
+    });
+    controller.abort();
+  }, params.timeoutMs);
+
+  try {
+    console.log("llm_stream_attempt_started", {
+      trace: "llm_stream_attempt_started",
+      ...context,
+    });
+
+    const payload = buildChatCompletionPayload({
+      provider: params.provider,
+      model: params.model,
+      system: params.system,
+      user: params.user,
+      temperature: params.temperature,
+      maxOutputTokens: params.maxOutputTokens,
+      tokenParameter: params.tokenParameter,
+      stream: true,
+    });
+
+    const stream = await (client.chat.completions.create as any)(payload, {
+      signal: controller.signal,
+    });
+
+    for await (const chunk of stream as AsyncIterable<any>) {
+      chunkCount += 1;
+      const text = extractChatStreamChunkText(chunk);
+
+      if (text && !firstTokenReceived) {
+        firstTokenReceived = true;
+        clearTimeout(ttfbTimer);
+        console.log("llm_stream_established", {
+          trace: "llm_stream_established",
+          ...context,
+          elapsedMs: Date.now() - startedAt,
+        });
+      }
+
+      if (firstTokenReceived) resetIdleTimer();
+      if (text) chunks.push(text);
+    }
+
+    const assistantText = chunks.join("").trim();
+    if (!assistantText) {
+      throw new AiStreamFailure({
+        message: "llm_stream_empty_result: provider stream ended without content",
+        partialText: chunks.join(""),
+        trace: "llm_stream_empty_result",
+        provider: params.provider,
+        model: params.model,
+      });
+    }
+
+    recordProviderRequest(params.provider.key);
+    console.log("llm_stream_completed", {
+      trace: "llm_stream_completed",
+      ...context,
+      elapsedMs: Date.now() - startedAt,
+      chunkCount,
+      outputChars: assistantText.length,
+    });
+    logParserRecoveryIfNeeded(assistantText, context);
+    return assistantText;
+  } catch (error) {
+    const partialText = chunks.join("");
+    const baseMessage = getErrorMessage(error);
+    const trace = ttfbTimedOut
+      ? "ttfb_timeout_triggered"
+      : totalTimedOut
+        ? "llm_stream_total_timeout"
+        : idleTimedOut
+          ? "llm_stream_idle_timeout"
+          : error instanceof AiStreamFailure
+            ? error.trace
+            : "llm_stream_failed";
+    const message = ttfbTimedOut
+      ? `ttfb_timeout_triggered: no stream chunk after ${AI_STREAM_TTFB_TIMEOUT_MS}ms`
+      : totalTimedOut
+        ? `llm_stream_total_timeout: stream exceeded ${params.timeoutMs}ms`
+        : idleTimedOut
+          ? `llm_stream_idle_timeout: no stream chunk after ${AI_STREAM_IDLE_TIMEOUT_MS}ms`
+          : baseMessage;
+
+    console.warn("llm_stream_attempt_failed", {
+      trace,
+      ...context,
+      elapsedMs: Date.now() - startedAt,
+      chunkCount,
+      partialChars: partialText.length,
+      error: message,
+    });
+
+    if (partialText) {
+      logParserRecoveryIfNeeded(partialText, {
+        ...context,
+        partialChars: partialText.length,
+        failureTrace: trace,
+      });
+    }
+
+    throw new AiStreamFailure({
+      message,
+      partialText,
+      trace,
+      provider: params.provider,
+      model: params.model,
+    });
+  } finally {
+    clearTimeout(ttfbTimer);
+    clearTimeout(totalTimer);
+    if (idleTimer) clearTimeout(idleTimer);
+  }
+}
+
+async function collectStreamingChatTextWithTokenRetry(params: {
+  provider: AiProviderConfig;
+  system: string;
+  user: string | any[];
+  temperature: number;
+  timeoutMs: number;
+  maxOutputTokens: number;
+  model: string;
+  attemptIndex: number;
+  totalAttempts: number;
+  attemptReason: AiChatAttempt["reason"];
+}): Promise<string> {
+  const primaryTokenParameter = getPrimaryChatTokenParameter(params.provider);
+
+  try {
+    return await collectStreamingChatText({
+      ...params,
+      tokenParameter: primaryTokenParameter,
+    });
+  } catch (error) {
+    if (!shouldRetryWithAlternateTokenParameter(error)) throw error;
+
+    const alternateTokenParameter = getAlternateChatTokenParameter(
+      primaryTokenParameter
+    );
+    console.warn("llm_stream_token_parameter_retry", {
+      trace: "llm_stream_token_parameter_retry",
+      ...getProviderLogContext({ ...params.provider, model: params.model }),
+      attemptIndex: params.attemptIndex,
+      from: primaryTokenParameter,
+      to: alternateTokenParameter,
+      error: getErrorMessage(error),
+    });
+
+    return collectStreamingChatText({
+      ...params,
+      tokenParameter: alternateTokenParameter,
+    });
+  }
+}
+
+async function createStreamingAiChatText(
+  params: AiChatTextParams
+): Promise<string> {
+  const temperature = params.temperature ?? aiTemperature;
+  const timeoutMs = clampTimeout(
+    params.timeoutMs ?? AI_REQUEST_TIMEOUT_MS,
+    AI_BUILDER_TIMEOUT_HARD_CAP_MS
+  );
+  const maxOutputTokens =
+    params.maxOutputTokens ?? AI_REQUEST_MAX_OUTPUT_TOKENS;
+  const primaryModel = params.modelOverride || params.provider.model;
+  const attempts = buildStreamingChatAttempts(params.provider, primaryModel);
+  let lastError: unknown;
+  let lastAttempt: AiChatAttempt | null = null;
+  let bestPartial: { text: string; attempt: AiChatAttempt } | null = null;
+
+  for (const [index, attempt] of attempts.entries()) {
+    if (lastError && lastAttempt) {
+      console.warn("failover_switched_to_model", {
+        trace: "failover_switched_to_model",
+        fromProvider: lastAttempt.provider.key,
+        fromModel: lastAttempt.model,
+        toProvider: attempt.provider.key,
+        toModel: attempt.model,
+        reason: getErrorMessage(lastError),
+      });
+    }
+
+    try {
+      return await collectStreamingChatTextWithTokenRetry({
+        provider: attempt.provider,
+        system: params.system,
+        user: params.user,
+        temperature,
+        timeoutMs,
+        maxOutputTokens,
+        model: attempt.model,
+        attemptIndex: index + 1,
+        totalAttempts: attempts.length,
+        attemptReason: attempt.reason,
+      });
+    } catch (error) {
+      lastError = error;
+      lastAttempt = attempt;
+
+      if (error instanceof AiStreamFailure && error.partialText) {
+        const { operations, parser } = parseAssistantCodeOperations(error.partialText);
+        if (operations.length > 0) {
+          bestPartial = { text: error.partialText, attempt };
+          console.warn("parser_recovery_triggered", {
+            trace: "parser_recovery_triggered",
+            provider: attempt.provider.key,
+            model: attempt.model,
+            partialChars: error.partialText.length,
+            parser,
+          });
+        }
+      }
+    }
+  }
+
+  if (bestPartial) {
+    console.warn("llm_stream_returning_recovered_partial", {
+      trace: "llm_stream_returning_recovered_partial",
+      provider: bestPartial.attempt.provider.key,
+      model: bestPartial.attempt.model,
+      outputChars: bestPartial.text.length,
+      finalError: getErrorMessage(lastError),
+    });
+    return bestPartial.text.trim();
+  }
+
+  throw new Error(
+    `All streaming LLM attempts failed: ${getErrorMessage(lastError)}`
+  );
+}
+
 async function createAiText(params: {
   provider: AiProviderConfig;
   input: string;
@@ -1318,16 +1861,31 @@ async function createAiText(params: {
   }
 }
 
-async function createAiChatText(params: {
-  provider: AiProviderConfig;
-  system: string;
-  user: string | any[];
-  temperature?: number;
-  retries?: number;
-  timeoutMs?: number;
-  maxOutputTokens?: number;
-  modelOverride?: string;
-}): Promise<string> {
+async function createAiChatText(params: AiChatTextParams): Promise<string> {
+  if (AI_STREAMING_CHAT_ENABLED) {
+    try {
+      return await createStreamingAiChatText(params);
+    } catch (streamingError) {
+      console.error("llm_stream_all_attempts_failed", {
+        trace: "llm_stream_all_attempts_failed",
+        ...getProviderLogContext(params.provider),
+        modelOverride: params.modelOverride || "",
+        error: getErrorMessage(streamingError),
+        blockingFallbackEnabled: AI_ALLOW_BLOCKING_CHAT_FALLBACK,
+      });
+
+      if (!AI_ALLOW_BLOCKING_CHAT_FALLBACK) {
+        throw streamingError;
+      }
+
+      console.warn("llm_blocking_fallback_enabled", {
+        trace: "llm_blocking_fallback_enabled",
+        ...getProviderLogContext(params.provider),
+        reason: getErrorMessage(streamingError),
+      });
+    }
+  }
+
   const client = getAiClient(params.provider);
   const temperature = params.temperature ?? aiTemperature;
   const retries = params.retries ?? aiMaxRetries;
@@ -1338,20 +1896,18 @@ async function createAiChatText(params: {
   const maxOutputTokens =
     params.maxOutputTokens ?? AI_REQUEST_MAX_OUTPUT_TOKENS;
   const model = params.modelOverride || params.provider.model;
-  const buildPayload = (tokenParameter: string): Record<string, unknown> => ({
-    model,
-    messages: [
-      { role: "system", content: params.system },
-      { role: "user", content: params.user },
-    ],
-    temperature,
-    [tokenParameter]: maxOutputTokens,
-  });
+  const buildPayload = (tokenParameter: string): Record<string, unknown> =>
+    buildChatCompletionPayload({
+      provider: params.provider,
+      model,
+      system: params.system,
+      user: params.user,
+      temperature,
+      maxOutputTokens,
+      tokenParameter,
+    });
   const primaryTokenParameter = getPrimaryChatTokenParameter(params.provider);
   const payload = buildPayload(primaryTokenParameter);
-  if (shouldSendReasoningEffort(params.provider)) {
-    payload.reasoning_effort = AI_REASONING_EFFORT;
-  }
 
   let response: any;
   try {
@@ -1361,7 +1917,7 @@ async function createAiChatText(params: {
           // @ts-ignore - provider-compatible model gateways vary in token/reasoning parameter support.
           client.chat.completions.create(payload),
           timeoutMs,
-          `${params.provider.key} structured chat completion`
+          `${params.provider.key} blocking chat completion`
         ),
       retries
     );
@@ -1370,25 +1926,26 @@ async function createAiChatText(params: {
     const retryPayload = buildPayload(
       getAlternateChatTokenParameter(primaryTokenParameter)
     );
-    if (shouldSendReasoningEffort(params.provider)) {
-      retryPayload.reasoning_effort = AI_REASONING_EFFORT;
-    }
     response = await withRetries(
       () =>
         withTimeout(
           // @ts-ignore - provider-compatible model gateways vary in token/reasoning parameter support.
           client.chat.completions.create(retryPayload),
           timeoutMs,
-          `${params.provider.key} structured chat completion retry`
+          `${params.provider.key} blocking chat completion retry`
         ),
       retries
     );
   }
 
   recordProviderRequest(params.provider.key);
-  return extractChatCompletionText(response);
+  const text = extractChatCompletionText(response);
+  logParserRecoveryIfNeeded(text, {
+    trace: "blocking_chat_parser_diagnostics",
+    ...getProviderLogContext({ ...params.provider, model }),
+  });
+  return text;
 }
-
 function buildFlattenedInput(messages: Array<{ role: string; content: any }>): string {
   return messages
     .map((m) => {
