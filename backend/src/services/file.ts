@@ -8,6 +8,11 @@ import { docker as dockerClient } from "./dockerClient";
 const BASE_PATH = "/app/my-nextjs-app";
 const MAX_FILE_WRITE_BYTES = 10_000_000;
 
+type FindEntry = {
+  type: "file" | "directory";
+  path: string;
+};
+
 function assertSafeContainerId(containerId: string): void {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(containerId)) {
     throw new Error("Invalid container id");
@@ -60,24 +65,56 @@ function writeOctalHeader(
   header.write(`${octal}\0`, offset, length, "ascii");
 }
 
-function createTarArchive(fileName: string, content: string): Buffer {
-  if (!fileName || fileName.includes("/") || fileName.length > 100) {
-    throw new Error("Generated file name is too long for archive copy");
+function splitTarPath(entryName: string): { name: string; prefix: string } {
+  if (entryName.length <= 100) {
+    return { name: entryName, prefix: "" };
   }
 
-  const contentBuffer = Buffer.from(content, "utf8");
+  const splitIndex = entryName.lastIndexOf("/");
+  if (splitIndex <= 0) {
+    throw new Error("Generated file path is too long for archive copy");
+  }
+
+  const prefix = entryName.slice(0, splitIndex);
+  const name = entryName.slice(splitIndex + 1);
+  if (!name || name.length > 100 || prefix.length > 155) {
+    throw new Error("Generated file path is too long for archive copy");
+  }
+
+  return { name, prefix };
+}
+
+function createTarHeader(
+  entryName: string,
+  size: number,
+  typeFlag: "0" | "5",
+  mode: number
+): Buffer {
+  const normalizedEntryName =
+    typeFlag === "5" ? entryName.replace(/\/+$/g, "") : entryName;
+  if (
+    !normalizedEntryName ||
+    normalizedEntryName.includes("\0") ||
+    normalizedEntryName.startsWith("/") ||
+    normalizedEntryName.split("/").some((part) => part === "..")
+  ) {
+    throw new Error("Invalid archive entry path");
+  }
+
+  const { name, prefix } = splitTarPath(normalizedEntryName);
   const header = Buffer.alloc(512, 0);
 
-  header.write(fileName, 0, 100, "utf8");
-  writeOctalHeader(header, 0o644, 100, 8);
+  header.write(name, 0, 100, "utf8");
+  writeOctalHeader(header, mode, 100, 8);
   writeOctalHeader(header, 0, 108, 8);
   writeOctalHeader(header, 0, 116, 8);
-  writeOctalHeader(header, contentBuffer.length, 124, 12);
+  writeOctalHeader(header, size, 124, 12);
   writeOctalHeader(header, Math.floor(Date.now() / 1000), 136, 12);
   header.fill(" ", 148, 156);
-  header.write("0", 156, 1, "ascii");
+  header.write(typeFlag, 156, 1, "ascii");
   header.write("ustar", 257, 6, "ascii");
   header.write("00", 263, 2, "ascii");
+  if (prefix) header.write(prefix, 345, 155, "utf8");
 
   let checksum = 0;
   for (const byte of header) checksum += byte;
@@ -85,15 +122,92 @@ function createTarArchive(fileName: string, content: string): Buffer {
   header[154] = 0;
   header[155] = 0x20;
 
-  const paddingSize = (512 - (contentBuffer.length % 512)) % 512;
-  const endBlocks = Buffer.alloc(1024, 0);
+  return header;
+}
 
-  return Buffer.concat([
-    header,
-    contentBuffer,
-    Buffer.alloc(paddingSize, 0),
-    endBlocks,
-  ]);
+function createTarArchiveForProjectFile(
+  absolutePath: string,
+  content: string
+): Buffer {
+  const relativePath = path.posix.relative(BASE_PATH, absolutePath);
+  if (
+    !relativePath ||
+    relativePath.startsWith("../") ||
+    relativePath === ".." ||
+    path.posix.isAbsolute(relativePath)
+  ) {
+    throw new Error("File path must stay inside the project workspace");
+  }
+
+  const contentBuffer = Buffer.from(content, "utf8");
+  const entries: Buffer[] = [];
+  const parts = relativePath.split("/");
+  const directoryParts = parts.slice(0, -1);
+  let currentDir = "";
+
+  for (const part of directoryParts) {
+    currentDir = currentDir ? `${currentDir}/${part}` : part;
+    entries.push(createTarHeader(`${currentDir}/`, 0, "5", 0o755));
+  }
+
+  entries.push(createTarHeader(relativePath, contentBuffer.length, "0", 0o644));
+  entries.push(contentBuffer);
+
+  const paddingSize = (512 - (contentBuffer.length % 512)) % 512;
+  if (paddingSize > 0) {
+    entries.push(Buffer.alloc(paddingSize, 0));
+  }
+
+  entries.push(Buffer.alloc(1024, 0));
+
+  return Buffer.concat(entries);
+}
+
+async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+
+  await new Promise<void>((resolve, reject) => {
+    stream.on("data", (chunk: Buffer | string) => {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    });
+    stream.on("end", resolve);
+    stream.on("error", reject);
+  });
+
+  return Buffer.concat(chunks);
+}
+
+function parseTarString(buffer: Buffer, start: number, length: number): string {
+  return buffer
+    .subarray(start, start + length)
+    .toString("utf8")
+    .replace(/\0.*$/s, "")
+    .trim();
+}
+
+function extractFirstRegularFileFromTar(archive: Buffer): Buffer {
+  let offset = 0;
+
+  while (offset + 512 <= archive.length) {
+    const header = archive.subarray(offset, offset + 512);
+    const isEmptyBlock = header.every((byte) => byte === 0);
+    if (isEmptyBlock) break;
+
+    const rawSize = parseTarString(header, 124, 12);
+    const size = Number.parseInt(rawSize || "0", 8);
+    const typeFlag = header.toString("ascii", 156, 157) || "0";
+    const contentStart = offset + 512;
+    const contentEnd = contentStart + (Number.isFinite(size) ? size : 0);
+
+    if ((typeFlag === "0" || typeFlag === "\0" || typeFlag === "") && size >= 0) {
+      return archive.subarray(contentStart, contentEnd);
+    }
+
+    const paddedSize = Math.ceil(size / 512) * 512;
+    offset = contentStart + paddedSize;
+  }
+
+  throw new Error("file_archive_extract_failed");
 }
 
 async function runContainerCommand(
@@ -191,24 +305,27 @@ async function getContainerFileDigest(
   containerId: string,
   absolutePath: string
 ): Promise<{ bytes: number; sha256: string }> {
-  const quotedPath = shellQuote(absolutePath);
-  const output = await runContainerCommand(
-    containerId,
-    [
-      "sh",
-      "-c",
-      `bytes=$(wc -c < ${quotedPath}); sha=$(sha256sum ${quotedPath} | awk '{print $1}'); printf '%s %s' "$bytes" "$sha"`,
-    ],
-    BASE_PATH
-  );
-  const [rawBytes, sha256] = output.trim().split(/\s+/);
-  const bytes = Number.parseInt(rawBytes || "", 10);
+  const fileBuffer = await readContainerFileBuffer(containerId, absolutePath);
+  const sha256 = crypto.createHash("sha256").update(fileBuffer).digest("hex");
 
-  if (!Number.isFinite(bytes) || !/^[a-f0-9]{64}$/i.test(sha256 || "")) {
+  if (!/^[a-f0-9]{64}$/i.test(sha256)) {
     throw new Error(`file_digest_failed: ${absolutePath}`);
   }
 
-  return { bytes, sha256: sha256!.toLowerCase() };
+  return { bytes: fileBuffer.length, sha256: sha256.toLowerCase() };
+}
+
+async function readContainerFileBuffer(
+  containerId: string,
+  absolutePath: string
+): Promise<Buffer> {
+  assertSafeContainerId(containerId);
+  const safePath = toSafeMutablePath(absolutePath);
+  const container = await ensureProjectContainerRunning(containerId);
+  const archiveStream = await container.getArchive({ path: safePath });
+  const archiveBuffer = await streamToBuffer(archiveStream);
+
+  return extractFirstRegularFileFromTar(archiveBuffer);
 }
 
 export async function getFileTree(
@@ -224,7 +341,7 @@ export async function getFileTree(
   const findCommand = [
     "sh",
     "-c",
-    `find ${quotedPath} \\( -name node_modules -o -name .next \\) -prune -o -type f -o -type d | grep -v -E "(node_modules|\\.next)" | sort`,
+    `({ find ${quotedPath} \\( -name node_modules -o -name .next \\) -prune -o -type f -print | awk '{ print "f\\t" $0 }'; find ${quotedPath} \\( -name node_modules -o -name .next \\) -prune -o -type d -print | awk '{ print "d\\t" $0 }'; }) | sort -k2`,
   ];
 
   const exec = await container.exec({
@@ -243,10 +360,12 @@ export async function getFileTree(
     stream.on("error", reject);
   });
 
-  const paths = output
+  const entries = output
     .trim()
     .split("\n")
-    .filter((p) => p && p !== safeContainerPath);
+    .map(parseFindEntry)
+    .filter((entry): entry is FindEntry => Boolean(entry))
+    .filter((entry) => entry.path !== safeContainerPath);
   const fileTree: Map<string, FileItem> = new Map();
 
   fileTree.set(safeContainerPath, {
@@ -256,8 +375,8 @@ export async function getFileTree(
     children: [],
   });
 
-  for (const filePath of paths) {
-    const stat = await getFileStat(container, filePath);
+  for (const entry of entries) {
+    const filePath = entry.path;
     const relativePath = filePath.replace(safeContainerPath + "/", "");
     const parts = relativePath.split("/");
     const fileName = parts[parts.length - 1] || "";
@@ -265,10 +384,10 @@ export async function getFileTree(
     const fileItem: FileItem = {
       name: fileName,
       path: filePath,
-      type: stat.isDirectory ? "directory" : "file",
+      type: entry.type,
     };
 
-    if (stat.isDirectory) {
+    if (entry.type === "directory") {
       fileItem.children = [];
     }
 
@@ -298,7 +417,7 @@ export async function getFileContentTree(
   const findCommand = [
     "sh",
     "-c",
-    `find ${quotedPath} \\( -name node_modules -o -name .next -o -path "*/components/ui" \\) -prune -o -type f -o -type d | grep -v -E "(node_modules|\\.next|components/ui|bun\\.lock|components\\.json|next-env\\.d\\.ts|package-lock\\.json|postcss\\.config\\.mjs|favicon\\.ico|\\.gitignore)" | sort`,
+    `({ find ${quotedPath} \\( -name node_modules -o -name .next -o -path "*/components/ui" \\) -prune -o -type f -print | awk '{ print "f\\t" $0 }'; find ${quotedPath} \\( -name node_modules -o -name .next -o -path "*/components/ui" \\) -prune -o -type d -print | awk '{ print "d\\t" $0 }'; }) | grep -v -E "(node_modules|\\.next|components/ui|bun\\.lock|components\\.json|next-env\\.d\\.ts|package-lock\\.json|postcss\\.config\\.mjs|favicon\\.ico|\\.gitignore)" | sort -k2`,
   ];
 
   const exec = await container.exec({
@@ -317,10 +436,12 @@ export async function getFileContentTree(
     stream.on("error", reject);
   });
 
-  const paths = output
+  const entries = output
     .trim()
     .split("\n")
-    .filter((p) => p && p !== safeContainerPath);
+    .map(parseFindEntry)
+    .filter((entry): entry is FindEntry => Boolean(entry))
+    .filter((entry) => entry.path !== safeContainerPath);
 
   const fileTree: Map<string, FileContentItem> = new Map();
 
@@ -334,8 +455,8 @@ export async function getFileContentTree(
   const filesToRead: string[] = [];
   const pathToItemMap: Map<string, FileContentItem> = new Map();
 
-  for (const filePath of paths) {
-    const stat = await getFileStat(container, filePath);
+  for (const entry of entries) {
+    const filePath = entry.path;
     const relativePath = filePath.replace(safeContainerPath + "/", "");
     const parts = relativePath.split("/");
     const fileName = parts[parts.length - 1] || "";
@@ -343,10 +464,10 @@ export async function getFileContentTree(
     const fileItem: FileContentItem = {
       name: fileName,
       path: filePath,
-      type: stat.isDirectory ? "directory" : "file",
+      type: entry.type,
     };
 
-    if (stat.isDirectory) {
+    if (entry.type === "directory") {
       fileItem.children = [];
     } else {
       filesToRead.push(filePath);
@@ -413,28 +534,20 @@ async function readFilesBatch(
   return results;
 }
 
-async function getFileStat(
-  container: Docker.Container,
-  filePath: string
-): Promise<{ isDirectory: boolean }> {
-  const exec = await container.exec({
-    Cmd: ["stat", "-c", "%F", filePath],
-    AttachStdout: true,
-    AttachStderr: true,
-  });
+function parseFindEntry(line: string): FindEntry | null {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
 
-  const stream = await exec.start({ Detach: false, Tty: false });
-  const output = await new Promise<string>((resolve, reject) => {
-    let data = "";
-    stream.on("data", (chunk: Buffer) => {
-      data += chunk.toString();
-    });
-    stream.on("end", () => resolve(data));
-    stream.on("error", reject);
-  });
+  const separatorIndex = trimmed.indexOf("\t");
+  if (separatorIndex <= 0) return null;
+
+  const kind = trimmed.slice(0, separatorIndex);
+  const filePath = trimmed.slice(separatorIndex + 1);
+  if (!filePath) return null;
 
   return {
-    isDirectory: output.trim().includes("directory"),
+    type: kind === "d" ? "directory" : "file",
+    path: filePath,
   };
 }
 
@@ -445,57 +558,9 @@ export async function readFile(
 ): Promise<string> {
   assertSafeContainerId(containerId);
   const safePath = toSafeMutablePath(filePath);
-  const container = await ensureProjectContainerRunning(containerId);
+  const output = await readContainerFileBuffer(containerId, safePath);
 
-  const exec = await container.exec({
-    Cmd: ["head", "-c", "10000000", safePath],
-    AttachStdout: true,
-    AttachStderr: true,
-  });
-
-  const stream = await exec.start({ Detach: false, Tty: false });
-  const stdoutChunks: Buffer[] = [];
-  const stderrChunks: Buffer[] = [];
-  const stdout = new Writable({
-    write(chunk, _encoding, callback) {
-      stdoutChunks.push(Buffer.from(chunk));
-      callback();
-    },
-  });
-  const stderr = new Writable({
-    write(chunk, _encoding, callback) {
-      stderrChunks.push(Buffer.from(chunk));
-      callback();
-    },
-  });
-
-  docker.modem.demuxStream(stream, stdout, stderr);
-
-  await new Promise<void>((resolve, reject) => {
-    stream.on("end", resolve);
-    stream.on("error", (error) => {
-      console.error("File read stream error:", error);
-      reject(error);
-    });
-  });
-
-  const result = await exec.inspect();
-  const output = Buffer.concat(stdoutChunks).toString("utf8");
-  const errorOutput = Buffer.concat(stderrChunks).toString("utf8");
-
-  if (result.ExitCode !== 0) {
-    throw new Error(
-      errorOutput.trim() ||
-        output.trim() ||
-        `File read failed with exit code ${result.ExitCode}`
-    );
-  }
-
-  if (errorOutput && errorOutput.trim() !== "exec /bin/sh: invalid argument") {
-    console.error("File read stderr:", errorOutput);
-  }
-
-  return output.replace(/^\uFEFF/, "");
+  return output.toString("utf8").replace(/^\uFEFF/, "");
 }
 
 export async function listFiles(
@@ -566,14 +631,11 @@ export async function writeFile(
   });
 
   const absolutePath = toSafeMutablePath(filePath);
-  const dirPath = absolutePath.substring(0, absolutePath.lastIndexOf("/"));
-  const fileName = absolutePath.substring(absolutePath.lastIndexOf("/") + 1);
   const container = await ensureProjectContainerRunning(containerId);
 
   try {
-    await runContainerCommand(containerId, ["mkdir", "-p", dirPath], BASE_PATH);
-    await container.putArchive(createTarArchive(fileName, content), {
-      path: dirPath,
+    await container.putArchive(createTarArchiveForProjectFile(absolutePath, content), {
+      path: BASE_PATH,
     });
 
     const { bytes: actualBytes, sha256: actualHash } =

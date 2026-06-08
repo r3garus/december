@@ -67,7 +67,7 @@ const PROJECT_CONTAINER_NANO_CPUS = readPositiveIntEnv(
 );
 const PROJECT_CONTAINER_PIDS_LIMIT = readPositiveIntEnv(
   "PROJECT_CONTAINER_PIDS_LIMIT",
-  100
+  256
 );
 const PROJECT_READONLY_ROOTFS = readBooleanEnv("PROJECT_READONLY_ROOTFS", true);
 const PROJECT_WORKSPACE_VOLUME_ENABLED = readBooleanEnv(
@@ -1121,6 +1121,40 @@ function isProjectContainerRunning(containerInfo: any): boolean {
   return Boolean(state.Running && !state.Paused && !state.Restarting && !state.Dead);
 }
 
+async function ensureProjectContainerResourceLimits(
+  container: Docker.Container,
+  containerId: string,
+  containerInfo: any
+): Promise<void> {
+  const currentPidsLimit = Number(containerInfo.HostConfig?.PidsLimit || 0);
+
+  if (currentPidsLimit >= PROJECT_CONTAINER_PIDS_LIMIT) {
+    return;
+  }
+
+  try {
+    await container.update({
+      PidsLimit: PROJECT_CONTAINER_PIDS_LIMIT,
+      Memory: PROJECT_CONTAINER_MEMORY_BYTES,
+      NanoCpus: PROJECT_CONTAINER_NANO_CPUS,
+    } as any);
+    console.log("project_container_limits_updated", {
+      trace: "project_container_limits_updated",
+      containerId,
+      previousPidsLimit: currentPidsLimit,
+      nextPidsLimit: PROJECT_CONTAINER_PIDS_LIMIT,
+    });
+  } catch (error) {
+    console.warn("project_container_limits_update_failed", {
+      trace: "project_container_limits_update_failed",
+      containerId,
+      previousPidsLimit: currentPidsLimit,
+      nextPidsLimit: PROJECT_CONTAINER_PIDS_LIMIT,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 async function waitForProjectContainerRunning(
   container: Docker.Container,
   containerId: string
@@ -1160,6 +1194,11 @@ export async function ensureProjectContainerRunning(
   const resumePromise = (async () => {
     const container = await assertProjectContainer(containerId, owner);
     const containerInfo = await container.inspect();
+    await ensureProjectContainerResourceLimits(
+      container,
+      containerId,
+      containerInfo
+    );
 
     if (isProjectContainerRunning(containerInfo)) {
       return;
