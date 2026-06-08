@@ -44,6 +44,44 @@ function getTokenFromReferer(req: express.Request): string | null {
   }
 }
 
+function getPreviewContainerIdFromReferer(req: express.Request): string | null {
+  const referer = req.headers.referer;
+  if (typeof referer !== "string") return null;
+
+  try {
+    const match = new URL(referer).pathname.match(/\/preview\/([^/?#]+)/);
+    return match?.[1] || null;
+  } catch {
+    return null;
+  }
+}
+
+export function redirectPreviewEscapeRequest(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction
+) {
+  if (req.path.startsWith("/preview")) {
+    next();
+    return;
+  }
+
+  const containerId = getPreviewContainerIdFromReferer(req);
+  if (!containerId) {
+    next();
+    return;
+  }
+
+  const target = `/preview/${containerId}${req.originalUrl.startsWith("/") ? req.originalUrl : `/${req.originalUrl}`}`;
+  console.warn("preview_escape_redirected", {
+    trace: "preview_escape_redirected",
+    containerId,
+    from: req.originalUrl,
+    to: target,
+  });
+  res.redirect(req.method === "GET" || req.method === "HEAD" ? 302 : 307, target);
+}
+
 function getPreviewToken(req: express.Request, containerId: string) {
   const queryToken = req.query.token;
   const cookieToken = getCookieValue(
@@ -143,7 +181,16 @@ function rewritePreviewContent(
   const prefix = `/preview/${containerId}`;
   let rewritten = content
     .replace(/(["'`])\/_next\//g, `$1${prefix}/_next/`)
-    .replace(/url\(\s*\/_next\//g, `url(${prefix}/_next/`);
+    .replace(/url\(\s*\/_next\//g, `url(${prefix}/_next/`)
+    .replace(/\\(["'`])\/_next\//g, `\\$1${prefix}/_next/`)
+    .replace(
+      /(["'`])\/(?!\/|preview\/|_next\/|api\/|__nextjs|assets?\/|images?\/|img\/|fonts?\/|favicon|robots|sitemap)([^"'`<>{}\\]*)\1/g,
+      `$1${prefix}/$2$1`
+    )
+    .replace(
+      /\\(["'`])\/(?!\/|preview\/|_next\/|api\/|__nextjs|assets?\/|images?\/|img\/|fonts?\/|favicon|robots|sitemap)([^"'`{}\\]*)\\\1/g,
+      `\\$1${prefix}/$2\\$1`
+    );
 
   if (contentType?.includes("text/html")) {
     rewritten = rewritten
@@ -151,6 +198,10 @@ function rewritePreviewContent(
       .replace(
         /\b(href|src|action)=(["'])\/(?!\/|preview\/)([^"']*)\2/g,
         `$1=$2${prefix}/$3$2`
+      )
+      .replace(
+        /\\(["'])\/(?!\/|preview\/|_next\/)([^"'\\]*)\\\1/g,
+        `\\$1${prefix}/$2\\$1`
       );
   }
 

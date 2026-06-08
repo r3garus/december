@@ -301,6 +301,7 @@ type BuildOutputSource =
   | "primary_ai"
   | "critic_ai"
   | "spec_repair_ai"
+  | "route_completeness_repair_ai"
   | "executable_repair_ai"
   | "runtime_repair_ai"
   | "timeout_recovery_ai"
@@ -980,6 +981,10 @@ conversation, explicitly say no implementation is required and recommend a
 plain conversational answer without code-edit tags.
 
 If a short request has clear build intent, infer missing details professionally.
+Upgrade weak/short prompts into a professional product brief before planning:
+- infer sector, audience, conversion goal, visual direction, likely pages, real content modules, and trust objections
+- do not merely implement the literal short wording if it would produce a shallow result
+- keep the final visible UI in the user's language and make it feel like a complete real website
 Treat compact product/design briefs as build requests even if the user does not say "build", "create", "make", "yap", or "oluştur".
 Examples that are build requests: "modern restaurant website with menu and reservation", "diş kliniği premium landing page", "SaaS dashboard with auth and pricing".
 Do not create a generic SaaS/agency brief unless the user's domain is actually SaaS/agency.
@@ -1025,6 +1030,10 @@ Deliver production-minded quality:
 - when the request implies a website, create a coherent site experience, not only a decorative hero section
 - if multiple pages are explicitly requested, create real App Router pages and navigation
 - if pages are not specified, infer the strongest sensible information architecture and implement several real routes
+- prompt expansion contract: even when the user gives a tiny prompt, first internally turn it into a senior product brief with audience, domain modules, conversion flow, visual system, route plan, and acceptance criteria; then implement that stronger brief
+- route completeness contract: every nav/config/content route must map to a real src/app/**/page.tsx file with route-specific public content; never create a link to a page that is missing, empty, "coming soon", auth-gated, or backed by an API JSON response
+- generated route pages must be customer-facing pages, not backend/API endpoints; never return JSON such as {"success": false} from a generated public page
+- for Turkish labels like "Çözümler", prefer URL-safe slugs such as /cozumler while keeping visible nav text in Turkish
 - make the result feel closer to a polished Replit/Lovable-quality prototype than a simple landing-page template
 - include thoughtful empty states, microcopy, responsive behavior, conversion logic, hover states, and page/section transitions where relevant
 - ask focused questions only when missing information would materially change the product; otherwise make professional defaults and build
@@ -2712,6 +2721,160 @@ function getBuildWriteStats(assistantContent: string) {
       0
     ),
   };
+}
+
+function normalizeGeneratedPublicRoutePath(value: string): string | null {
+  const raw = String(value || "").trim();
+  if (!raw.startsWith("/") || raw.startsWith("//")) return null;
+
+  const withoutQuery = raw.split(/[?#]/)[0] || "/";
+  if (withoutQuery === "/") return "/";
+
+  if (
+    /^\/(?:_next|api|preview|static|assets|asset|images?|img|fonts?|favicon|robots|sitemap)(?:\/|$)/i.test(
+      withoutQuery
+    )
+  ) {
+    return null;
+  }
+
+  if (/\.[a-z0-9]{2,5}$/i.test(withoutQuery)) return null;
+  if (/[{}$]/.test(withoutQuery)) return null;
+
+  const asciiPath = normalizePromptText(withoutQuery).replace(/\s+/g, "-");
+  return normalizeArchitectRoutePath(asciiPath);
+}
+
+function getLinkedPublicRoutesFromGeneratedOutput(assistantContent: string): string[] {
+  const routes = new Set<string>();
+  const combined = getCombinedWrittenContent(assistantContent);
+  const patterns = [
+    /\b(?:href|to|path|url)\s*[:=]\s*(?:\{\s*)?(["'`])(\/(?!\/)[^"'`{}\s]*)\1/gi,
+    /\b(?:href|to)\s*=\s*\{\s*(["'`])(\/(?!\/)[^"'`{}\s]*)\1\s*\}/gi,
+  ];
+
+  for (const pattern of patterns) {
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(combined)) !== null) {
+      const route = normalizeGeneratedPublicRoutePath(match[2] || "");
+      if (route) routes.add(route);
+    }
+  }
+
+  return Array.from(routes);
+}
+
+function getPlannedRoutePaths(
+  spec?: ArchitectSpec | null,
+  blueprint?: ImplementationBlueprint | null
+): string[] {
+  const routes = new Set<string>();
+
+  for (const route of spec?.routes || []) {
+    const normalized = normalizeGeneratedPublicRoutePath(route.path);
+    if (normalized) routes.add(normalized);
+  }
+
+  for (const route of blueprint?.routes || []) {
+    const normalized = normalizeGeneratedPublicRoutePath(route.path);
+    if (normalized) routes.add(normalized);
+  }
+
+  return Array.from(routes);
+}
+
+function generatedRouteLooksIncomplete(content: string): boolean {
+  const normalized = content.replace(/\s+/g, " ").trim();
+
+  if (
+    /\bPlease sign in to continue\b/i.test(normalized) ||
+    /\bsuccess\s*:\s*false\b/i.test(normalized) ||
+    /\bResponse\.json\s*\(/i.test(normalized) ||
+    /\bNextResponse\.json\s*\(/i.test(normalized)
+  ) {
+    return true;
+  }
+
+  if (
+    /\b(coming soon|under construction|content coming soon|placeholder|lorem ipsum|yak[ıi]nda|çok yak[ıi]nda|cok yak[ıi]nda|i[çc]erik haz[ıi]rlan[ıi]yor|bo[sş] sayfa)\b/i.test(
+      normalized
+    )
+  ) {
+    return true;
+  }
+
+  if (
+    /\breturn\s+null\b/i.test(normalized) ||
+    /<>\s*<\/>/i.test(normalized) ||
+    /<main[^>]*>\s*<\/main>/i.test(normalized)
+  ) {
+    return true;
+  }
+
+  const hasImportedRouteComponent =
+    /\bimport\s+[^;]+from\s+["'][^"']*(?:components|sections|features|modules|app\/)[^"']*["']/i.test(
+      content
+    );
+  const hasMeaningfulJsx =
+    /<(?:section|main|article|header|form|nav|aside)\b/i.test(content) ||
+    />\s*[^<>{}\n]{18,}\s*</.test(content);
+
+  return content.length < 600 && !hasImportedRouteComponent && !hasMeaningfulJsx;
+}
+
+function getRouteCompletenessIssues(params: {
+  userMessage: string;
+  assistantContent: string;
+  spec?: ArchitectSpec | null;
+  blueprint?: ImplementationBlueprint | null;
+  options?: BuildOptions;
+}): string[] {
+  const { userMessage, assistantContent, spec, blueprint } = params;
+  const options = params.options || {};
+  const issues: string[] = [];
+
+  if (
+    !isBroadBuildRequest(userMessage, options) ||
+    isExplicitSinglePageRequest(userMessage)
+  ) {
+    return issues;
+  }
+
+  const writes = getWriteOperations(assistantContent);
+  if (!writes.length) return ["No files were written for this broad build."];
+
+  const writtenRouteFiles = new Map<string, string>();
+  for (const operation of writes) {
+    const normalizedPath = normalizeProjectPath(operation.path || "");
+    if (/^src\/app\/(?:page|[^/]+\/page)\.tsx$/.test(normalizedPath)) {
+      writtenRouteFiles.set(normalizedPath, operation.content || "");
+    }
+  }
+
+  const expectedRoutes = new Set<string>([
+    "/",
+    ...getLinkedPublicRoutesFromGeneratedOutput(assistantContent),
+    ...getPlannedRoutePaths(spec, blueprint),
+  ]);
+
+  for (const routePath of expectedRoutes) {
+    const routeFile = routePathToPageFile(routePath);
+    if (!writtenRouteFiles.has(routeFile)) {
+      issues.push(
+        `Navigation/planned route "${routePath}" has no matching App Router page file (${routeFile}).`
+      );
+    }
+  }
+
+  for (const [routeFile, content] of writtenRouteFiles) {
+    if (generatedRouteLooksIncomplete(content)) {
+      issues.push(
+        `${routeFile} looks incomplete, placeholder-like, protected/API-like, or too empty for a public generated page.`
+      );
+    }
+  }
+
+  return Array.from(new Set(issues));
 }
 
 function hasContentStructure(writes: CodeOperation[]) {
@@ -7055,10 +7218,14 @@ function shouldCreateArchitectSpec(
 }
 
 function normalizeArchitectRoutePath(routePath: string): string {
-  const normalized = `/${String(routePath || "")
+  const normalized = `/${normalizePromptText(String(routePath || ""))
     .trim()
     .replace(/^\/+/, "")
-    .replace(/\/+$/, "")}`;
+    .replace(/\/+$/, "")
+    .replace(/[^a-z0-9/-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/\/-+/g, "/")
+    .replace(/-+\//g, "/")}`;
 
   if (normalized === "/") return "/";
   if (!/^\/[a-z0-9][a-z0-9-/]*$/i.test(normalized)) return "/";
@@ -7879,9 +8046,139 @@ function validateBuildAgainstSpec(params: {
         issues.push("Implementation blueprint content/config/data structure is missing or too thin.");
       }
     }
+
+    issues.push(
+      ...getRouteCompletenessIssues({
+        userMessage,
+        assistantContent,
+        spec,
+        blueprint,
+        options,
+      })
+    );
   }
 
-  return { passed: issues.length === 0, issues };
+  const uniqueIssues = Array.from(new Set(issues));
+  return { passed: uniqueIssues.length === 0, issues: uniqueIssues };
+}
+
+async function repairRouteCompletenessIssues(params: {
+  userMessage: string;
+  plannerBrief: string;
+  architectSpec: ArchitectSpec | null;
+  implementationBlueprint?: ImplementationBlueprint | null;
+  codeContext: string;
+  draft: string;
+  provider: AiProviderConfig;
+  options?: BuildOptions;
+}): Promise<string> {
+  const issues = getRouteCompletenessIssues({
+    userMessage: params.userMessage,
+    assistantContent: params.draft,
+    spec: params.architectSpec,
+    blueprint: params.implementationBlueprint,
+    options: params.options,
+  });
+
+  if (issues.length === 0) return params.draft;
+
+  console.warn("route_completeness_validation_failed", {
+    trace: "route_completeness_validation_failed",
+    issues,
+  });
+
+  const turkish = isLikelyTurkish(params.userMessage);
+  const routes = Array.from(
+    new Set([
+      ...getLinkedPublicRoutesFromGeneratedOutput(params.draft),
+      ...getPlannedRoutePaths(params.architectSpec, params.implementationBlueprint),
+    ])
+  );
+  const requirements = getBroadBuildRequirements(params.options);
+  const system = `
+${BUILDER_SYSTEM_PROMPT}
+
+You are repairing a generated Next.js App Router project that failed Klawpen's route completeness gate.
+Return exactly one <dec-code> block with executable edit tags only. No markdown fences.
+
+Repair objective:
+- Every navigation/config/content link to a public route must have a matching src/app/**/page.tsx file.
+- Every route page must contain real, route-specific, customer-facing content. No empty pages, placeholder text, "coming soon", auth-gated JSON, API responses, or thin wrappers.
+- Keep the existing visual direction, palette, typography, and components; add only the missing/empty route pages and any supporting content/components required.
+- If a nav link points to an unintended backend/auth/API path, rewrite it to a real generated page or a section anchor.
+- Visible UI copy must be ${turkish ? "Turkish with correct Turkish characters" : "English"}.
+- For broad builds, keep the project at ${requirements.routes}+ routes where possible and ensure pages feel useful by themselves.
+`;
+  const user = `
+USER_REQUEST:
+${params.userMessage}
+
+PROFESSIONAL_BRIEF:
+${clipText(params.plannerBrief, 8_000)}
+
+ROUTES_FOUND_OR_PLANNED:
+${routes.length ? routes.map((route) => `- ${route} -> ${routePathToPageFile(route)}`).join("\n") : "- No explicit routes detected; infer a coherent route set from the brief."}
+
+ROUTE_COMPLETENESS_ISSUES:
+${issues.map((issue) => `- ${issue}`).join("\n")}
+
+ARCHITECT_SPEC:
+${clipText(formatArchitectSpec(params.architectSpec), 8_000)}
+
+IMPLEMENTATION_BLUEPRINT:
+${clipText(formatImplementationBlueprint(params.implementationBlueprint || null), 8_000)}
+
+CURRENT_DRAFT_EDIT_SET:
+${clipText(params.draft, 45_000)}
+
+CURRENT_CODEBASE_SNAPSHOT:
+${clipText(params.codeContext, 35_000)}
+`;
+
+  try {
+    const repair = await createAiChatText({
+      provider: params.provider,
+      system,
+      user,
+      temperature: Math.max(aiTemperature, 0.18),
+      retries: 0,
+      timeoutMs: AI_RECOVERY_BUILD_TIMEOUT_MS,
+      maxOutputTokens: Math.min(AI_RECOVERY_MAX_OUTPUT_TOKENS, 20_000),
+      modelOverride: getBuilderModelOverride(params.options),
+    });
+
+    if (!hasExecutableCodeOperations(repair)) {
+      console.warn("route_completeness_repair_empty", {
+        trace: "route_completeness_repair_empty",
+        responsePreview: clipText(repair, 800),
+      });
+      return params.draft;
+    }
+
+    const merged = `${params.draft}\n\n${repair}`;
+    const remainingIssues = getRouteCompletenessIssues({
+      userMessage: params.userMessage,
+      assistantContent: merged,
+      spec: params.architectSpec,
+      blueprint: params.implementationBlueprint,
+      options: params.options,
+    });
+
+    if (remainingIssues.length > 0) {
+      console.warn("route_completeness_repair_partial", {
+        trace: "route_completeness_repair_partial",
+        remainingIssues,
+      });
+    }
+
+    return merged;
+  } catch (error) {
+    console.warn("route_completeness_repair_failed", {
+      trace: "route_completeness_repair_failed",
+      error: getErrorMessage(error),
+    });
+    return params.draft;
+  }
 }
 
 async function repairSpecValidationIssues(params: {
@@ -9652,6 +9949,40 @@ ${codeContext}`;
             assistantContent = lastExecutableDraft;
             outputSource = "last_valid_ai_draft";
           }
+        }
+      }
+
+      try {
+        await progress?.(getBuildProgressCopy(userMessage, "validate", 73));
+        const beforeRouteRepairFingerprint =
+          getExecutableOperationsFingerprint(assistantContent);
+        assistantContent = await repairRouteCompletenessIssues({
+          userMessage,
+          plannerBrief,
+          architectSpec,
+          implementationBlueprint,
+          codeContext,
+          draft: assistantContent,
+          provider,
+          options: resolvedOptions,
+        });
+        const afterRouteRepairFingerprint =
+          getExecutableOperationsFingerprint(assistantContent);
+        if (afterRouteRepairFingerprint !== beforeRouteRepairFingerprint) {
+          assistantContent = preserveExecutableDraft(
+            assistantContent,
+            "Route completeness repair",
+            "route_completeness_repair_ai"
+          );
+        }
+      } catch (error) {
+        console.warn(
+          "Route completeness repair failed; preserving the current executable draft:",
+          getErrorMessage(error)
+        );
+        if (lastExecutableDraft) {
+          assistantContent = lastExecutableDraft;
+          outputSource = "last_valid_ai_draft";
         }
       }
 

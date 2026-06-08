@@ -3,7 +3,7 @@ import { requireAccount } from "./services/account";
 import accountRoutes from "./routes/account";
 import chatRoutes from "./routes/chat";
 import containerRoutes from "./routes/containers";
-import previewRoutes from "./routes/preview";
+import previewRoutes, { redirectPreviewEscapeRequest } from "./routes/preview";
 import {
   getAiProviderDiagnostics,
   runAiProviderSmokeTest,
@@ -168,7 +168,7 @@ app.get("/health", (_req, res) => {
   res.json({
     success: true,
     service: "klawpen-builder-api",
-    marker: "streaming-llm-digest-verify-v8",
+    marker: "route-complete-preview-proxy-v9",
     timestamp: new Date().toISOString(),
   });
 });
@@ -187,7 +187,7 @@ app.get("/diagnostics", (_req, res) => {
   res.json({
     success: true,
     service: "klawpen-builder-api",
-    marker: "streaming-llm-digest-verify-v8",
+    marker: "route-complete-preview-proxy-v9",
     build: {
       stagedBuild: process.env.KLAWPEN_STAGED_BUILD === "true",
       stagedInlineApply: process.env.KLAWPEN_STAGED_INLINE_APPLY === "true",
@@ -262,6 +262,7 @@ app.get("/diagnostics/ai-smoke", async (req, res) => {
 });
 
 app.use("/preview", previewRoutes);
+app.use(redirectPreviewEscapeRequest);
 
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
