@@ -168,7 +168,7 @@ app.get("/health", (_req, res) => {
   res.json({
     success: true,
     service: "klawpen-builder-api",
-    marker: "stream-heartbeat-senior-craft-v10",
+    marker: "container-auto-resume-v11",
     timestamp: new Date().toISOString(),
   });
 });
@@ -187,7 +187,7 @@ app.get("/diagnostics", (_req, res) => {
   res.json({
     success: true,
     service: "klawpen-builder-api",
-    marker: "stream-heartbeat-senior-craft-v10",
+    marker: "container-auto-resume-v11",
     build: {
       stagedBuild: process.env.KLAWPEN_STAGED_BUILD === "true",
       stagedInlineApply: process.env.KLAWPEN_STAGED_INLINE_APPLY === "true",

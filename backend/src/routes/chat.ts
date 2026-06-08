@@ -195,6 +195,8 @@ router.post("/:containerId/messages", async (req, res) => {
       });
     }
 
+    await dockerService.ensureProjectContainerRunning(containerId, account);
+
     const shortcutReply = llmService.getConversationalShortcutReply(
       message,
       safeAttachments.length

@@ -1,5 +1,6 @@
 import Docker from "dockerode";
 import { Writable } from "stream";
+import { ensureProjectContainerRunning } from "./docker";
 import { docker } from "./dockerClient";
 
 const BASE_PATH = "/app/my-nextjs-app";
@@ -33,7 +34,7 @@ async function runContainerCommand(
 ): Promise<string> {
   assertSafeContainerId(containerId);
 
-  const container = docker.getContainer(containerId);
+  const container = await ensureProjectContainerRunning(containerId);
   const exec = await container.exec({
     Cmd: command,
     WorkingDir: workingDir,

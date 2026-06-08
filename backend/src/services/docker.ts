@@ -88,6 +88,11 @@ const PROJECT_TEMPLATE_REBUILD_ALWAYS = readBooleanEnv(
   "PROJECT_TEMPLATE_REBUILD_ALWAYS",
   false
 );
+const PROJECT_CONTAINER_RESUME_TIMEOUT_MS = readPositiveIntEnv(
+  "PROJECT_CONTAINER_RESUME_TIMEOUT_MS",
+  30_000
+);
+const containerResumeLocks = new Map<string, Promise<void>>();
 
 async function getAllAssignedPorts(): Promise<number[]> {
   const containers = await docker.listContainers({ all: true });
@@ -937,8 +942,16 @@ export async function startContainer(
     const container = await assertProjectContainer(containerId, owner);
     const containerInfo = await container.inspect();
 
-    if (containerInfo.State.Running) {
+    if (containerInfo.State.Running && !containerInfo.State.Paused) {
       const port = getPortFromContainer(containerInfo);
+      return { port };
+    }
+
+    if (containerInfo.State.Paused) {
+      await container.unpause();
+      await waitForProjectContainerRunning(container, containerId);
+      const port = getPortFromContainer(await container.inspect());
+      console.log(`Unpaused container: ${containerId} on port ${port}`);
       return { port };
     }
 
@@ -959,6 +972,7 @@ export async function startContainer(
     }
 
     await container.start();
+    await waitForProjectContainerRunning(container, containerId);
     console.log(`Started container: ${containerId} on port ${assignedPort}`);
 
     return { port: assignedPort };
@@ -1009,7 +1023,7 @@ export function getContainer(containerId: string): Docker.Container {
 export async function getPreviewRuntime(
   containerId: string
 ): Promise<{ containerInfo: any; port: number; upstreamUrls: string[] }> {
-  const container = await assertProjectContainer(containerId);
+  const container = await ensureProjectContainerRunning(containerId);
   const containerInfo = await container.inspect();
   const port = getPortFromContainer(containerInfo);
   const containerName = containerInfo.Name?.replace(/^\//, "");
@@ -1100,6 +1114,103 @@ export async function assertProjectContainer(
   }
 
   return container;
+}
+
+function isProjectContainerRunning(containerInfo: any): boolean {
+  const state = containerInfo?.State || {};
+  return Boolean(state.Running && !state.Paused && !state.Restarting && !state.Dead);
+}
+
+async function waitForProjectContainerRunning(
+  container: Docker.Container,
+  containerId: string
+): Promise<void> {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < PROJECT_CONTAINER_RESUME_TIMEOUT_MS) {
+    const info = await container.inspect();
+
+    if (isProjectContainerRunning(info)) {
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+
+  const info = await container.inspect().catch(() => null);
+  throw new Error(
+    `Container ${containerId} did not become running within ${PROJECT_CONTAINER_RESUME_TIMEOUT_MS}ms. Current state: ${
+      info?.State?.Status || "unknown"
+    }`
+  );
+}
+
+export async function ensureProjectContainerRunning(
+  containerId: string,
+  owner?: ProjectOwner
+): Promise<Docker.Container> {
+  assertSafeContainerId(containerId);
+
+  const existingResume = containerResumeLocks.get(containerId);
+  if (existingResume) {
+    await existingResume;
+    return assertProjectContainer(containerId, owner);
+  }
+
+  const resumePromise = (async () => {
+    const container = await assertProjectContainer(containerId, owner);
+    const containerInfo = await container.inspect();
+
+    if (isProjectContainerRunning(containerInfo)) {
+      return;
+    }
+
+    console.warn("project_container_auto_resume_required", {
+      trace: "project_container_auto_resume_required",
+      containerId,
+      status: containerInfo.State?.Status,
+      running: containerInfo.State?.Running,
+      paused: containerInfo.State?.Paused,
+      restarting: containerInfo.State?.Restarting,
+      dead: containerInfo.State?.Dead,
+    });
+
+    if (containerInfo.State?.Paused) {
+      await container.unpause();
+    } else if (!containerInfo.State?.Running) {
+      await container.start();
+    }
+
+    await waitForProjectContainerRunning(container, containerId);
+
+    try {
+      const resumedInfo = await container.inspect();
+      const port = getPortFromContainer(resumedInfo);
+      console.log("project_container_auto_resumed", {
+        trace: "project_container_auto_resumed",
+        containerId,
+        port,
+        status: resumedInfo.State?.Status,
+      });
+    } catch (error) {
+      console.log("project_container_auto_resumed", {
+        trace: "project_container_auto_resumed",
+        containerId,
+        status: "running",
+        port: null,
+        warning: error instanceof Error ? error.message : String(error),
+      });
+    }
+  })();
+
+  containerResumeLocks.set(containerId, resumePromise);
+  try {
+    await resumePromise;
+  } finally {
+    containerResumeLocks.delete(containerId);
+  }
+
+  return assertProjectContainer(containerId, owner);
 }
 
 export async function listProjectContainers(owner?: ProjectOwner): Promise<any[]> {

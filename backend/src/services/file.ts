@@ -2,6 +2,7 @@ import Docker from "dockerode";
 import crypto from "crypto";
 import path from "path";
 import { Writable } from "stream";
+import { ensureProjectContainerRunning } from "./docker";
 import { docker as dockerClient } from "./dockerClient";
 
 const BASE_PATH = "/app/my-nextjs-app";
@@ -102,7 +103,7 @@ async function runContainerCommand(
 ): Promise<string> {
   assertSafeContainerId(containerId);
 
-  const container = dockerClient.getContainer(containerId);
+  const container = await ensureProjectContainerRunning(containerId);
   const exec = await container.exec({
     Cmd: command,
     WorkingDir: workingDir,
@@ -217,7 +218,7 @@ export async function getFileTree(
 ): Promise<FileItem[]> {
   assertSafeContainerId(containerId);
   const safeContainerPath = toSafeContainerPath(containerPath);
-  const container = docker.getContainer(containerId);
+  const container = await ensureProjectContainerRunning(containerId);
   const quotedPath = shellQuote(safeContainerPath);
 
   const findCommand = [
@@ -291,7 +292,7 @@ export async function getFileContentTree(
 ): Promise<FileContentItem[]> {
   assertSafeContainerId(containerId);
   const safeContainerPath = toSafeContainerPath(containerPath);
-  const container = docker.getContainer(containerId);
+  const container = await ensureProjectContainerRunning(containerId);
   const quotedPath = shellQuote(safeContainerPath);
 
   const findCommand = [
@@ -444,7 +445,7 @@ export async function readFile(
 ): Promise<string> {
   assertSafeContainerId(containerId);
   const safePath = toSafeMutablePath(filePath);
-  const container = docker.getContainer(containerId);
+  const container = await ensureProjectContainerRunning(containerId);
 
   const exec = await container.exec({
     Cmd: ["head", "-c", "10000000", safePath],
@@ -504,7 +505,7 @@ export async function listFiles(
 ): Promise<any[]> {
   assertSafeContainerId(containerId);
   const safeContainerPath = toSafeContainerPath(containerPath);
-  const container = docker.getContainer(containerId);
+  const container = await ensureProjectContainerRunning(containerId);
   const exec = await container.exec({
     Cmd: ["ls", "-la", safeContainerPath],
     AttachStdout: true,
@@ -567,7 +568,7 @@ export async function writeFile(
   const absolutePath = toSafeMutablePath(filePath);
   const dirPath = absolutePath.substring(0, absolutePath.lastIndexOf("/"));
   const fileName = absolutePath.substring(absolutePath.lastIndexOf("/") + 1);
-  const container = dockerClient.getContainer(containerId);
+  const container = await ensureProjectContainerRunning(containerId);
 
   try {
     await runContainerCommand(containerId, ["mkdir", "-p", dirPath], BASE_PATH);
