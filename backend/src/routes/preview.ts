@@ -313,7 +313,24 @@ router.use("/:containerId", async (req, res) => {
       }
     }
 
-    console.warn("Preview proxy failed for all upstreams:", lastError);
+    let diagnostics = "";
+    try {
+      diagnostics = await dockerService.getProjectDevServerDiagnostics(
+        containerId
+      );
+    } catch (diagnosticError) {
+      diagnostics =
+        diagnosticError instanceof Error
+          ? diagnosticError.message
+          : String(diagnosticError);
+    }
+
+    console.warn("Preview proxy failed for all upstreams:", {
+      containerId,
+      path,
+      error: lastError instanceof Error ? lastError.message : lastError,
+      diagnostics: diagnostics.slice(-4_000),
+    });
     res
       .status(502)
       .send("Preview is not ready yet. Please wait a moment and refresh.");

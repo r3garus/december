@@ -8,9 +8,11 @@ import {
   ensureProjectSandboxRunning,
   getPreviewProxyOrigin,
   getPreviewRuntime,
+  getProjectDevServerDiagnostics,
   getSandboxRuntimeDiagnostics,
   isValidPreviewToken,
   listProjectSandboxes,
+  restartProjectDevServer,
   signProjectPreviewToken,
   startSandbox,
   stopSandbox,
@@ -30,7 +32,13 @@ export function signPreviewToken(containerId: string): string | null {
   return signProjectPreviewToken(containerId);
 }
 
-export { isValidPreviewToken, getPreviewProxyOrigin, getPreviewRuntime };
+export {
+  isValidPreviewToken,
+  getPreviewProxyOrigin,
+  getPreviewRuntime,
+  getProjectDevServerDiagnostics,
+  restartProjectDevServer,
+};
 
 export function buildPreviewUrl(containerId: string): string {
   return buildDirectPreviewUrl(containerId) || buildPreviewProxyUrl(containerId);

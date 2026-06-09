@@ -10982,12 +10982,44 @@ ${codeContext}`;
   );
 
   if (applyResult.applied > 0 && applyResult.failed.length === 0) {
-    const previewSmoke = await runPreviewSmokeCheck({
-      containerId,
-      userMessage,
-      progress,
-      percent: 91,
-    });
+    let previewSmoke: PreviewSmokeResult;
+
+    try {
+      await progress?.(
+        getBuildProgressCopy(userMessage, "refresh", 89, [
+          "dev server",
+          "preview",
+        ])
+      );
+      const restartResult = await dockerService.restartProjectDevServer(
+        containerId
+      );
+      console.log("preview_dev_server_restarted_after_apply", {
+        trace: "preview_dev_server_restarted_after_apply",
+        containerId,
+        previewUrl: restartResult.previewUrl,
+        diagnostics: clipText(restartResult.diagnostics, 2_000),
+      });
+
+      previewSmoke = await runPreviewSmokeCheck({
+        containerId,
+        userMessage,
+        progress,
+        percent: 91,
+      });
+    } catch (error) {
+      const message = getErrorMessage(error);
+      previewSmoke = {
+        ok: false,
+        trace: "preview_dev_server_restart_failed_after_apply",
+        error: message,
+      };
+      console.error("preview_dev_server_restart_failed_after_apply", {
+        trace: previewSmoke.trace,
+        containerId,
+        error: clipText(message, 4_000),
+      });
+    }
 
     if (!previewSmoke.ok) {
       console.warn("runtime_preview_repair_triggered", {
@@ -11034,12 +11066,44 @@ ${codeContext}`;
           if (repairApplyResult.applied > 0) {
             outputSource = "runtime_repair_ai";
             finalOutputStats = getBuildWriteStats(assistantContent);
-            const repairedSmoke = await runPreviewSmokeCheck({
-              containerId,
-              userMessage,
-              progress,
-              percent: 95,
-            });
+            let repairedSmoke: PreviewSmokeResult;
+
+            try {
+              await progress?.(
+                getBuildProgressCopy(userMessage, "refresh", 94, [
+                  "dev server",
+                  "preview",
+                ])
+              );
+              const restartResult = await dockerService.restartProjectDevServer(
+                containerId
+              );
+              console.log("preview_dev_server_restarted_after_repair", {
+                trace: "preview_dev_server_restarted_after_repair",
+                containerId,
+                previewUrl: restartResult.previewUrl,
+                diagnostics: clipText(restartResult.diagnostics, 2_000),
+              });
+
+              repairedSmoke = await runPreviewSmokeCheck({
+                containerId,
+                userMessage,
+                progress,
+                percent: 95,
+              });
+            } catch (error) {
+              const message = getErrorMessage(error);
+              repairedSmoke = {
+                ok: false,
+                trace: "preview_dev_server_restart_failed_after_repair",
+                error: message,
+              };
+              console.error("preview_dev_server_restart_failed_after_repair", {
+                trace: repairedSmoke.trace,
+                containerId,
+                error: clipText(message, 4_000),
+              });
+            }
 
             if (!repairedSmoke.ok) {
               console.warn("runtime_preview_repair_still_failing", {

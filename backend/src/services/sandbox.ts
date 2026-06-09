@@ -20,9 +20,17 @@ const E2B_INSTALL_TIMEOUT_MS = Number(
   process.env.E2B_INSTALL_TIMEOUT_MS || "240000"
 );
 const E2B_START_TIMEOUT_MS = Number(
-  process.env.E2B_START_TIMEOUT_MS || "60000"
+  process.env.E2B_START_TIMEOUT_MS || "120000"
 );
 const E2B_DOMAIN = process.env.E2B_DOMAIN || "e2b.app";
+const DEV_RUNTIME_DIR = `${PROJECT_WORKSPACE_PATH}/.klawpen`;
+const DEV_SERVER_LOG_PATH = `${DEV_RUNTIME_DIR}/dev-server.log`;
+const DEV_SERVER_PID_PATH = `${DEV_RUNTIME_DIR}/dev-server.pid`;
+const DEV_SERVER_EXIT_PATH = `${DEV_RUNTIME_DIR}/dev-server.exit`;
+const DEV_SERVER_START_SCRIPT_PATH = `${DEV_RUNTIME_DIR}/start-dev-server.sh`;
+const DEV_SERVER_LOG_TAIL_BYTES = Number(
+  process.env.E2B_DEV_SERVER_LOG_TAIL_BYTES || "12000"
+);
 const DEFAULT_PUBLIC_API_ORIGIN =
   process.env.NODE_ENV === "production"
     ? "https://api.builder.klawpen.com"
@@ -59,7 +67,34 @@ interface ProjectSandboxSession {
   status: "running" | "stopped";
   devServerStarted: boolean;
   devServerPid?: number;
+  devServerCommand?: string;
+  devServerFramework?: "next" | "vite" | "generic";
   labels: Record<string, string>;
+}
+
+interface ProjectShape {
+  hasNextAppRouter: boolean;
+  hasNextPagesRouter: boolean;
+  hasViteHtml: boolean;
+  hasViteEntry: boolean;
+}
+
+interface PackageManifest {
+  name?: string;
+  version?: string;
+  private?: boolean;
+  scripts?: Record<string, string>;
+  dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+}
+
+interface DevServerPlan {
+  framework: "next" | "vite" | "generic";
+  commandText: string;
+  displayCommand: string;
+  manifestChanged: boolean;
+  devScript: string;
+  shape: ProjectShape;
 }
 
 const sessions = new Map<string, ProjectSandboxSession>();
@@ -370,6 +405,384 @@ function logSandboxOutput(
   });
 }
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function readWorkspaceTextFile(
+  session: ProjectSandboxSession,
+  relativePath: string
+): Promise<string | null> {
+  try {
+    return await session.sandbox.files.read(
+      `${PROJECT_WORKSPACE_PATH}/${relativePath}`,
+      { requestTimeoutMs: E2B_COMMAND_TIMEOUT_MS }
+    );
+  } catch {
+    return null;
+  }
+}
+
+async function writeWorkspaceTextFile(
+  session: ProjectSandboxSession,
+  relativePath: string,
+  content: string
+) {
+  await session.sandbox.files.write(
+    `${PROJECT_WORKSPACE_PATH}/${relativePath}`,
+    content,
+    { requestTimeoutMs: E2B_COMMAND_TIMEOUT_MS }
+  );
+}
+
+function parsePackageManifest(raw: string | null): PackageManifest | null {
+  if (!raw?.trim()) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch (error) {
+    console.error("e2b_package_manifest_parse_failed", {
+      trace: "e2b_package_manifest_parse_failed",
+      error: error instanceof Error ? error.message : String(error),
+      preview: raw.slice(0, 500),
+    });
+    return null;
+  }
+}
+
+async function detectProjectShape(
+  session: ProjectSandboxSession
+): Promise<ProjectShape> {
+  const command = [
+    `[ -d ${shellQuote(`${PROJECT_WORKSPACE_PATH}/src/app`)} ] && echo hasNextAppRouter=1 || true`,
+    `[ -d ${shellQuote(`${PROJECT_WORKSPACE_PATH}/pages`)} ] && echo hasNextPagesRouter=1 || true`,
+    `[ -f ${shellQuote(`${PROJECT_WORKSPACE_PATH}/index.html`)} ] && echo hasViteHtml=1 || true`,
+    `[ -f ${shellQuote(`${PROJECT_WORKSPACE_PATH}/src/main.tsx`)} -o -f ${shellQuote(`${PROJECT_WORKSPACE_PATH}/src/main.jsx`)} -o -f ${shellQuote(`${PROJECT_WORKSPACE_PATH}/src/main.ts`)} -o -f ${shellQuote(`${PROJECT_WORKSPACE_PATH}/src/main.js`)} ] && echo hasViteEntry=1 || true`,
+  ].join("; ");
+
+  const result = await session.sandbox.commands.run(command, {
+    cwd: PROJECT_WORKSPACE_PATH,
+    timeoutMs: E2B_COMMAND_TIMEOUT_MS,
+  });
+  const output = result.stdout || "";
+
+  return {
+    hasNextAppRouter: output.includes("hasNextAppRouter=1"),
+    hasNextPagesRouter: output.includes("hasNextPagesRouter=1"),
+    hasViteHtml: output.includes("hasViteHtml=1"),
+    hasViteEntry: output.includes("hasViteEntry=1"),
+  };
+}
+
+function inferDevFramework(
+  manifest: PackageManifest,
+  shape: ProjectShape
+): "next" | "vite" | "generic" {
+  const devScript = manifest.scripts?.dev || "";
+  const allDependencies = {
+    ...(manifest.dependencies || {}),
+    ...(manifest.devDependencies || {}),
+  };
+
+  const hasNextShape = shape.hasNextAppRouter || shape.hasNextPagesRouter;
+  const hasViteShape = shape.hasViteHtml && shape.hasViteEntry;
+  if (/\bvite\b/i.test(devScript)) return "vite";
+  if (hasViteShape) return "vite";
+  if (/\bnext\b/i.test(devScript)) return "next";
+  if (hasNextShape && !hasViteShape) return "next";
+  if (Boolean(allDependencies.vite) && !Boolean(allDependencies.next)) return "vite";
+  if (Boolean(allDependencies.next)) return "next";
+  if (hasViteShape) return "vite";
+
+  return "generic";
+}
+
+function defaultPackageManifest(): PackageManifest {
+  return {
+    name: "klawpen-workspace",
+    version: "0.1.0",
+    private: true,
+    scripts: {
+      dev: "next dev",
+      build: "next build",
+      start: "next start",
+    },
+    dependencies: {
+      "@tailwindcss/postcss": "^4.1.7",
+      "lucide-react": "^0.511.0",
+      next: "15.5.18",
+      react: "^19.0.0",
+      "react-dom": "^19.0.0",
+      tailwindcss: "^4.1.7",
+    },
+    devDependencies: {
+      "@types/node": "^20",
+      "@types/react": "^19",
+      "@types/react-dom": "^19",
+      typescript: "^5",
+    },
+  };
+}
+
+function ensureDependency(
+  manifest: PackageManifest,
+  section: "dependencies" | "devDependencies",
+  name: string,
+  version: string
+): boolean {
+  const dependencies = manifest.dependencies || {};
+  const devDependencies = manifest.devDependencies || {};
+  if (dependencies[name] || devDependencies[name]) return false;
+
+  manifest[section] = {
+    ...(manifest[section] || {}),
+    [name]: version,
+  };
+  return true;
+}
+
+function asStringRecord(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter((entry): entry is [string, string] => typeof entry[1] === "string")
+  );
+}
+
+async function prepareDevServerPlan(
+  session: ProjectSandboxSession
+): Promise<DevServerPlan> {
+  const rawManifest = await readWorkspaceTextFile(session, "package.json");
+  const parsedManifest = parsePackageManifest(rawManifest);
+  const manifest = parsedManifest || defaultPackageManifest();
+  const shape = await detectProjectShape(session);
+  manifest.scripts = asStringRecord(manifest.scripts);
+  manifest.dependencies = asStringRecord(manifest.dependencies);
+  manifest.devDependencies = asStringRecord(manifest.devDependencies);
+
+  const framework = inferDevFramework(manifest, shape);
+  const scripts = manifest.scripts;
+  let manifestChanged = !rawManifest || !parsedManifest;
+
+  const expectedDevScript = framework === "vite" ? "vite" : "next dev";
+  if (scripts.dev !== expectedDevScript) {
+    scripts.dev = expectedDevScript;
+    manifestChanged = true;
+  }
+
+  manifest.scripts = scripts;
+
+  if (framework === "vite") {
+    manifestChanged =
+      ensureDependency(manifest, "dependencies", "react", "^19.0.0") ||
+      manifestChanged;
+    manifestChanged =
+      ensureDependency(manifest, "dependencies", "react-dom", "^19.0.0") ||
+      manifestChanged;
+    manifestChanged =
+      ensureDependency(manifest, "devDependencies", "vite", "^6.0.0") ||
+      manifestChanged;
+    manifestChanged =
+      ensureDependency(manifest, "devDependencies", "@vitejs/plugin-react", "^4.3.4") ||
+      manifestChanged;
+    manifestChanged =
+      ensureDependency(manifest, "devDependencies", "typescript", "^5") ||
+      manifestChanged;
+  } else {
+    manifestChanged =
+      ensureDependency(manifest, "dependencies", "next", "15.5.18") ||
+      manifestChanged;
+    manifestChanged =
+      ensureDependency(manifest, "dependencies", "react", "^19.0.0") ||
+      manifestChanged;
+    manifestChanged =
+      ensureDependency(manifest, "dependencies", "react-dom", "^19.0.0") ||
+      manifestChanged;
+    manifestChanged =
+      ensureDependency(manifest, "devDependencies", "typescript", "^5") ||
+      manifestChanged;
+    manifestChanged =
+      ensureDependency(manifest, "devDependencies", "@types/node", "^20") ||
+      manifestChanged;
+    manifestChanged =
+      ensureDependency(manifest, "devDependencies", "@types/react", "^19") ||
+      manifestChanged;
+    manifestChanged =
+      ensureDependency(manifest, "devDependencies", "@types/react-dom", "^19") ||
+      manifestChanged;
+  }
+
+  if (manifestChanged) {
+    await writeWorkspaceTextFile(
+      session,
+      "package.json",
+      `${JSON.stringify(manifest, null, 2)}\n`
+    );
+  }
+
+  const commandText =
+    framework === "vite"
+      ? `npm run dev -- --host 0.0.0.0 --port ${PROJECT_PREVIEW_PORT}`
+      : `npm run dev -- --hostname 0.0.0.0 --port ${PROJECT_PREVIEW_PORT}`;
+
+  return {
+    framework,
+    commandText,
+    displayCommand: commandText,
+    manifestChanged,
+    devScript: manifest.scripts?.dev || "",
+    shape,
+  };
+}
+
+async function killExistingDevServer(session: ProjectSandboxSession) {
+  const pid = await readWorkspaceTextFile(session, ".klawpen/dev-server.pid");
+  const trimmedPid = pid?.trim();
+  if (trimmedPid && /^\d+$/.test(trimmedPid)) {
+    try {
+      await session.sandbox.commands.kill(Number(trimmedPid), {
+        requestTimeoutMs: E2B_COMMAND_TIMEOUT_MS,
+      });
+    } catch (error) {
+      console.warn("e2b_previous_dev_server_kill_failed", {
+        trace: "e2b_previous_dev_server_kill_failed",
+        containerId: session.containerId,
+        sandboxId: session.sandboxId,
+        pid: trimmedPid,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  try {
+    await session.sandbox.commands.run(
+      [
+        "pkill -f '[n]pm run dev' 2>/dev/null || true",
+        "pkill -f '[n]ext dev' 2>/dev/null || true",
+        "pkill -f '[v]ite' 2>/dev/null || true",
+      ].join("; "),
+      { timeoutMs: E2B_COMMAND_TIMEOUT_MS }
+    );
+  } catch {}
+
+  session.devServerStarted = false;
+  session.devServerPid = undefined;
+}
+
+async function readDevServerDiagnostics(
+  session: ProjectSandboxSession
+): Promise<string> {
+  const command = [
+    `echo "--- klawpen dev server log (${DEV_SERVER_LOG_PATH}) ---"`,
+    `tail -c ${Math.max(1000, DEV_SERVER_LOG_TAIL_BYTES)} ${shellQuote(DEV_SERVER_LOG_PATH)} 2>/dev/null || echo "No dev-server.log found."`,
+    `echo "--- klawpen dev server pid ---"`,
+    `cat ${shellQuote(DEV_SERVER_PID_PATH)} 2>/dev/null || true`,
+    `echo "--- klawpen dev server exit ---"`,
+    `cat ${shellQuote(DEV_SERVER_EXIT_PATH)} 2>/dev/null || true`,
+    `echo "--- process list ---"`,
+    `ps -ef | grep -E 'next|vite|npm|node' | grep -v grep || true`,
+    `echo "--- package.json scripts ---"`,
+    `node -e "const fs=require('fs'); const p='package.json'; try { const pkg=JSON.parse(fs.readFileSync(p,'utf8')); console.log(JSON.stringify(pkg.scripts||{}, null, 2)); } catch (e) { console.log('package.json parse/read failed:', e.message); }"`,
+  ].join("; ");
+
+  try {
+    const result = await session.sandbox.commands.run(command, {
+      cwd: PROJECT_WORKSPACE_PATH,
+      timeoutMs: E2B_COMMAND_TIMEOUT_MS,
+    });
+    return [result.stdout, result.stderr].filter(Boolean).join("\n");
+  } catch (error) {
+    return `Failed to collect E2B dev server diagnostics: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+  }
+}
+
+async function writeDevServerLaunchScript(
+  session: ProjectSandboxSession,
+  plan: DevServerPlan
+) {
+  await session.sandbox.commands.run(`mkdir -p ${shellQuote(DEV_RUNTIME_DIR)}`, {
+    cwd: PROJECT_WORKSPACE_PATH,
+    timeoutMs: E2B_COMMAND_TIMEOUT_MS,
+  });
+
+  const script = `#!/bin/sh
+set -eu
+cd ${shellQuote(PROJECT_WORKSPACE_PATH)}
+mkdir -p ${shellQuote(DEV_RUNTIME_DIR)}
+rm -f ${shellQuote(DEV_SERVER_EXIT_PATH)}
+: > ${shellQuote(DEV_SERVER_LOG_PATH)}
+{
+  trap '' HUP
+  echo "[klawpen] starting dev server at $(date -Iseconds)"
+  echo "[klawpen] framework=${plan.framework}"
+  echo "[klawpen] command=${plan.displayCommand}"
+  printf '%s\\n' ${shellQuote(`[klawpen] dev_script=${plan.devScript}`)}
+  set +e
+  ${plan.commandText}
+  code=$?
+  set -e
+  echo "[klawpen] dev server exited with code $code at $(date -Iseconds)"
+  echo "$code" > ${shellQuote(DEV_SERVER_EXIT_PATH)}
+  exit "$code"
+} >> ${shellQuote(DEV_SERVER_LOG_PATH)} 2>&1
+`;
+
+  await session.sandbox.files.write(DEV_SERVER_START_SCRIPT_PATH, script, {
+    requestTimeoutMs: E2B_COMMAND_TIMEOUT_MS,
+  });
+  await session.sandbox.commands.run(
+    `chmod +x ${shellQuote(DEV_SERVER_START_SCRIPT_PATH)}`,
+    { cwd: PROJECT_WORKSPACE_PATH, timeoutMs: E2B_COMMAND_TIMEOUT_MS }
+  );
+}
+
+async function waitForPreviewPort(
+  session: ProjectSandboxSession,
+  timeoutMs: number
+) {
+  const startedAt = Date.now();
+  let lastDiagnostics = "";
+
+  while (Date.now() - startedAt < timeoutMs) {
+    if (await isPreviewPortListening(session)) {
+      return;
+    }
+
+    const exitCode = await readWorkspaceTextFile(
+      session,
+      ".klawpen/dev-server.exit"
+    );
+    if (exitCode?.trim()) {
+      lastDiagnostics = await readDevServerDiagnostics(session);
+      break;
+    }
+
+    await sleep(2_000);
+  }
+
+  if (!lastDiagnostics) {
+    lastDiagnostics = await readDevServerDiagnostics(session);
+  }
+
+  console.error("e2b_dev_server_port_not_listening", {
+    trace: "e2b_dev_server_port_not_listening",
+    containerId: session.containerId,
+    sandboxId: session.sandboxId,
+    port: PROJECT_PREVIEW_PORT,
+    timeoutMs,
+    diagnostics: lastDiagnostics.slice(-4_000),
+  });
+
+  throw new Error(
+    `E2B dev server did not open port ${PROJECT_PREVIEW_PORT}. Diagnostics:\n${lastDiagnostics.slice(
+      -6_000
+    )}`
+  );
+}
+
 async function isPreviewPortListening(session: ProjectSandboxSession) {
   try {
     const result = await session.sandbox.commands.run(
@@ -384,13 +797,21 @@ async function isPreviewPortListening(session: ProjectSandboxSession) {
   }
 }
 
-export async function startDevServer(session: ProjectSandboxSession) {
+export async function startDevServer(
+  session: ProjectSandboxSession,
+  options: { force?: boolean } = {}
+) {
   if (
+    !options.force &&
     session.devServerStarted &&
     session.status === "running" &&
     (await isPreviewPortListening(session))
   ) {
     return;
+  }
+
+  if (options.force || session.devServerStarted) {
+    await killExistingDevServer(session);
   }
 
   console.log("e2b_dev_server_starting", {
@@ -400,19 +821,44 @@ export async function startDevServer(session: ProjectSandboxSession) {
     port: PROJECT_PREVIEW_PORT,
   });
 
+  const plan = await prepareDevServerPlan(session);
+  console.log("e2b_dev_server_preflight_completed", {
+    trace: "e2b_dev_server_preflight_completed",
+    containerId: session.containerId,
+    sandboxId: session.sandboxId,
+    framework: plan.framework,
+    command: plan.displayCommand,
+    devScript: plan.devScript,
+    manifestChanged: plan.manifestChanged,
+    shape: plan.shape,
+  });
+
+  if (plan.manifestChanged) {
+    await installDependencies(session);
+  }
+
+  await writeDevServerLaunchScript(session, plan);
+
   const handle = await session.sandbox.commands.run(
-    `npm run dev -- --hostname 0.0.0.0 --port ${PROJECT_PREVIEW_PORT}`,
+    DEV_SERVER_START_SCRIPT_PATH,
     {
       cwd: PROJECT_WORKSPACE_PATH,
       background: true,
-      timeoutMs: E2B_START_TIMEOUT_MS,
+      timeoutMs: E2B_COMMAND_TIMEOUT_MS,
       onStdout: (data) => logSandboxOutput("stdout", session, data),
       onStderr: (data) => logSandboxOutput("stderr", session, data),
     }
   );
 
+  await session.sandbox.files.write(DEV_SERVER_PID_PATH, String(handle.pid), {
+    requestTimeoutMs: E2B_COMMAND_TIMEOUT_MS,
+  });
+  await waitForPreviewPort(session, E2B_START_TIMEOUT_MS);
+
   session.devServerStarted = true;
   session.devServerPid = handle.pid;
+  session.devServerCommand = plan.displayCommand;
+  session.devServerFramework = plan.framework;
   session.status = "running";
   session.previewUrl = toPreviewUrl(session.sandbox, PROJECT_PREVIEW_PORT);
 
@@ -420,7 +866,9 @@ export async function startDevServer(session: ProjectSandboxSession) {
     trace: "e2b_dev_server_started",
     containerId: session.containerId,
     sandboxId: session.sandboxId,
-    pid: handle.pid,
+    pid: session.devServerPid,
+    framework: session.devServerFramework,
+    command: session.devServerCommand,
     previewUrl: session.previewUrl,
   });
 }
@@ -558,6 +1006,27 @@ export async function startSandbox(
 ): Promise<{ port: number }> {
   await ensureProjectSandboxRunning(containerId, owner);
   return { port: PROJECT_PREVIEW_PORT };
+}
+
+export async function restartProjectDevServer(
+  containerId: string,
+  owner?: ProjectOwner | null
+): Promise<{ port: number; previewUrl: string; diagnostics: string }> {
+  const session = await getSession(containerId, owner);
+  await startDevServer(session, { force: true });
+  return {
+    port: PROJECT_PREVIEW_PORT,
+    previewUrl: session.previewUrl,
+    diagnostics: await readDevServerDiagnostics(session),
+  };
+}
+
+export async function getProjectDevServerDiagnostics(
+  containerId: string,
+  owner?: ProjectOwner | null
+): Promise<string> {
+  const session = await getSession(containerId, owner);
+  return readDevServerDiagnostics(session);
 }
 
 export async function stopSandbox(
