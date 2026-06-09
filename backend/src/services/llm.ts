@@ -3,6 +3,7 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { streamText } from "ai";
 import { config } from "../../config";
+import { KLAWPEN_ARTIFACT_SYSTEM_PROMPT } from "../utils/klawpenPrompt";
 import prompt from "../utils/prompt.txt";
 import {
   getAiProviders,
@@ -16,6 +17,12 @@ import * as dockerService from "./docker";
 import * as fileService from "./file";
 import * as packageService from "./package";
 import * as projectSnapshotService from "./projectSnapshot";
+import {
+  extractKlawpenActionOperations,
+  extractPartialKlawpenActionOperations,
+  getKlawpenParserDiagnostics,
+  type KlawpenActionOperation,
+} from "./klawpenStreamParser";
 
 const clientCache = new Map<string, OpenAI>();
 const aiSdkProviderCache = new Map<string, any>();
@@ -168,6 +175,14 @@ const AI_SDK_STREAMING_ENABLED =
 const AI_SDK_MANUAL_FALLBACK_ENABLED =
   process.env.KLAWPEN_AI_SDK_MANUAL_FALLBACK !== "false" &&
   process.env.AI_SDK_MANUAL_FALLBACK !== "false";
+const KLAWPEN_SHELL_ACTIONS_ENABLED =
+  process.env.KLAWPEN_SHELL_ACTIONS_ENABLED === "true";
+const KLAWPEN_SHELL_INSTALLS_ENABLED =
+  process.env.KLAWPEN_SHELL_INSTALLS_ENABLED === "true";
+const KLAWPEN_SHELL_ACTION_TIMEOUT_MS = readPositiveInt(
+  process.env.KLAWPEN_SHELL_ACTION_TIMEOUT_MS,
+  120_000
+);
 
 function readPositiveInt(value: string | undefined, fallback: number) {
   const parsed = Number.parseInt(value || "", 10);
@@ -258,7 +273,7 @@ interface CriticResult {
 }
 
 interface CodeOperation {
-  type: "write" | "rename" | "delete" | "dependency";
+  type: "write" | "rename" | "delete" | "dependency" | "shell";
   index: number;
   path?: string;
   content?: string;
@@ -266,6 +281,7 @@ interface CodeOperation {
   to?: string;
   packageName?: string;
   version?: string;
+  command?: string;
 }
 
 interface ApplyCodeOperationsResult {
@@ -277,12 +293,28 @@ interface ApplyCodeOperationsResult {
     sha256: string;
   }>;
   parser: {
-    source: "dec-tags" | "markdown-fences" | "partial-dec-tags" | "none";
+    source:
+      | "dec-tags"
+      | "klawpen-actions"
+      | "mixed-tags"
+      | "markdown-fences"
+      | "partial-dec-tags"
+      | "partial-klawpen-actions"
+      | "none";
     operationCount: number;
     writeCount: number;
     openWriteTags: number;
     closeWriteTags: number;
     unbalancedWriteTags: number;
+    openArtifactTags?: number;
+    closeArtifactTags?: number;
+    unbalancedArtifactTags?: number;
+    openActionTags?: number;
+    closeActionTags?: number;
+    unbalancedActionTags?: number;
+    openFileActionTags?: number;
+    closeFileActionTags?: number;
+    unbalancedFileActionTags?: number;
   };
 }
 
@@ -1020,6 +1052,8 @@ For broad website/app requests, plan a real multi-route project by default:
 `;
 
 const BUILDER_SYSTEM_PROMPT = `
+${KLAWPEN_ARTIFACT_SYSTEM_PROMPT}
+
 You are Klawpen Core, a senior full-stack product engineer, frontend architect, UX director, and implementation lead.
 Deliver production-minded quality:
 - responsive layout
@@ -1035,7 +1069,7 @@ Deliver production-minded quality:
 - infer the industry, audience, product promise, trust objections, and CTA from the prompt
 - make every generated page visibly prompt-specific through copy, layout, proof, section order, and visual language
 - choose a distinct design direction per request: editorial, luxury service, operational dashboard, boutique studio, local business, or clean SaaS when appropriate
-- when implementing, output executable edit tags only; plain markdown code is not applied
+- when implementing, output executable <klawpenAction> tags only; plain markdown code is not applied
 - for any new website/application, rewrite src/app/page.tsx at minimum
 - for broad website/application builds, create a real multi-page App Router project by default: home plus 4-6 supporting routes such as src/app/about/page.tsx, src/app/services/page.tsx, src/app/pricing/page.tsx, src/app/faq/page.tsx, src/app/contact/page.tsx, src/app/dashboard/page.tsx, src/app/blog/page.tsx, or domain-specific equivalents
 - only keep a broad build as one page when the user explicitly asks for a single-page/one-page/landing-only result
@@ -2407,56 +2441,22 @@ function appendChangeSummaryTag(
     fromPath?: string;
   }> = [];
   const dependencies: string[] = [];
-
-  const writePattern =
-    /<dec-write\s+(?:path|file_path)="([^"]+)">([\s\S]*?)<\/dec-write>/g;
-  const renamePattern =
-    /<dec-rename\s+from="([^"]+)"\s+to="([^"]+)"\s*\/>/g;
-  const deletePattern =
-    /<dec-delete\s+(?:path|file_path)="([^"]+)"\s*\/>/g;
-  const dependencyPattern =
-    /<dec-add-dependency(?:\s+name="([^"]+)"(?:\s+version="([^"]+)")?)?>(.*?)<\/dec-add-dependency>/g;
-
-  const operations: Array<{
-    type: "write" | "rename" | "delete" | "dependency";
-    index: number;
-    match: RegExpExecArray;
-  }> = [];
-
-  let match: RegExpExecArray | null;
-
-  while ((match = writePattern.exec(assistantContent)) !== null) {
-    operations.push({ type: "write", index: match.index, match });
-  }
-
-  while ((match = renamePattern.exec(assistantContent)) !== null) {
-    operations.push({ type: "rename", index: match.index, match });
-  }
-
-  while ((match = deletePattern.exec(assistantContent)) !== null) {
-    operations.push({ type: "delete", index: match.index, match });
-  }
-
-  while ((match = dependencyPattern.exec(assistantContent)) !== null) {
-    operations.push({ type: "dependency", index: match.index, match });
-  }
-
-  operations.sort((left, right) => left.index - right.index);
+  const operations = extractCodeOperations(assistantContent);
 
   for (const operation of operations) {
     if (operation.type === "dependency") {
-      const packageName = (
-        operation.match[1] ||
-        operation.match[3] ||
-        ""
-      ).trim();
+      const packageName = operation.packageName?.trim() || "";
       if (packageName) dependencies.push(packageName);
       continue;
     }
 
+    if (operation.type === "shell") {
+      continue;
+    }
+
     if (operation.type === "rename") {
-      const fromPathRaw = operation.match[1];
-      const toPathRaw = operation.match[2];
+      const fromPathRaw = operation.from;
+      const toPathRaw = operation.to;
       if (!fromPathRaw || !toPathRaw) continue;
 
       const fromPath = normalizeProjectPath(fromPathRaw);
@@ -2480,7 +2480,7 @@ function appendChangeSummaryTag(
       continue;
     }
 
-    const filePathRaw = operation.match[1];
+    const filePathRaw = operation.path;
     if (!filePathRaw) continue;
 
     const filePath = normalizeProjectPath(filePathRaw);
@@ -2500,10 +2500,10 @@ function appendChangeSummaryTag(
       continue;
     }
 
-    const nextContentRaw = operation.match[2];
+    const nextContentRaw = operation.content;
     if (nextContentRaw === undefined) continue;
 
-    const nextContent = nextContentRaw.trim();
+    const nextContent = nextContentRaw;
     const delta = countLineDelta(previousContent, nextContent);
 
     changedFiles.push({
@@ -2571,7 +2571,25 @@ function extractAttribute(tag: string, name: string): string | null {
   return match?.[2] ? decodeHtmlEntities(match[2]) : null;
 }
 
-function extractCodeOperations(assistantContent: string): CodeOperation[] {
+function mapKlawpenOperation(operation: KlawpenActionOperation): CodeOperation {
+  if (operation.type === "shell") {
+    return {
+      type: "shell",
+      index: operation.index,
+      command: operation.command || operation.content || "",
+      content: operation.content,
+    };
+  }
+
+  return {
+    type: "write",
+    index: operation.index,
+    path: operation.path,
+    content: operation.content,
+  };
+}
+
+function extractDecCodeOperations(assistantContent: string): CodeOperation[] {
   const operations: CodeOperation[] = [];
 
   const writePattern = /<dec-write\b([^>]*)>([\s\S]*?)<\/dec-write>/gi;
@@ -2632,22 +2650,35 @@ function extractCodeOperations(assistantContent: string): CodeOperation[] {
   return operations.sort((left, right) => left.index - right.index);
 }
 
+function extractCodeOperations(assistantContent: string): CodeOperation[] {
+  return [
+    ...extractDecCodeOperations(assistantContent),
+    ...extractKlawpenActionOperations(assistantContent).map(mapKlawpenOperation),
+  ].sort((left, right) => left.index - right.index);
+}
+
 function countRegexMatches(value: string, pattern: RegExp): number {
   return Array.from(value.matchAll(pattern)).length;
 }
 
 function getParserDiagnostics(assistantContent: string) {
-  const openWriteTags = countRegexMatches(assistantContent, /<dec-write\b/gi);
-  const closeWriteTags = countRegexMatches(assistantContent, /<\/dec-write>/gi);
+  const klawpenDiagnostics = getKlawpenParserDiagnostics(assistantContent);
+  const openDecWriteTags = countRegexMatches(assistantContent, /<dec-write\b/gi);
+  const closeDecWriteTags = countRegexMatches(assistantContent, /<\/dec-write>/gi);
+  const openWriteTags =
+    openDecWriteTags + klawpenDiagnostics.openFileActionTags;
+  const closeWriteTags =
+    closeDecWriteTags + klawpenDiagnostics.closeFileActionTags;
 
   return {
     openWriteTags,
     closeWriteTags,
     unbalancedWriteTags: Math.max(0, openWriteTags - closeWriteTags),
+    ...klawpenDiagnostics,
   };
 }
 
-function extractPartialCodeOperations(assistantContent: string): CodeOperation[] {
+function extractPartialDecCodeOperations(assistantContent: string): CodeOperation[] {
   const operations: CodeOperation[] = [];
   const openTagPattern = /<dec-write\b([^>]*)>/gi;
   const nextOperationPattern =
@@ -2682,18 +2713,38 @@ function extractPartialCodeOperations(assistantContent: string): CodeOperation[]
   return operations.sort((left, right) => left.index - right.index);
 }
 
+function extractPartialCodeOperations(assistantContent: string): CodeOperation[] {
+  return [
+    ...extractPartialDecCodeOperations(assistantContent),
+    ...extractPartialKlawpenActionOperations(assistantContent).map(
+      mapKlawpenOperation
+    ),
+  ].sort((left, right) => left.index - right.index);
+}
+
 function parseAssistantCodeOperations(assistantContent: string): {
   operations: CodeOperation[];
   parser: ApplyCodeOperationsResult["parser"];
 } {
   const diagnostics = getParserDiagnostics(assistantContent);
-  const taggedOperations = extractCodeOperations(assistantContent);
+  const decOperations = extractDecCodeOperations(assistantContent);
+  const klawpenOperations = extractKlawpenActionOperations(assistantContent).map(
+    mapKlawpenOperation
+  );
+  const taggedOperations = [...decOperations, ...klawpenOperations].sort(
+    (left, right) => left.index - right.index
+  );
 
   if (taggedOperations.length > 0) {
     return {
       operations: taggedOperations,
       parser: {
-        source: "dec-tags",
+        source:
+          decOperations.length > 0 && klawpenOperations.length > 0
+            ? "mixed-tags"
+            : klawpenOperations.length > 0
+              ? "klawpen-actions"
+              : "dec-tags",
         operationCount: taggedOperations.length,
         writeCount: taggedOperations.filter((operation) => operation.type === "write").length,
         ...diagnostics,
@@ -2716,8 +2767,16 @@ function parseAssistantCodeOperations(assistantContent: string): {
 
   const partialOperations = extractPartialCodeOperations(assistantContent);
   if (partialOperations.length > 0) {
-    console.warn("parser_partial_dec_write_recovery", {
-      trace: "parser_partial_dec_write_recovery",
+    const partialSource = partialOperations.some(
+      (operation) => operation.type === "shell"
+    )
+      ? "partial-klawpen-actions"
+      : diagnostics.openActionTags
+        ? "partial-klawpen-actions"
+        : "partial-dec-tags";
+
+    console.warn("parser_partial_action_recovery", {
+      trace: "parser_partial_action_recovery",
       operationCount: partialOperations.length,
       files: partialOperations
         .map((operation) => operation.path)
@@ -2729,9 +2788,11 @@ function parseAssistantCodeOperations(assistantContent: string): {
     return {
       operations: partialOperations,
       parser: {
-        source: "partial-dec-tags",
+        source: partialSource,
         operationCount: partialOperations.length,
-        writeCount: partialOperations.length,
+        writeCount: partialOperations.filter(
+          (operation) => operation.type === "write"
+        ).length,
         ...diagnostics,
       },
     };
@@ -2817,6 +2878,7 @@ function getExecutableOperationsFingerprint(assistantContent: string): string {
       to: normalizeProjectPath(operation.to || ""),
       packageName: operation.packageName || "",
       version: operation.version || "",
+      command: operation.command || "",
       content: operation.content || "",
     }))
   );
@@ -6864,6 +6926,10 @@ function serializeCodeOperations(operations: CodeOperation[]): string {
         return `<dec-add-dependency name="${escapeDecAttribute(operation.packageName)}"${version}>${operation.packageName}</dec-add-dependency>`;
       }
 
+      if (operation.type === "shell" && operation.command) {
+        return `<klawpenAction type="shell">\n${operation.command}\n</klawpenAction>`;
+      }
+
       return "";
     })
     .filter(Boolean)
@@ -7174,7 +7240,7 @@ ${BUILDER_SYSTEM_PROMPT}
 
 You are Klawpen Core running in STAGED BUILD MODE.
 The project is intentionally generated across multiple smaller code packets to avoid provider timeouts.
-Return exactly one <dec-code> block with executable edit tags for this stage only. No markdown fences.
+Return exactly one <klawpenArtifact> block with executable <klawpenAction> tags for this stage only. No markdown fences.
 Use the exact file plan for this stage; do not fall back to generic site-* scaffolding.
 
 GLOBAL QUALITY CONTRACT:
@@ -7312,6 +7378,126 @@ ${buildStagedContextSummary(accumulated)}
   return canUsePartialStagedBuild() ? accumulated : null;
 }
 
+function tokenizeShellSegment(segment: string): string[] {
+  const tokens: string[] = [];
+  const pattern = /"([^"]*)"|'([^']*)'|[^\s]+/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(segment)) !== null) {
+    tokens.push(match[1] ?? match[2] ?? match[0]);
+  }
+
+  return tokens;
+}
+
+function splitShellCommand(command: string): string[] {
+  return command
+    .split(/\s+&&\s+/g)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+}
+
+function isDevServerCommand(tokens: string[]): boolean {
+  const joined = tokens.join(" ").toLowerCase();
+  return (
+    /^npm run dev\b/.test(joined) ||
+    /^bun run dev\b/.test(joined) ||
+    /^pnpm dev\b/.test(joined) ||
+    /^yarn dev\b/.test(joined) ||
+    /^next dev\b/.test(joined) ||
+    /^vite\b/.test(joined)
+  );
+}
+
+function isInstallCommand(tokens: string[]): boolean {
+  const joined = tokens.join(" ").toLowerCase();
+  return (
+    /^npm install\b/.test(joined) ||
+    /^npm i\b/.test(joined) ||
+    /^bun install\b/.test(joined) ||
+    /^bun add\b/.test(joined) ||
+    /^pnpm install\b/.test(joined) ||
+    /^pnpm add\b/.test(joined) ||
+    /^yarn add\b/.test(joined) ||
+    /^yarn install\b/.test(joined)
+  );
+}
+
+function isAllowedSafeShellCommand(tokens: string[]): boolean {
+  const joined = tokens.join(" ").toLowerCase();
+
+  return (
+    /^(npm|bun|pnpm|yarn) run (build|lint|typecheck|check|test)\b/.test(joined) ||
+    /^bun test\b/.test(joined) ||
+    /^npm test\b/.test(joined) ||
+    (KLAWPEN_SHELL_INSTALLS_ENABLED && isInstallCommand(tokens))
+  );
+}
+
+async function executeSafeShellAction(
+  containerId: string,
+  command: string
+): Promise<{ status: "executed" | "skipped"; output: string }> {
+  const trimmed = command.trim();
+
+  if (!trimmed) {
+    return { status: "skipped", output: "empty shell action skipped" };
+  }
+
+  if (/[\n\r;|`$<>]/.test(trimmed)) {
+    throw new Error("Unsafe shell command rejected: command contains blocked shell metacharacters");
+  }
+
+  if (/\b(rm|sudo|docker|ssh|scp|chmod|chown|mkfs|dd|curl|wget|nc|ncat|env|printenv)\b/i.test(trimmed)) {
+    throw new Error("Unsafe shell command rejected: command is not allowed in preview containers");
+  }
+
+  const segments = splitShellCommand(trimmed);
+  if (!segments.length) {
+    return { status: "skipped", output: "empty shell action skipped" };
+  }
+
+  const outputs: string[] = [];
+
+  for (const segment of segments) {
+    const tokens = tokenizeShellSegment(segment);
+    if (!tokens.length) continue;
+
+    if (isDevServerCommand(tokens)) {
+      outputs.push(`Skipped long-running dev server command: ${segment}`);
+      continue;
+    }
+
+    if (isInstallCommand(tokens) && !KLAWPEN_SHELL_INSTALLS_ENABLED) {
+      outputs.push(`Skipped install command because KLAWPEN_SHELL_INSTALLS_ENABLED is not true: ${segment}`);
+      continue;
+    }
+
+    if (!KLAWPEN_SHELL_ACTIONS_ENABLED && !isInstallCommand(tokens)) {
+      outputs.push(`Skipped shell action because KLAWPEN_SHELL_ACTIONS_ENABLED is not true: ${segment}`);
+      continue;
+    }
+
+    if (!isAllowedSafeShellCommand(tokens)) {
+      throw new Error(`Unsafe or unsupported shell command rejected: ${segment}`);
+    }
+
+    const output = await withTimeout(
+      fileService.runProjectCommand(containerId, tokens),
+      KLAWPEN_SHELL_ACTION_TIMEOUT_MS,
+      `klawpen shell action: ${tokens.join(" ")}`
+    );
+    outputs.push(output.trim());
+  }
+
+  return {
+    status: outputs.some((item) => item.startsWith("Skipped "))
+      ? "skipped"
+      : "executed",
+    output: outputs.filter(Boolean).join("\n\n"),
+  };
+}
+
 async function applyCodeOperations(
   containerId: string,
   assistantContent: string,
@@ -7365,6 +7551,7 @@ async function applyCodeOperations(
       operation.to ||
       operation.from ||
       operation.packageName ||
+      operation.command ||
       operation.type;
     const reportAppliedProgress = async () => {
       await progress?.(
@@ -7377,6 +7564,7 @@ async function applyCodeOperations(
             operation.to,
             operation.from,
             operation.packageName,
+            operation.command,
           ].filter(Boolean) as string[]
         )
       );
@@ -7425,6 +7613,27 @@ async function applyCodeOperations(
         await packageService.addDependency(containerId, packageSpec, false);
         result.applied += 1;
         await reportAppliedProgress();
+        continue;
+      }
+
+      if (operation.type === "shell" && operation.command) {
+        const shellResult = await executeSafeShellAction(
+          containerId,
+          operation.command
+        );
+
+        console.log("klawpen_shell_action_processed", {
+          trace:
+            shellResult.status === "executed"
+              ? "klawpen_shell_action_executed"
+              : "klawpen_shell_action_skipped",
+          containerId,
+          command: operation.command,
+          outputPreview: clipText(shellResult.output, 500),
+        });
+
+        result.applied += 1;
+        await reportAppliedProgress();
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
@@ -7433,6 +7642,8 @@ async function applyCodeOperations(
           ? "staged_ai_failed_due_to_permission"
           : /file_write_verification_failed/i.test(message)
             ? "container_write_verification_failed"
+            : /Unsafe shell command rejected|unsupported shell command rejected/i.test(message)
+              ? "klawpen_shell_action_rejected"
             : /no space left|ENOSPC|quota/i.test(message)
               ? "staged_ai_failed_due_to_storage"
               : "ai_code_operation_failed";
@@ -8454,7 +8665,7 @@ async function repairRouteCompletenessIssues(params: {
 ${BUILDER_SYSTEM_PROMPT}
 
 You are repairing a generated Next.js App Router project that failed Klawpen's route completeness gate.
-Return exactly one <dec-code> block with executable edit tags only. No markdown fences.
+Return exactly one <klawpenArtifact> block with executable <klawpenAction> tags only. No markdown fences.
 
 Repair objective:
 - Every navigation/config/content link to a public route must have a matching src/app/**/page.tsx file.
@@ -8568,7 +8779,7 @@ ${prompt}
 ${BUILDER_SYSTEM_PROMPT}
 
 You are repairing a draft that failed Klawpen's architect/spec validator.
-Return exactly one <dec-code> block with executable edit tags only.
+Return exactly one <klawpenArtifact> block with executable <klawpenAction> tags only.
 Do not explain outside the tags.
 Hard repair requirements for broad builds:
 - Write at least ${requirements.writes} meaningful files.
@@ -8695,8 +8906,8 @@ async function createBuilderResponse(
         "USER BUILD REQUEST:",
         userMessage,
         "",
-        "Return exactly one <dec-code> block.",
-        "Use executable edit tags only.",
+        "Return exactly one <klawpenArtifact> block with executable <klawpenAction> tags.",
+        "Use executable <klawpenAction> tags only.",
         "Rewrite src/app/page.tsx completely.",
         "VISUAL ARCHETYPE CONTRACT:",
         formatVisualArchetype(visualArchetype),
@@ -8732,7 +8943,7 @@ async function createBuilderResponse(
         "The result must be specific to this prompt, not a reused generic template.",
         "Hard design fail conditions: giant headline with empty cards, generic stats unrelated to the prompt, blank panels, nav + hero + three cards template, fallback-style layout, freelancer/proposal copy, or any UI text that describes the build process.",
         options.planMode
-          ? "Plan mode is enabled and the clarification gate has already passed: include a concise implementation plan inside the <dec-code> block, then implement decisively."
+          ? "Plan mode is enabled and the clarification gate has already passed: include a concise implementation plan inside the <klawpenArtifact> block, then implement decisively."
           : "Plan mode is disabled: infer professional defaults for missing minor details and implement directly.",
         "Raise the UI quality bar: build polished navigation, rich routes, responsive behavior, refined typography, deliberate color, animations, states, and product-specific copy. Avoid simple toy layouts, heavy font spam, and AI-looking oversized blocks.",
       ].join("\n"),
@@ -8780,7 +8991,7 @@ You are in LAST-CHANCE PREMIUM BUILD MODE.
 The previous build attempt failed because: ${params.reason}
 
 This is not a place for a safe generic fallback. Produce a professional, prompt-specific, production-quality implementation now.
-Return exactly one <dec-code> block with executable tags. No markdown fences.
+Return exactly one <klawpenArtifact> block with executable <klawpenAction> tags. No markdown fences.
 
 QUALITY BAR:
 - Build for a polished Replit/Lovable-level preview, not a template.
@@ -8842,7 +9053,7 @@ ${clipText(params.codeContext, 45_000)}
     }
 
     console.warn(
-      "Premium fallback attempt did not return executable edit tags; returning a non-applied build failure may be required."
+      "Premium fallback attempt did not return executable <klawpenAction> tags; returning a non-applied build failure may be required."
     );
     return null;
   } catch (error) {
@@ -8905,7 +9116,7 @@ You are in TIMEOUT RECOVERY BUILD MODE.
 The previous code generation pass timed out: ${params.reason}
 
 Goal: produce a real, prompt-specific, executable project now. Do not explain. Do not use markdown fences.
-Return exactly one <dec-code> block with executable edit tags.
+Return exactly one <klawpenArtifact> block with executable <klawpenAction> tags.
 
 Recovery scope:
 - Build a polished, professional preview, but keep the response compact enough to finish reliably.
@@ -8961,7 +9172,7 @@ ${clipText(params.codeContext, 24_000)}
     }
 
     console.warn(
-      "Timeout recovery attempt did not return executable edit tags."
+      "Timeout recovery attempt did not return executable <klawpenAction> tags."
     );
     return null;
   } catch (error) {
@@ -8991,7 +9202,7 @@ ${BUILDER_SYSTEM_PROMPT}
 
 You are in ULTRA-COMPACT BOOTSTRAP RESCUE MODE.
 The provider failed during deep generation: ${params.reason}
-Return exactly one <dec-code> block with only two write operations:
+Return exactly one <klawpenArtifact> block with only two file actions:
 1) src/app/globals.css
 2) src/app/page.tsx
 
@@ -9034,7 +9245,7 @@ ${clipText(params.codeContext, 3_000)}
       return response;
     }
 
-    console.warn("Bootstrap rescue attempt did not return executable edit tags.");
+    console.warn("Bootstrap rescue attempt did not return executable <klawpenAction> tags.");
     return null;
   } catch (error) {
     console.warn(
@@ -9135,7 +9346,7 @@ ${BUILDER_SYSTEM_PROMPT}
 The previous build failed a local Klawpen quality gate:
 ${params.reason}
 
-Return exactly one <dec-code> block with executable edit tags only.
+Return exactly one <klawpenArtifact> block with executable <klawpenAction> tags only.
 Preserve the user's intent, but rewrite the implementation so the preview feels like a finished public-facing website for a real business.
 
 USER_REQUEST:
@@ -9363,7 +9574,7 @@ ${clipText(params.codeContext, 60_000)}
     }
 
     console.warn(
-      "AI critic revision had no executable edit tags; keeping previous executable draft."
+      "AI critic revision had no executable <klawpenAction> tags; keeping previous executable draft."
     );
     return currentDraft;
   }
@@ -9457,7 +9668,7 @@ ${prompt}
 ${BUILDER_SYSTEM_PROMPT}
 
 ${repairReason}
-Return exactly one <dec-code> block with executable edit tags.
+Return exactly one <klawpenArtifact> block with executable <klawpenAction> tags.
 For this build request, rewrite src/app/page.tsx and create a real multi-page App Router project:
 - write at least ${requirements.writes} meaningful files, not a tiny patch
 - at least ${requirements.routes} page files total, including src/app/page.tsx plus ${requirements.supportingRoutes}+ supporting routes that fit the user's domain
@@ -9562,7 +9773,7 @@ ${clipText(params.codeContext, 60_000)}
     }
 
     console.warn(
-      "AI repair response still did not include executable edit tags; trying premium rebuild or preserving the previous executable draft."
+      "AI repair response still did not include executable <klawpenAction> tags; trying premium rebuild or preserving the previous executable draft."
     );
 
     const premiumAttempt = await createPremiumFallbackAttempt({
@@ -9573,7 +9784,7 @@ ${clipText(params.codeContext, 60_000)}
       codeContext: params.codeContext,
       provider: params.provider,
       options: params.options,
-      reason: "AI repair response still had no executable edit tags.",
+      reason: "AI repair response still had no executable <klawpenAction> tags.",
     });
 
     if (premiumAttempt) return premiumAttempt;
@@ -9581,7 +9792,7 @@ ${clipText(params.codeContext, 60_000)}
 
     return buildFallbackAssistantContent(
       params.userMessage,
-      "AI repair response still had no executable edit tags."
+      "AI repair response still had no executable <klawpenAction> tags."
     );
   } catch (error) {
     console.warn(
@@ -9596,7 +9807,7 @@ ${clipText(params.codeContext, 60_000)}
       codeContext: params.codeContext,
       provider: params.provider,
       options: params.options,
-      reason: "AI repair pass failed before returning executable edit tags.",
+      reason: "AI repair pass failed before returning executable <klawpenAction> tags.",
     });
 
     if (premiumAttempt) return premiumAttempt;
@@ -9604,7 +9815,7 @@ ${clipText(params.codeContext, 60_000)}
 
     return buildFallbackAssistantContent(
       params.userMessage,
-      "AI repair pass failed before returning executable edit tags."
+      "AI repair pass failed before returning executable <klawpenAction> tags."
     );
   }
 }
@@ -9818,7 +10029,7 @@ async function createRuntimePreviewRepairAttempt(params: {
 ${BUILDER_SYSTEM_PROMPT}
 
 You are repairing a Next.js App Router project that was already applied to the preview container, but the live preview now crashes.
-Return exactly one <dec-code> block with executable edit tags only. No markdown fences.
+Return exactly one <klawpenArtifact> block with executable <klawpenAction> tags only. No markdown fences.
 
 RUNTIME FAILURE:
 ${params.previewError}
@@ -10096,7 +10307,7 @@ async function buildAssistantMessageFromSession(
 
     if (lastExecutableDraft) {
       console.warn(
-        `${label} returned no executable edit tags; preserving the last valid executable draft.`
+        `${label} returned no executable <klawpenAction> tags; preserving the last valid executable draft.`
       );
       outputSource = "last_valid_ai_draft";
       return lastExecutableDraft;

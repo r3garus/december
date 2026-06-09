@@ -168,7 +168,7 @@ app.get("/health", (_req, res) => {
   res.json({
     success: true,
     service: "klawpen-builder-api",
-    marker: "ai-sdk-orchestration-v13",
+    marker: "klawpen-artifact-parser-v14",
     timestamp: new Date().toISOString(),
   });
 });
@@ -187,7 +187,7 @@ app.get("/diagnostics", (_req, res) => {
   res.json({
     success: true,
     service: "klawpen-builder-api",
-    marker: "ai-sdk-orchestration-v13",
+    marker: "klawpen-artifact-parser-v14",
     build: {
       stagedBuild: process.env.KLAWPEN_STAGED_BUILD === "true",
       stagedInlineApply: process.env.KLAWPEN_STAGED_INLINE_APPLY === "true",
@@ -226,6 +226,9 @@ app.get("/diagnostics", (_req, res) => {
       aiSdkStreaming:
         process.env.KLAWPEN_AI_SDK_STREAMING !== "false" &&
         process.env.AI_SDK_STREAMING !== "false",
+      klawpenArtifactParser: true,
+      shellActionsEnabled: process.env.KLAWPEN_SHELL_ACTIONS_ENABLED === "true",
+      shellInstallsEnabled: process.env.KLAWPEN_SHELL_INSTALLS_ENABLED === "true",
     },
     preview: {
       publicOrigin: getPreviewProxyOrigin(),
