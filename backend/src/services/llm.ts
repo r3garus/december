@@ -213,6 +213,11 @@ const KLAWPEN_SHELL_ACTION_TIMEOUT_MS = readPositiveInt(
   process.env.KLAWPEN_SHELL_ACTION_TIMEOUT_MS,
   120_000
 );
+const KLAWPEN_PACKAGE_INSTALL_TIMEOUT_MS = readPositiveInt(
+  process.env.KLAWPEN_PACKAGE_INSTALL_TIMEOUT_MS ||
+    process.env.E2B_INSTALL_TIMEOUT_MS,
+  240_000
+);
 const KLAWPEN_STREAM_ACTION_APPLY_ENABLED =
   process.env.KLAWPEN_STREAM_ACTION_APPLY !== "false";
 
@@ -7609,6 +7614,11 @@ function serializeKlawpenActionOperations(operations: CodeOperation[]): string {
   return `<klawpenArtifact id="streamed-actions" title="Streamed Klawpen Actions">\n${actions}\n</klawpenArtifact>`;
 }
 
+function isPackageManifestPath(filePath?: string): boolean {
+  if (!filePath) return false;
+  return filePath.replace(/\\/g, "/").replace(/^\/app\/my-nextjs-app\/?/, "") === "package.json";
+}
+
 function createStreamActionChunkHandler(
   containerId: string | undefined,
   userMessage: string,
@@ -7670,6 +7680,7 @@ async function applyCodeOperations(
   }
 
   const writeOperations = operations.filter((operation) => operation.type === "write");
+  let packageManifestChanged = false;
   const routeWrites = getRouteWriteCount(writeOperations);
   const componentWrites = getComponentWriteCount(writeOperations);
   const contentWrites = getContentWriteCount(writeOperations);
@@ -7727,6 +7738,9 @@ async function applyCodeOperations(
           bytes: verification.bytes,
           sha256: verification.sha256,
         });
+        if (isPackageManifestPath(operation.path)) {
+          packageManifestChanged = true;
+        }
         result.applied += 1;
         await reportAppliedProgress();
         continue;
@@ -7804,6 +7818,41 @@ async function applyCodeOperations(
         label: `${operation.type}: ${operationLabel}`,
         error: message,
         trace,
+      });
+    }
+  }
+
+  if (packageManifestChanged && result.failed.length === 0) {
+    try {
+      await progress?.(
+        getBuildProgressCopy(userMessage, "apply", 94, ["package.json"])
+      );
+      const output = await withTimeout(
+        fileService.runProjectCommand(containerId, [
+          "npm",
+          "install",
+          "--no-audit",
+          "--no-fund",
+        ]),
+        KLAWPEN_PACKAGE_INSTALL_TIMEOUT_MS,
+        "package manifest dependency install"
+      );
+      console.log("package_manifest_dependencies_installed", {
+        trace: "package_manifest_dependencies_installed",
+        containerId,
+        outputPreview: clipText(output, 800),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      console.error("package_manifest_dependency_install_failed", {
+        trace: "package_manifest_dependency_install_failed",
+        containerId,
+        error: message,
+      });
+      result.failed.push({
+        label: "dependency: package.json",
+        error: message,
+        trace: "package_manifest_dependency_install_failed",
       });
     }
   }
@@ -9999,7 +10048,7 @@ function getPreviewSmokeCandidateUrls(runtime: {
   return Array.from(
     new Set([
       ...(runtime.upstreamUrls || []),
-      dockerService.buildRawPreviewUrl(runtime.port),
+      runtime.upstreamUrls?.[0] || dockerService.buildRawPreviewUrl(runtime.port),
     ])
   ).filter(Boolean);
 }
@@ -10304,7 +10353,7 @@ async function runPostApplyQualityGates(params: {
 
     try {
       const runtime = await dockerService.getPreviewRuntime(params.containerId);
-      const url = dockerService.buildRawPreviewUrl(runtime.port);
+      const url = runtime.upstreamUrls?.[0] || dockerService.buildRawPreviewUrl(runtime.port);
       const response = await withTimeout(fetch(url), 20_000, "preview gate");
       const html = await response.text();
 

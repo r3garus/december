@@ -1,12 +1,15 @@
-import { execFile } from "child_process";
-import fs from "fs/promises";
-import os from "os";
-import path from "path";
-import { promisify } from "util";
+﻿import path from "path";
+import { docker } from "./docker";
+import * as fileService from "./file";
 
-const execFileAsync = promisify(execFile);
-const PROJECT_PATH = "/app/my-nextjs-app";
 const ZIP_UTF8_FLAG = 0x0800;
+
+interface ZipEntry {
+  zipPath: string;
+  data: Buffer;
+  isDirectory: boolean;
+  modifiedAt: Date;
+}
 
 const EXCLUDED_EXPORT_NAMES = new Set([
   ".DS_Store",
@@ -14,13 +17,6 @@ const EXCLUDED_EXPORT_NAMES = new Set([
   ".next",
   "node_modules",
 ]);
-
-interface ZipEntry {
-  absolutePath: string;
-  zipPath: string;
-  isDirectory: boolean;
-  modifiedAt: Date;
-}
 
 const crcTable = new Uint32Array(256);
 
@@ -60,9 +56,6 @@ const writeUInt32 = (buffer: Buffer, value: number, offset: number) => {
   buffer.writeUInt32LE(value >>> 0, offset);
 };
 
-const normalizeZipPath = (value: string) =>
-  value.split(path.sep).join("/").replace(/^\/+/, "");
-
 const shouldSkipExportEntry = (name: string) =>
   EXCLUDED_EXPORT_NAMES.has(name) || name.endsWith(".tmp");
 
@@ -72,58 +65,46 @@ const assertSafeContainerId = (containerId: string) => {
   }
 };
 
-const removeTempPath = async (targetPath: string, tempRoot: string) => {
-  const resolvedTarget = path.resolve(targetPath);
-  const resolvedRoot = path.resolve(tempRoot);
+function normalizeZipPath(value: string) {
+  return value
+    .replace(/^\/app\/my-nextjs-app\/?/, "")
+    .split(path.sep)
+    .join("/")
+    .replace(/^\/+/, "");
+}
 
-  if (!resolvedTarget.startsWith(resolvedRoot + path.sep)) {
-    throw new Error(`Refusing to remove path outside temp root: ${targetPath}`);
-  }
+function flattenTree(
+  items: fileService.FileContentItem[],
+  entries: ZipEntry[] = []
+): ZipEntry[] {
+  for (const item of items) {
+    const zipPath = normalizeZipPath(item.path);
+    if (!zipPath) continue;
 
-  await fs.rm(resolvedTarget, { recursive: true, force: true });
-};
+    const name = path.posix.basename(zipPath);
+    if (shouldSkipExportEntry(name)) continue;
 
-const collectZipEntries = async (
-  rootDir: string,
-  currentDir = rootDir
-): Promise<ZipEntry[]> => {
-  const entries: ZipEntry[] = [];
-  const dirEntries = await fs.readdir(currentDir, { withFileTypes: true });
-
-  for (const dirEntry of dirEntries) {
-    if (shouldSkipExportEntry(dirEntry.name)) continue;
-
-    const absolutePath = path.join(currentDir, dirEntry.name);
-    const relativePath = normalizeZipPath(path.relative(rootDir, absolutePath));
-
-    if (!relativePath) continue;
-
-    if (dirEntry.isDirectory()) {
-      const stat = await fs.stat(absolutePath);
-
+    if (item.type === "directory") {
       entries.push({
-        absolutePath,
-        zipPath: `${relativePath}/`,
+        zipPath: `${zipPath.replace(/\/+$/, "")}/`,
+        data: Buffer.alloc(0),
         isDirectory: true,
-        modifiedAt: stat.mtime,
+        modifiedAt: new Date(),
       });
-      entries.push(...(await collectZipEntries(rootDir, absolutePath)));
+      flattenTree(item.children || [], entries);
       continue;
     }
 
-    if (!dirEntry.isFile()) continue;
-
-    const stat = await fs.stat(absolutePath);
     entries.push({
-      absolutePath,
-      zipPath: relativePath,
+      zipPath,
+      data: Buffer.from(item.content || "", "utf8"),
       isDirectory: false,
-      modifiedAt: stat.mtime,
+      modifiedAt: new Date(),
     });
   }
 
   return entries;
-};
+}
 
 const createStoredZip = async (entries: ZipEntry[]) => {
   const localFileParts: Buffer[] = [];
@@ -131,9 +112,7 @@ const createStoredZip = async (entries: ZipEntry[]) => {
   let offset = 0;
 
   for (const entry of entries) {
-    const fileData = entry.isDirectory
-      ? Buffer.alloc(0)
-      : await fs.readFile(entry.absolutePath);
+    const fileData = entry.isDirectory ? Buffer.alloc(0) : entry.data;
     const fileName = Buffer.from(entry.zipPath, "utf8");
     const fileCrc = crc32(fileData);
     const { dosDate, dosTime } = toDosDateTime(entry.modifiedAt);
@@ -206,19 +185,9 @@ export async function exportContainerCode(
 ): Promise<Buffer> {
   assertSafeContainerId(containerId);
 
-  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "meshfire-export-"));
-  const projectDir = path.join(tempRoot, "project");
-
   try {
-    await fs.mkdir(projectDir, { recursive: true });
-
-    await execFileAsync("docker", [
-      "cp",
-      `${containerId}:${PROJECT_PATH}/.`,
-      projectDir,
-    ]);
-
-    const entries = await collectZipEntries(projectDir);
+    const tree = await fileService.getFileContentTree(docker, containerId);
+    const entries = flattenTree(tree).filter((entry) => entry.zipPath);
 
     if (entries.length === 0) {
       throw new Error("Project export is empty");
@@ -231,11 +200,5 @@ export async function exportContainerCode(
         error instanceof Error ? error.message : "Unknown error"
       }`
     );
-  } finally {
-    try {
-      await removeTempPath(tempRoot, os.tmpdir());
-    } catch {
-      // Export cleanup is best effort; download errors should keep the original cause.
-    }
   }
 }

@@ -17,15 +17,15 @@ function getProjectCreateErrorMessage(error: unknown) {
   }
 
   if (/docker.*(connect|socket|daemon)|ECONNREFUSED|ENOENT|permission denied/i.test(message)) {
-    return "Docker connection failed. Check Docker socket/proxy access for the builder API.";
+    return "E2B sandbox connection failed. Check E2B_API_KEY and network access for the builder API.";
   }
 
   if (/Docker build failed|COPY failed|failed to compute cache key|not found/i.test(message)) {
-    return `Workspace image build failed: ${message.slice(0, 500)}`;
+    return `Workspace sandbox bootstrap failed: ${message.slice(0, 500)}`;
   }
 
   if (/No available ports/i.test(message)) {
-    return "No available preview ports found. Free old containers or increase the preview port range.";
+    return "No preview sandbox could be started. Check E2B quota and try again.";
   }
 
   if (/Proje y|Project .*load/i.test(message)) {
@@ -177,7 +177,7 @@ router.post("/create", async (req, res) => {
         status: "running",
         port: port,
         url: dockerService.buildPreviewUrl(container.id),
-        rawUrl: dockerService.buildRawPreviewUrl(port),
+        rawUrl: dockerService.buildRawPreviewUrlForContainer(container.id) || undefined,
         createdAt: new Date().toISOString(),
         type: "Klawpen Workspace",
       },
@@ -270,7 +270,7 @@ router.post("/:containerId/start", async (req, res) => {
       containerId,
       port,
       url: dockerService.buildPreviewUrl(containerId),
-      rawUrl: dockerService.buildRawPreviewUrl(port),
+      rawUrl: dockerService.buildRawPreviewUrlForContainer(containerId) || undefined,
       status: "running",
       message: "Container started successfully",
     });

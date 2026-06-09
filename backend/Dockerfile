@@ -2,7 +2,7 @@ FROM oven/bun:1.2.15
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y lsof curl wget docker.io && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y lsof curl wget && rm -rf /var/lib/apt/lists/*
 
 # Install deps from backend package
 COPY backend/package.json backend/bun.lock* /app/backend/

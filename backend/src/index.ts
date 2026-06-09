@@ -168,7 +168,7 @@ app.get("/health", (_req, res) => {
   res.json({
     success: true,
     service: "klawpen-builder-api",
-    marker: "fast-reliable-stream-v15",
+    marker: "klawpen-e2b-sandbox-v1",
     timestamp: new Date().toISOString(),
   });
 });
@@ -187,7 +187,7 @@ app.get("/diagnostics", (_req, res) => {
   res.json({
     success: true,
     service: "klawpen-builder-api",
-    marker: "fast-reliable-stream-v15",
+    marker: "klawpen-e2b-sandbox-v1",
     build: {
       stagedBuild: process.env.KLAWPEN_STAGED_BUILD === "true",
       stagedInlineApply: process.env.KLAWPEN_STAGED_INLINE_APPLY === "true",
@@ -238,7 +238,7 @@ app.get("/diagnostics", (_req, res) => {
       upstreamHost: process.env.PREVIEW_UPSTREAM_HOST || "(unset)",
       baseUrl: process.env.PREVIEW_BASE_URL || "(unset)",
     },
-    docker: getDockerRuntimeDiagnostics(),
+    runtime: getDockerRuntimeDiagnostics(),
     ai: {
       ...aiDiagnostics,
       deepBuildModel:
@@ -285,7 +285,7 @@ app.use("/chat", chatRoutes);
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
-  console.log(`Docker Container API running on port ${PORT}`);
+  console.log(`Klawpen E2B Sandbox API running on port ${PORT}`);
 });
 
 export default app;
