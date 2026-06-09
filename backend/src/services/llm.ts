@@ -18,6 +18,7 @@ import * as fileService from "./file";
 import * as packageService from "./package";
 import * as projectSnapshotService from "./projectSnapshot";
 import {
+  KlawpenActionStreamParser,
   extractKlawpenActionOperations,
   extractPartialKlawpenActionOperations,
   getKlawpenParserDiagnostics,
@@ -183,6 +184,8 @@ const KLAWPEN_SHELL_ACTION_TIMEOUT_MS = readPositiveInt(
   process.env.KLAWPEN_SHELL_ACTION_TIMEOUT_MS,
   120_000
 );
+const KLAWPEN_STREAM_ACTION_APPLY_ENABLED =
+  process.env.KLAWPEN_STREAM_ACTION_APPLY !== "false";
 
 function readPositiveInt(value: string | undefined, fallback: number) {
   const parsed = Number.parseInt(value || "", 10);
@@ -1398,6 +1401,7 @@ interface AiChatTextParams {
   timeoutMs?: number;
   maxOutputTokens?: number;
   modelOverride?: string;
+  onTextChunk?: (chunk: string) => void | Promise<void>;
 }
 
 interface AiChatAttempt {
@@ -1597,6 +1601,7 @@ async function collectAiSdkStreamingChatText(params: {
   attemptIndex: number;
   totalAttempts: number;
   attemptReason: AiChatAttempt["reason"];
+  onTextChunk?: (chunk: string) => void | Promise<void>;
 }): Promise<string> {
   const controller = new AbortController();
   const startedAt = Date.now();
@@ -1605,6 +1610,7 @@ async function collectAiSdkStreamingChatText(params: {
   let ttfbTimedOut = false;
   let totalTimedOut = false;
   let chunkCount = 0;
+  let chunkSideEffects: Promise<void> = Promise.resolve();
   const context = {
     ...getProviderLogContext({ ...params.provider, model: params.model }),
     attemptIndex: params.attemptIndex,
@@ -1636,6 +1642,20 @@ async function collectAiSdkStreamingChatText(params: {
     });
     controller.abort();
   }, params.timeoutMs);
+  const enqueueTextChunk = (text: string) => {
+    if (!text || !params.onTextChunk) return;
+
+    chunkSideEffects = chunkSideEffects
+      .then(() => params.onTextChunk?.(text))
+      .then(() => undefined)
+      .catch((error) => {
+        console.warn("llm_stream_chunk_action_callback_failed", {
+          trace: "llm_stream_chunk_action_callback_failed",
+          ...context,
+          error: getErrorMessage(error),
+        });
+      });
+  };
 
   try {
     const providerFactory = getAiSdkProvider(params.provider);
@@ -1682,9 +1702,13 @@ async function collectAiSdkStreamingChatText(params: {
         });
       }
 
-      if (text) chunks.push(text);
+      if (text) {
+        chunks.push(text);
+        enqueueTextChunk(text);
+      }
     }
 
+    await chunkSideEffects;
     const assistantText = chunks.join("").trim();
     if (!assistantText) {
       throw new AiStreamFailure({
@@ -1760,6 +1784,7 @@ async function collectStreamingChatText(params: {
   attemptIndex: number;
   totalAttempts: number;
   attemptReason: AiChatAttempt["reason"];
+  onTextChunk?: (chunk: string) => void | Promise<void>;
 }): Promise<string> {
   const client = getAiClient(params.provider);
   const controller = new AbortController();
@@ -1770,6 +1795,7 @@ async function collectStreamingChatText(params: {
   let totalTimedOut = false;
   let idleTimedOut = false;
   let chunkCount = 0;
+  let chunkSideEffects: Promise<void> = Promise.resolve();
 
   const context = {
     ...getProviderLogContext({ ...params.provider, model: params.model }),
@@ -1817,6 +1843,20 @@ async function collectStreamingChatText(params: {
     });
     controller.abort();
   }, params.timeoutMs);
+  const enqueueTextChunk = (text: string) => {
+    if (!text || !params.onTextChunk) return;
+
+    chunkSideEffects = chunkSideEffects
+      .then(() => params.onTextChunk?.(text))
+      .then(() => undefined)
+      .catch((error) => {
+        console.warn("llm_stream_chunk_action_callback_failed", {
+          trace: "llm_stream_chunk_action_callback_failed",
+          ...context,
+          error: getErrorMessage(error),
+        });
+      });
+  };
 
   try {
     console.log("llm_stream_attempt_started", {
@@ -1854,9 +1894,13 @@ async function collectStreamingChatText(params: {
       }
 
       if (firstTokenReceived) resetIdleTimer();
-      if (text) chunks.push(text);
+      if (text) {
+        chunks.push(text);
+        enqueueTextChunk(text);
+      }
     }
 
+    await chunkSideEffects;
     const assistantText = chunks.join("").trim();
     if (!assistantText) {
       throw new AiStreamFailure({
@@ -1940,6 +1984,7 @@ async function collectStreamingChatTextWithTokenRetry(params: {
   attemptIndex: number;
   totalAttempts: number;
   attemptReason: AiChatAttempt["reason"];
+  onTextChunk?: (chunk: string) => void | Promise<void>;
 }): Promise<string> {
   const primaryTokenParameter = getPrimaryChatTokenParameter(params.provider);
 
@@ -2012,6 +2057,7 @@ async function createStreamingAiChatText(
             attemptIndex: index + 1,
             totalAttempts: attempts.length,
             attemptReason: attempt.reason,
+            onTextChunk: params.onTextChunk,
           });
         } catch (sdkError) {
           if (!AI_SDK_MANUAL_FALLBACK_ENABLED) throw sdkError;
@@ -2036,6 +2082,7 @@ async function createStreamingAiChatText(
         attemptIndex: index + 1,
         totalAttempts: attempts.length,
         attemptReason: attempt.reason,
+        onTextChunk: params.onTextChunk,
       });
     } catch (error) {
       lastError = error;
@@ -7303,6 +7350,11 @@ ${buildStagedContextSummary(accumulated)}
         timeoutMs: STAGED_BUILD_TIMEOUT_MS,
         maxOutputTokens: stage.maxOutputTokens || STAGED_BUILD_MAX_OUTPUT_TOKENS,
         modelOverride: getBuilderModelOverride(params.options),
+        onTextChunk: createStreamActionChunkHandler(
+          params.containerId,
+          params.userMessage,
+          params.progress
+        ),
       });
 
       if (!hasExecutableCodeOperations(response)) {
@@ -7495,6 +7547,61 @@ async function executeSafeShellAction(
       ? "skipped"
       : "executed",
     output: outputs.filter(Boolean).join("\n\n"),
+  };
+}
+
+function serializeKlawpenActionOperations(operations: CodeOperation[]): string {
+  const actions = operations
+    .map((operation) => {
+      if (operation.type === "write" && operation.path) {
+        return `<klawpenAction type="file" filePath="${escapeDecAttribute(
+          operation.path
+        )}">\n${operation.content || ""}\n</klawpenAction>`;
+      }
+
+      if (operation.type === "shell" && operation.command) {
+        return `<klawpenAction type="shell">\n${operation.command}\n</klawpenAction>`;
+      }
+
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n\n");
+
+  return `<klawpenArtifact id="streamed-actions" title="Streamed Klawpen Actions">\n${actions}\n</klawpenArtifact>`;
+}
+
+function createStreamActionChunkHandler(
+  containerId: string | undefined,
+  userMessage: string,
+  progress?: ProgressReporter
+): ((chunk: string) => Promise<void>) | undefined {
+  if (!containerId || !KLAWPEN_STREAM_ACTION_APPLY_ENABLED) return undefined;
+
+  const parser = new KlawpenActionStreamParser();
+
+  return async (chunk: string) => {
+    const operations = parser.push(chunk).map(mapKlawpenOperation);
+    if (!operations.length) return;
+
+    console.log("klawpen_stream_actions_detected", {
+      trace: "klawpen_stream_actions_detected",
+      containerId,
+      operationCount: operations.length,
+      files: operations
+        .map((operation) => operation.path)
+        .filter(Boolean)
+        .slice(0, 8),
+      shellCount: operations.filter((operation) => operation.type === "shell")
+        .length,
+    });
+
+    await applyCodeOperations(
+      containerId,
+      serializeKlawpenActionOperations(operations),
+      userMessage,
+      progress
+    );
   };
 }
 
@@ -8893,7 +9000,12 @@ async function createBuilderResponse(
   provider: AiProviderConfig,
   userMessage?: string,
   options: BuildOptions = {},
-  overrides: { timeoutMs?: number; maxOutputTokens?: number } = {}
+  overrides: {
+    timeoutMs?: number;
+    maxOutputTokens?: number;
+    containerId?: string;
+    progress?: ProgressReporter;
+  } = {}
 ): Promise<string> {
   if (userMessage && hasBuildIntent(userMessage, options)) {
     const visualArchetype = selectVisualArchetype(userMessage);
@@ -8953,6 +9065,11 @@ async function createBuilderResponse(
       maxOutputTokens:
         overrides.maxOutputTokens ?? AI_BUILDER_MAX_OUTPUT_TOKENS,
       modelOverride,
+      onTextChunk: createStreamActionChunkHandler(
+        overrides.containerId,
+        userMessage,
+        overrides.progress
+      ),
     });
   }
 
@@ -10476,6 +10593,8 @@ ${codeContext}`;
             {
               timeoutMs: AI_PRIMARY_BUILD_TIMEOUT_MS,
               maxOutputTokens: AI_BUILDER_MAX_OUTPUT_TOKENS,
+              containerId,
+              progress,
             }
           ),
           progress,

@@ -227,6 +227,7 @@ app.get("/diagnostics", (_req, res) => {
         process.env.KLAWPEN_AI_SDK_STREAMING !== "false" &&
         process.env.AI_SDK_STREAMING !== "false",
       klawpenArtifactParser: true,
+      streamActionApply: process.env.KLAWPEN_STREAM_ACTION_APPLY !== "false",
       shellActionsEnabled: process.env.KLAWPEN_SHELL_ACTIONS_ENABLED === "true",
       shellInstallsEnabled: process.env.KLAWPEN_SHELL_INSTALLS_ENABLED === "true",
     },
