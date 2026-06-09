@@ -36,7 +36,7 @@ export async function addDependency(
     args.push("--save-dev");
   }
 
-  args.push("--no-audit", "--no-fund");
+  args.push("--prefer-offline", "--no-audit", "--no-fund", "--quiet");
 
   return runSandboxCommand(containerId, args, {
     cwd: PROJECT_WORKSPACE_PATH,

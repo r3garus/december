@@ -174,7 +174,7 @@ const AI_STREAM_IDLE_TIMEOUT_MS = clampTimeout(
 );
 const STREAM_HEARTBEAT_MS = readPositiveInt(
   process.env.KLAWPEN_STREAM_HEARTBEAT_MS,
-  10_000
+  5_000
 );
 const AI_STREAM_FALLBACK_MODELS = readCsvList(
   process.env.AI_STREAM_FALLBACK_MODELS ||
@@ -424,7 +424,7 @@ const PREVIEW_SMOKE_DELAY_MS = readPositiveInt(
 );
 const PREVIEW_SMOKE_TIMEOUT_MS = readPositiveInt(
   process.env.KLAWPEN_PREVIEW_SMOKE_TIMEOUT_MS,
-  15_000
+  120_000
 );
 const CROSS_REVIEW_ENABLED = process.env.KLAWPEN_ENABLE_CROSS_REVIEW !== "false";
 const DETERMINISTIC_RUNTIME_FALLBACK_ENABLED =
@@ -7831,8 +7831,10 @@ async function applyCodeOperations(
         fileService.runProjectCommand(containerId, [
           "npm",
           "install",
+          "--prefer-offline",
           "--no-audit",
           "--no-fund",
+          "--quiet",
         ]),
         KLAWPEN_PACKAGE_INSTALL_TIMEOUT_MS,
         "package manifest dependency install"

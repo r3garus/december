@@ -3,7 +3,7 @@ import * as dockerService from "../services/docker";
 
 const router = express.Router();
 const PREVIEW_PROXY_TIMEOUT_MS = Number(
-  process.env.PREVIEW_PROXY_TIMEOUT_MS || "15000"
+  process.env.PREVIEW_PROXY_TIMEOUT_MS || "120000"
 );
 
 const skippedResponseHeaders = new Set([

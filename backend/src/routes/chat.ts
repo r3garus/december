@@ -11,7 +11,7 @@ const MAX_ATTACHMENT_BYTES = 8_000_000;
 const MAX_TOTAL_ATTACHMENT_BYTES = 12_000_000;
 const CREDIT_UNIT_CENTS = Number(process.env.KLAWPEN_CORE_CREDIT_CENTS || "100");
 const SSE_ROUTE_HEARTBEAT_MS = Number(
-  process.env.KLAWPEN_SSE_HEARTBEAT_MS || "15000"
+  process.env.KLAWPEN_SSE_HEARTBEAT_MS || "5000"
 );
 
 function flushSse(res: express.Response) {

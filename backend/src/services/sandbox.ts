@@ -332,7 +332,7 @@ async function installDependencies(session: ProjectSandboxSession) {
   });
 
   const result = await session.sandbox.commands.run(
-    "npm install --no-audit --no-fund",
+    "npm install --prefer-offline --no-audit --no-fund --quiet",
     {
       cwd: PROJECT_WORKSPACE_PATH,
       timeoutMs: E2B_INSTALL_TIMEOUT_MS,
