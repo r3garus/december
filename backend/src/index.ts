@@ -168,7 +168,7 @@ app.get("/health", (_req, res) => {
   res.json({
     success: true,
     service: "klawpen-builder-api",
-    marker: "klawpen-artifact-parser-v14",
+    marker: "fast-reliable-stream-v15",
     timestamp: new Date().toISOString(),
   });
 });
@@ -187,7 +187,7 @@ app.get("/diagnostics", (_req, res) => {
   res.json({
     success: true,
     service: "klawpen-builder-api",
-    marker: "klawpen-artifact-parser-v14",
+    marker: "fast-reliable-stream-v15",
     build: {
       stagedBuild: process.env.KLAWPEN_STAGED_BUILD === "true",
       stagedInlineApply: process.env.KLAWPEN_STAGED_INLINE_APPLY === "true",
@@ -205,6 +205,7 @@ app.get("/diagnostics", (_req, res) => {
       premiumFallback: process.env.KLAWPEN_ENABLE_PREMIUM_FALLBACK === "true",
       timeoutRecovery: process.env.KLAWPEN_TIMEOUT_RECOVERY !== "false",
       architectSpec: process.env.KLAWPEN_ENABLE_ARCHITECT_SPEC === "true",
+      fastReliableMode: process.env.KLAWPEN_FAST_RELIABLE_MODE !== "false",
     },
     llm: {
       streaming: process.env.KLAWPEN_LLM_STREAMING !== "false",

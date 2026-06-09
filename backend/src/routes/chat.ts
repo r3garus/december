@@ -10,6 +10,13 @@ const MAX_ATTACHMENTS = 4;
 const MAX_ATTACHMENT_BYTES = 8_000_000;
 const MAX_TOTAL_ATTACHMENT_BYTES = 12_000_000;
 const CREDIT_UNIT_CENTS = Number(process.env.KLAWPEN_CORE_CREDIT_CENTS || "100");
+const SSE_ROUTE_HEARTBEAT_MS = Number(
+  process.env.KLAWPEN_SSE_HEARTBEAT_MS || "15000"
+);
+
+function flushSse(res: express.Response) {
+  (res as express.Response & { flush?: () => void }).flush?.();
+}
 
 function prepareSseResponse(req: express.Request, res: express.Response) {
   req.setTimeout(0);
@@ -21,10 +28,23 @@ function prepareSseResponse(req: express.Request, res: express.Response) {
   res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders?.();
   res.write(": klawpen-stream-connected\n\n");
+  flushSse(res);
+
+  const heartbeat = setInterval(() => {
+    if (res.writableEnded || res.destroyed) return;
+    res.write(`: klawpen-route-heartbeat ${new Date().toISOString()}\n\n`);
+    flushSse(res);
+  }, SSE_ROUTE_HEARTBEAT_MS);
+
+  const cleanup = () => clearInterval(heartbeat);
+  res.once("close", cleanup);
+  res.once("finish", cleanup);
+  res.once("error", cleanup);
 }
 
 function writeSseData(res: express.Response, payload: unknown) {
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
+  flushSse(res);
 }
 
 const TURKISH_HINT_PATTERN = /[Ã§ÄŸÄ±Ä°Ã¶ÅŸÃ¼]/i;

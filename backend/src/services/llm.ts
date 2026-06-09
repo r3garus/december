@@ -38,38 +38,55 @@ const aiTemperature = aiSdkConfig.temperature ?? 0.15;
 const aiMaxRetries = aiSdkConfig.maxRetries ?? 2;
 const aiMinQualityScore = aiSdkConfig.minQualityScore ?? 92;
 const aiMaxCriticRounds = aiSdkConfig.maxCriticRounds ?? 4;
+const KLAWPEN_FAST_RELIABLE_MODE =
+  process.env.KLAWPEN_FAST_RELIABLE_MODE !== "false";
 const AI_REQUEST_TIMEOUT_MS = readPositiveInt(
   process.env.AI_REQUEST_TIMEOUT_MS,
-  90_000
+  KLAWPEN_FAST_RELIABLE_MODE ? 60_000 : 90_000
 );
-const AI_BUILDER_TIMEOUT_MS = readPositiveInt(
-  process.env.AI_BUILDER_TIMEOUT_MS,
-  480_000
+const AI_BUILDER_TIMEOUT_MS = Math.min(
+  readPositiveInt(
+    process.env.AI_BUILDER_TIMEOUT_MS,
+    KLAWPEN_FAST_RELIABLE_MODE ? 240_000 : 480_000
+  ),
+  KLAWPEN_FAST_RELIABLE_MODE ? 300_000 : 900_000
 );
-const AI_PRIMARY_BUILD_TIMEOUT_MS = readPositiveInt(
-  process.env.AI_PRIMARY_BUILD_TIMEOUT_MS ||
-    process.env.AI_FIRST_PASS_TIMEOUT_MS,
-  Math.min(AI_BUILDER_TIMEOUT_MS, 180_000)
+const AI_PRIMARY_BUILD_TIMEOUT_MS = Math.min(
+  readPositiveInt(
+    process.env.AI_PRIMARY_BUILD_TIMEOUT_MS ||
+      process.env.AI_FIRST_PASS_TIMEOUT_MS,
+    Math.min(AI_BUILDER_TIMEOUT_MS, KLAWPEN_FAST_RELIABLE_MODE ? 135_000 : 180_000)
+  ),
+  KLAWPEN_FAST_RELIABLE_MODE ? 180_000 : AI_BUILDER_TIMEOUT_MS
 );
 const AI_REQUEST_MAX_OUTPUT_TOKENS = readPositiveInt(
   process.env.AI_REQUEST_MAX_OUTPUT_TOKENS,
   8_000
 );
-const AI_BUILDER_MAX_OUTPUT_TOKENS = readPositiveInt(
-  process.env.AI_BUILDER_MAX_OUTPUT_TOKENS,
-  48_000
+const AI_BUILDER_MAX_OUTPUT_TOKENS = Math.min(
+  readPositiveInt(
+    process.env.AI_BUILDER_MAX_OUTPUT_TOKENS,
+    KLAWPEN_FAST_RELIABLE_MODE ? 30_000 : 48_000
+  ),
+  KLAWPEN_FAST_RELIABLE_MODE ? 36_000 : 64_000
 );
-const AI_RECOVERY_BUILD_TIMEOUT_MS = readPositiveInt(
-  process.env.AI_RECOVERY_BUILD_TIMEOUT_MS,
-  180_000
+const AI_RECOVERY_BUILD_TIMEOUT_MS = Math.min(
+  readPositiveInt(
+    process.env.AI_RECOVERY_BUILD_TIMEOUT_MS,
+    KLAWPEN_FAST_RELIABLE_MODE ? 90_000 : 180_000
+  ),
+  KLAWPEN_FAST_RELIABLE_MODE ? 120_000 : 240_000
 );
 const AI_RECOVERY_MAX_OUTPUT_TOKENS = readPositiveInt(
   process.env.AI_RECOVERY_MAX_OUTPUT_TOKENS,
   28_000
 );
-const AI_PREMIUM_FALLBACK_TIMEOUT_MS = readPositiveInt(
-  process.env.AI_PREMIUM_FALLBACK_TIMEOUT_MS,
-  180_000
+const AI_PREMIUM_FALLBACK_TIMEOUT_MS = Math.min(
+  readPositiveInt(
+    process.env.AI_PREMIUM_FALLBACK_TIMEOUT_MS,
+    KLAWPEN_FAST_RELIABLE_MODE ? 90_000 : 180_000
+  ),
+  KLAWPEN_FAST_RELIABLE_MODE ? 120_000 : 240_000
 );
 const AI_PREMIUM_FALLBACK_MAX_OUTPUT_TOKENS = readPositiveInt(
   process.env.AI_PREMIUM_FALLBACK_MAX_OUTPUT_TOKENS,
@@ -83,13 +100,19 @@ const AI_ARCHITECT_MAX_OUTPUT_TOKENS = readPositiveInt(
   process.env.AI_ARCHITECT_MAX_OUTPUT_TOKENS,
   12_000
 );
-const AI_PLANNER_TIMEOUT_MS = readPositiveInt(
-  process.env.AI_PLANNER_TIMEOUT_MS,
-  45_000
+const AI_PLANNER_TIMEOUT_MS = Math.min(
+  readPositiveInt(
+    process.env.AI_PLANNER_TIMEOUT_MS,
+    KLAWPEN_FAST_RELIABLE_MODE ? 20_000 : 45_000
+  ),
+  KLAWPEN_FAST_RELIABLE_MODE ? 30_000 : 90_000
 );
-const AI_ARCHITECT_TIMEOUT_MS = readPositiveInt(
-  process.env.AI_ARCHITECT_TIMEOUT_MS,
-  75_000
+const AI_ARCHITECT_TIMEOUT_MS = Math.min(
+  readPositiveInt(
+    process.env.AI_ARCHITECT_TIMEOUT_MS,
+    KLAWPEN_FAST_RELIABLE_MODE ? 30_000 : 75_000
+  ),
+  KLAWPEN_FAST_RELIABLE_MODE ? 45_000 : 120_000
 );
 const AI_REVIEW_TIMEOUT_MS = readPositiveInt(
   process.env.AI_REVIEW_TIMEOUT_MS,
@@ -116,13 +139,19 @@ const AI_REASONING_EFFORT =
 const AI_SEND_REASONING_TO_COMPAT_GATEWAYS =
   process.env.KLAWPEN_SEND_REASONING_EFFORT_TO_GATEWAYS === "true" ||
   process.env.AI_SEND_REASONING_EFFORT_TO_GATEWAYS === "true";
-const AI_BUILDER_TIMEOUT_HARD_CAP_MS = readPositiveInt(
-  process.env.AI_BUILDER_TIMEOUT_HARD_CAP_MS,
-  900_000
+const AI_BUILDER_TIMEOUT_HARD_CAP_MS = Math.min(
+  readPositiveInt(
+    process.env.AI_BUILDER_TIMEOUT_HARD_CAP_MS,
+    KLAWPEN_FAST_RELIABLE_MODE ? 330_000 : 900_000
+  ),
+  KLAWPEN_FAST_RELIABLE_MODE ? 360_000 : 900_000
 );
-const AI_REQUEST_TIMEOUT_HARD_CAP_MS = readPositiveInt(
-  process.env.AI_REQUEST_TIMEOUT_HARD_CAP_MS,
-  240_000
+const AI_REQUEST_TIMEOUT_HARD_CAP_MS = Math.min(
+  readPositiveInt(
+    process.env.AI_REQUEST_TIMEOUT_HARD_CAP_MS,
+    KLAWPEN_FAST_RELIABLE_MODE ? 90_000 : 240_000
+  ),
+  KLAWPEN_FAST_RELIABLE_MODE ? 120_000 : 240_000
 );
 const AI_STREAMING_CHAT_ENABLED =
   process.env.KLAWPEN_LLM_STREAMING !== "false" &&
@@ -367,9 +396,12 @@ type BuildOutputSource =
 
 const chatSessions = new Map<string, ChatSession>();
 
-const POWER_BUILD_AUTO_ENABLED = process.env.KLAWPEN_POWER_BUILD_AUTO !== "false";
+const POWER_BUILD_AUTO_ENABLED =
+  !KLAWPEN_FAST_RELIABLE_MODE &&
+  process.env.KLAWPEN_POWER_BUILD_AUTO !== "false";
 const DEEP_BUILD_AUTO_ENABLED = process.env.KLAWPEN_DEEP_BUILD_AUTO !== "false";
 const BROAD_BUILD_POWER_AUTO_ENABLED =
+  !KLAWPEN_FAST_RELIABLE_MODE &&
   process.env.KLAWPEN_BROAD_BUILD_POWER_AUTO !== "false";
 const ARCHITECT_SPEC_ENABLED =
   process.env.KLAWPEN_ENABLE_ARCHITECT_SPEC !== "false";
@@ -406,9 +438,12 @@ const STAGED_BUILD_ENABLED =
   process.env.KLAWPEN_STAGED_BUILD === "true";
 const STAGED_INLINE_APPLY_ENABLED =
   process.env.KLAWPEN_STAGED_INLINE_APPLY === "true";
-const STAGED_BUILD_TIMEOUT_MS = readPositiveInt(
-  process.env.AI_STAGED_BUILD_TIMEOUT_MS,
-  120_000
+const STAGED_BUILD_TIMEOUT_MS = Math.min(
+  readPositiveInt(
+    process.env.AI_STAGED_BUILD_TIMEOUT_MS,
+    KLAWPEN_FAST_RELIABLE_MODE ? 60_000 : 120_000
+  ),
+  KLAWPEN_FAST_RELIABLE_MODE ? 75_000 : 180_000
 );
 const STAGED_BUILD_MAX_OUTPUT_TOKENS = readPositiveInt(
   process.env.AI_STAGED_BUILD_MAX_OUTPUT_TOKENS,
@@ -2978,7 +3013,9 @@ function resolveBuildOptions(
     !explicitlyFast &&
     DEEP_BUILD_AUTO_ENABLED &&
     broadBuild &&
-    (powerMode || workloadIsHeavy || explicitlyPower || options.planMode === true);
+    (explicitlyPower ||
+      (!KLAWPEN_FAST_RELIABLE_MODE &&
+        (powerMode || workloadIsHeavy || options.planMode === true)));
 
   const qualityMode: ResolvedBuildOptions["qualityMode"] = powerMode
     ? "power"
@@ -7078,6 +7115,7 @@ function shouldUseStagedBuild(
 ) {
   return (
     STAGED_BUILD_ENABLED &&
+    (!KLAWPEN_FAST_RELIABLE_MODE || shouldUsePowerBuildLayer(options)) &&
     hasBuildIntent(userMessage, options) &&
     isBroadBuildRequest(userMessage, options) &&
     !isExplicitSinglePageRequest(userMessage)
@@ -7880,6 +7918,7 @@ function shouldCreateArchitectSpec(
   return (
     ARCHITECT_SPEC_ENABLED &&
     shouldUsePowerBuildLayer(options) &&
+    (!KLAWPEN_FAST_RELIABLE_MODE || options.qualityMode === "power") &&
     isBroadBuildRequest(userMessage, options) &&
     !isExplicitSinglePageRequest(userMessage)
   );
@@ -9520,6 +9559,13 @@ async function improveWithCriticLoop(params: {
   provider: AiProviderConfig;
   options?: BuildOptions;
 }): Promise<string> {
+  if (
+    KLAWPEN_FAST_RELIABLE_MODE &&
+    !shouldUsePowerBuildLayer(params.options)
+  ) {
+    return params.draft;
+  }
+
   let currentDraft = params.draft;
   const reviewerProvider = selectReviewerProvider(
     params.provider,
