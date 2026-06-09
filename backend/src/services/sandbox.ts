@@ -22,6 +22,9 @@ const E2B_INSTALL_TIMEOUT_MS = Number(
 const E2B_START_TIMEOUT_MS = Number(
   process.env.E2B_START_TIMEOUT_MS || "120000"
 );
+const E2B_NODE_BOOTSTRAP_TIMEOUT_MS = Number(
+  process.env.E2B_NODE_BOOTSTRAP_TIMEOUT_MS || "300000"
+);
 const E2B_DOMAIN = process.env.E2B_DOMAIN || "e2b.app";
 const DEV_RUNTIME_DIR = `${PROJECT_WORKSPACE_PATH}/.klawpen`;
 const DEV_SERVER_LOG_PATH = `${DEV_RUNTIME_DIR}/dev-server.log`;
@@ -89,7 +92,7 @@ interface PackageManifest {
 }
 
 interface DevServerPlan {
-  framework: "next" | "vite" | "generic";
+  framework: "next" | "vite";
   commandText: string;
   displayCommand: string;
   manifestChanged: boolean;
@@ -359,6 +362,125 @@ async function prepareWorkspaceDirectory(session: ProjectSandboxSession) {
   );
 }
 
+async function runLoggedCommand(
+  session: ProjectSandboxSession,
+  label: string,
+  command: string,
+  options: {
+    cwd?: string;
+    timeoutMs?: number;
+    user?: string;
+    allowFailure?: boolean;
+  } = {}
+) {
+  console.log("e2b_command_started", {
+    trace: "e2b_command_started",
+    label,
+    containerId: session.containerId,
+    sandboxId: session.sandboxId,
+    cwd: options.cwd || PROJECT_WORKSPACE_PATH,
+    command,
+  });
+
+  const result = await session.sandbox.commands.run(command, {
+    cwd: options.cwd || PROJECT_WORKSPACE_PATH,
+    timeoutMs: options.timeoutMs || E2B_COMMAND_TIMEOUT_MS,
+    user: options.user,
+    onStdout: (data) => logSandboxOutput("stdout", session, data, label),
+    onStderr: (data) => logSandboxOutput("stderr", session, data, label),
+  });
+
+  const outputPreview = [result.stdout, result.stderr]
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+
+  console.log(result.exitCode === 0 ? "e2b_command_completed" : "e2b_command_failed", {
+    trace: result.exitCode === 0 ? "e2b_command_completed" : "e2b_command_failed",
+    label,
+    containerId: session.containerId,
+    sandboxId: session.sandboxId,
+    exitCode: result.exitCode,
+    stdout: result.stdout?.slice(-2_000),
+    stderr: result.stderr?.slice(-2_000),
+  });
+
+  if (result.exitCode !== 0 && !options.allowFailure) {
+    throw new Error(
+      `${label} failed with exit code ${result.exitCode}: ${
+        outputPreview || "no stdout/stderr returned"
+      }`
+    );
+  }
+
+  return result;
+}
+
+async function logWorkspacePreflight(
+  session: ProjectSandboxSession,
+  label = "workspace_preflight"
+) {
+  await runLoggedCommand(
+    session,
+    label,
+    [
+      "set -e",
+      "echo '--- pwd ---'",
+      "pwd",
+      "echo '--- workspace ---'",
+      `ls -la ${shellQuote(PROJECT_WORKSPACE_PATH)} 2>&1 || true`,
+      "echo '--- package files ---'",
+      `[ -f ${shellQuote(`${PROJECT_WORKSPACE_PATH}/package.json`)} ] && cat ${shellQuote(`${PROJECT_WORKSPACE_PATH}/package.json`)} || echo 'package.json missing'`,
+      "echo '--- runtime versions ---'",
+      "command -v node || true",
+      "node -v || true",
+      "command -v npm || true",
+      "npm -v || true",
+      "command -v npx || true",
+      "npx -v || true",
+      "echo '--- framework files ---'",
+      `find ${shellQuote(PROJECT_WORKSPACE_PATH)} -maxdepth 2 \\( -name 'next.config.*' -o -name 'vite.config.*' -o -name 'index.html' -o -name 'package.json' \\) -print 2>/dev/null || true`,
+    ].join("; "),
+    {
+      cwd: "/",
+      timeoutMs: E2B_COMMAND_TIMEOUT_MS,
+      allowFailure: true,
+    }
+  );
+}
+
+async function ensureNodeRuntime(session: ProjectSandboxSession) {
+  const check = await runLoggedCommand(
+    session,
+    "node_runtime_check",
+    "command -v node && node -v && command -v npm && npm -v && command -v npx && npx -v",
+    {
+      cwd: "/",
+      timeoutMs: E2B_COMMAND_TIMEOUT_MS,
+      allowFailure: true,
+    }
+  );
+
+  if (check.exitCode === 0) return;
+
+  console.warn("e2b_node_runtime_missing_install_started", {
+    trace: "e2b_node_runtime_missing_install_started",
+    containerId: session.containerId,
+    sandboxId: session.sandboxId,
+  });
+
+  await runLoggedCommand(
+    session,
+    "node_runtime_install",
+    "apt-get update && apt-get install -y ca-certificates curl gnupg && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs && node -v && npm -v && npx -v",
+    {
+      cwd: "/",
+      user: "root",
+      timeoutMs: E2B_NODE_BOOTSTRAP_TIMEOUT_MS,
+    }
+  );
+}
+
 async function installDependencies(session: ProjectSandboxSession) {
   console.log("e2b_dependency_install_started", {
     trace: "e2b_dependency_install_started",
@@ -366,14 +488,12 @@ async function installDependencies(session: ProjectSandboxSession) {
     sandboxId: session.sandboxId,
   });
 
-  const result = await session.sandbox.commands.run(
+  await logWorkspacePreflight(session, "dependency_install_preflight");
+  const result = await runLoggedCommand(
+    session,
+    "dependency_install",
     "npm install --prefer-offline --no-audit --no-fund --quiet",
-    {
-      cwd: PROJECT_WORKSPACE_PATH,
-      timeoutMs: E2B_INSTALL_TIMEOUT_MS,
-      onStdout: (data) => logSandboxOutput("stdout", session, data),
-      onStderr: (data) => logSandboxOutput("stderr", session, data),
-    }
+    { cwd: PROJECT_WORKSPACE_PATH, timeoutMs: E2B_INSTALL_TIMEOUT_MS }
   );
 
   if (result.exitCode !== 0) {
@@ -392,16 +512,18 @@ async function installDependencies(session: ProjectSandboxSession) {
 function logSandboxOutput(
   stream: "stdout" | "stderr",
   session: ProjectSandboxSession,
-  data: string
+  data: string,
+  label?: string
 ) {
   const trimmed = data.trim();
   if (!trimmed) return;
   console.log("e2b_command_output", {
     trace: "e2b_command_output",
     stream,
+    label,
     containerId: session.containerId,
     sandboxId: session.sandboxId,
-    output: trimmed.slice(0, 500),
+    output: trimmed.slice(-2_000),
   });
 }
 
@@ -477,7 +599,7 @@ async function detectProjectShape(
 function inferDevFramework(
   manifest: PackageManifest,
   shape: ProjectShape
-): "next" | "vite" | "generic" {
+): "next" | "vite" {
   const devScript = manifest.scripts?.dev || "";
   const allDependencies = {
     ...(manifest.dependencies || {}),
@@ -494,7 +616,57 @@ function inferDevFramework(
   if (Boolean(allDependencies.next)) return "next";
   if (hasViteShape) return "vite";
 
-  return "generic";
+  return "next";
+}
+
+async function ensureWorkspaceScaffold(session: ProjectSandboxSession) {
+  const checks = await runLoggedCommand(
+    session,
+    "workspace_scaffold_check",
+    [
+      `[ -f ${shellQuote(`${PROJECT_WORKSPACE_PATH}/package.json`)} ] && echo package=1 || true`,
+      `[ -f ${shellQuote(`${PROJECT_WORKSPACE_PATH}/src/app/page.tsx`)} ] && echo appPage=1 || true`,
+      `[ -f ${shellQuote(`${PROJECT_WORKSPACE_PATH}/src/app/layout.tsx`)} ] && echo appLayout=1 || true`,
+      `[ -f ${shellQuote(`${PROJECT_WORKSPACE_PATH}/src/app/globals.css`)} ] && echo globals=1 || true`,
+      `[ -f ${shellQuote(`${PROJECT_WORKSPACE_PATH}/tsconfig.json`)} ] && echo tsconfig=1 || true`,
+    ].join("; "),
+    { cwd: "/", timeoutMs: E2B_COMMAND_TIMEOUT_MS, allowFailure: true }
+  );
+  const output = checks.stdout || "";
+  const existingFiles = new Set<string>();
+  if (output.includes("package=1")) existingFiles.add("package.json");
+  if (output.includes("appPage=1")) existingFiles.add("src/app/page.tsx");
+  if (output.includes("appLayout=1")) existingFiles.add("src/app/layout.tsx");
+  if (output.includes("globals=1")) existingFiles.add("src/app/globals.css");
+  if (output.includes("tsconfig=1")) existingFiles.add("tsconfig.json");
+
+  const missingFiles = createWorkspaceTemplateFiles().filter(
+    (file) => !existingFiles.has(file.path)
+  );
+
+  if (!missingFiles.length) {
+    console.log("e2b_workspace_scaffold_ready", {
+      trace: "e2b_workspace_scaffold_ready",
+      containerId: session.containerId,
+      sandboxId: session.sandboxId,
+    });
+    return;
+  }
+
+  console.warn("e2b_workspace_scaffold_missing_files_repaired", {
+    trace: "e2b_workspace_scaffold_missing_files_repaired",
+    containerId: session.containerId,
+    sandboxId: session.sandboxId,
+    files: missingFiles.map((file) => file.path),
+  });
+
+  await session.sandbox.files.write(
+    missingFiles.map((file) => ({
+      path: `${PROJECT_WORKSPACE_PATH}/${file.path}`,
+      data: file.content,
+    })),
+    { requestTimeoutMs: E2B_COMMAND_TIMEOUT_MS }
+  );
 }
 
 function defaultPackageManifest(): PackageManifest {
@@ -624,7 +796,7 @@ async function prepareDevServerPlan(
   const commandText =
     framework === "vite"
       ? `npm run dev -- --host 0.0.0.0 --port ${PROJECT_PREVIEW_PORT}`
-      : `npm run dev -- --hostname 0.0.0.0 --port ${PROJECT_PREVIEW_PORT}`;
+      : `npx next dev -H 0.0.0.0 -p ${PROJECT_PREVIEW_PORT}`;
 
   return {
     framework,
@@ -821,6 +993,11 @@ export async function startDevServer(
     port: PROJECT_PREVIEW_PORT,
   });
 
+  await ensureNodeRuntime(session);
+  await logWorkspacePreflight(session, "dev_server_preflight_before_scaffold");
+  await ensureWorkspaceScaffold(session);
+  await logWorkspacePreflight(session, "dev_server_preflight_after_scaffold");
+
   const plan = await prepareDevServerPlan(session);
   console.log("e2b_dev_server_preflight_completed", {
     trace: "e2b_dev_server_preflight_completed",
@@ -923,7 +1100,10 @@ export async function createSandboxWorkspace(
 
     try {
       await prepareWorkspaceDirectory(session);
+      await ensureNodeRuntime(session);
+      await logWorkspacePreflight(session, "sandbox_bootstrap_empty_preflight");
       await writeWorkspaceTemplate(session);
+      await logWorkspacePreflight(session, "sandbox_bootstrap_template_preflight");
       await installDependencies(session);
       await startDevServer(session);
     } catch (error) {
