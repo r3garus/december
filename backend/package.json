@@ -11,7 +11,10 @@
     "typescript": "^5"
   },
   "dependencies": {
+    "@ai-sdk/openai-compatible": "^2.0.48",
+    "@openrouter/ai-sdk-provider": "^2.9.0",
     "@types/dockerode": "4.0.1",
+    "ai": "^6.0.198",
     "dockerode": "5.0.0",
     "express": "^5.1.0",
     "openai": "^5.0.1",

@@ -1,4 +1,7 @@
-﻿import OpenAI from "openai";
+import OpenAI from "openai";
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { createOpenRouter } from "@openrouter/ai-sdk-provider";
+import { streamText } from "ai";
 import { config } from "../../config";
 import prompt from "../utils/prompt.txt";
 import {
@@ -15,6 +18,7 @@ import * as packageService from "./package";
 import * as projectSnapshotService from "./projectSnapshot";
 
 const clientCache = new Map<string, OpenAI>();
+const aiSdkProviderCache = new Map<string, any>();
 
 const aiSdkConfig = config.aiSdk as typeof config.aiSdk & {
   temperature?: number;
@@ -154,6 +158,16 @@ const AI_STREAM_CROSS_PROVIDER_FALLBACK =
 const AI_STREAM_ANY_GATEWAY_MODEL_FALLBACK =
   process.env.KLAWPEN_ALLOW_ANY_GATEWAY_MODEL_FALLBACK === "true" ||
   process.env.AI_ALLOW_ANY_GATEWAY_MODEL_FALLBACK === "true";
+const AI_SDK_CHAT_ENABLED =
+  process.env.KLAWPEN_AI_SDK_ENABLED === "true" ||
+  process.env.AI_SDK_ENABLED === "true";
+const AI_SDK_STREAMING_ENABLED =
+  AI_SDK_CHAT_ENABLED &&
+  process.env.KLAWPEN_AI_SDK_STREAMING !== "false" &&
+  process.env.AI_SDK_STREAMING !== "false";
+const AI_SDK_MANUAL_FALLBACK_ENABLED =
+  process.env.KLAWPEN_AI_SDK_MANUAL_FALLBACK !== "false" &&
+  process.env.AI_SDK_MANUAL_FALLBACK !== "false";
 
 function readPositiveInt(value: string | undefined, fallback: number) {
   const parsed = Number.parseInt(value || "", 10);
@@ -321,9 +335,9 @@ const chatSessions = new Map<string, ChatSession>();
 const POWER_BUILD_AUTO_ENABLED = process.env.KLAWPEN_POWER_BUILD_AUTO !== "false";
 const DEEP_BUILD_AUTO_ENABLED = process.env.KLAWPEN_DEEP_BUILD_AUTO !== "false";
 const BROAD_BUILD_POWER_AUTO_ENABLED =
-  process.env.KLAWPEN_BROAD_BUILD_POWER_AUTO === "true";
+  process.env.KLAWPEN_BROAD_BUILD_POWER_AUTO !== "false";
 const ARCHITECT_SPEC_ENABLED =
-  process.env.KLAWPEN_ENABLE_ARCHITECT_SPEC === "true";
+  process.env.KLAWPEN_ENABLE_ARCHITECT_SPEC !== "false";
 const BUILD_GATE_ENABLED = process.env.KLAWPEN_ENABLE_BUILD_GATE === "true";
 const PREVIEW_CHECK_ENABLED = process.env.KLAWPEN_ENABLE_PREVIEW_CHECK === "true";
 const PREVIEW_SMOKE_CHECK_ENABLED =
@@ -1252,6 +1266,52 @@ function getProviderLogContext(provider: AiProviderConfig) {
   };
 }
 
+function getOpenRouterHeaders() {
+  return {
+    "HTTP-Referer":
+      process.env.OPENROUTER_SITE_URL ||
+      process.env.NEXT_PUBLIC_APP_URL ||
+      "https://builder.klawpen.com",
+    "X-Title": process.env.OPENROUTER_APP_NAME || "Klawpen Builder",
+  };
+}
+
+function getAiSdkProvider(provider: AiProviderConfig) {
+  const cacheKey = `${provider.key}:${provider.baseUrl}:${provider.apiKey.slice(0, 8)}`;
+  const cached = aiSdkProviderCache.get(cacheKey);
+  if (cached) return cached;
+
+  const baseURL = provider.baseUrl || "https://api.openai.com/v1";
+  const sdkProvider = isOpenRouterProvider(provider)
+    ? createOpenRouter({
+        apiKey: provider.apiKey,
+        baseURL,
+        appUrl: process.env.OPENROUTER_SITE_URL || process.env.NEXT_PUBLIC_APP_URL || "https://builder.klawpen.com",
+        appName: process.env.OPENROUTER_APP_NAME || "Klawpen Builder",
+        compatibility: "compatible",
+      })
+    : createOpenAICompatible({
+        name: `klawpen-${provider.key}`,
+        apiKey: provider.apiKey,
+        baseURL,
+        headers: isOpenRouterProvider(provider) ? getOpenRouterHeaders() : undefined,
+        includeUsage: true,
+        supportsStructuredOutputs: false,
+      });
+
+  aiSdkProviderCache.set(cacheKey, sdkProvider);
+  return sdkProvider;
+}
+
+function canUseAiSdkForRequest(params: AiChatTextParams) {
+  return (
+    AI_SDK_STREAMING_ENABLED &&
+    typeof params.user === "string" &&
+    Boolean(params.provider.apiKey) &&
+    Boolean(params.provider.baseUrl)
+  );
+}
+
 function isTimeoutError(error: unknown) {
   const message = getErrorMessage(error);
   return /timed out after \d+ms|timeout|timed out|etimedout|abort|aborted/i.test(
@@ -1492,6 +1552,168 @@ function logParserRecoveryIfNeeded(
   }
 }
 
+async function collectAiSdkStreamingChatText(params: {
+  provider: AiProviderConfig;
+  system: string;
+  user: string;
+  temperature: number;
+  timeoutMs: number;
+  maxOutputTokens: number;
+  model: string;
+  attemptIndex: number;
+  totalAttempts: number;
+  attemptReason: AiChatAttempt["reason"];
+}): Promise<string> {
+  const controller = new AbortController();
+  const startedAt = Date.now();
+  const chunks: string[] = [];
+  let firstTokenReceived = false;
+  let ttfbTimedOut = false;
+  let totalTimedOut = false;
+  let chunkCount = 0;
+  const context = {
+    ...getProviderLogContext({ ...params.provider, model: params.model }),
+    attemptIndex: params.attemptIndex,
+    totalAttempts: params.totalAttempts,
+    attemptReason: params.attemptReason,
+    timeoutMs: params.timeoutMs,
+    ttfbTimeoutMs: AI_STREAM_TTFB_TIMEOUT_MS,
+    idleTimeoutMs: AI_STREAM_IDLE_TIMEOUT_MS,
+    sdk: "vercel-ai-sdk",
+  };
+
+  const ttfbTimer = setTimeout(() => {
+    if (firstTokenReceived) return;
+    ttfbTimedOut = true;
+    console.warn("ttfb_timeout_triggered", {
+      trace: "ttfb_timeout_triggered",
+      ...context,
+      elapsedMs: Date.now() - startedAt,
+    });
+    controller.abort();
+  }, AI_STREAM_TTFB_TIMEOUT_MS);
+
+  const totalTimer = setTimeout(() => {
+    totalTimedOut = true;
+    console.warn("llm_stream_total_timeout_triggered", {
+      trace: "llm_stream_total_timeout_triggered",
+      ...context,
+      elapsedMs: Date.now() - startedAt,
+    });
+    controller.abort();
+  }, params.timeoutMs);
+
+  try {
+    const providerFactory = getAiSdkProvider(params.provider);
+    const model = providerFactory(params.model);
+
+    console.log("llm_sdk_stream_attempt_started", {
+      trace: "llm_sdk_stream_attempt_started",
+      ...context,
+    });
+
+    const result = streamText({
+      model,
+      system: params.system,
+      prompt: params.user,
+      temperature: params.temperature,
+      maxOutputTokens: params.maxOutputTokens,
+      maxRetries: 0,
+      timeout: {
+        totalMs: params.timeoutMs,
+        chunkMs: AI_STREAM_IDLE_TIMEOUT_MS,
+      },
+      abortSignal: controller.signal,
+      providerOptions:
+        isOpenRouterProvider(params.provider) && AI_REASONING_EFFORT
+          ? {
+              openrouter: {
+                reasoning: {
+                  effort: AI_REASONING_EFFORT,
+                },
+              },
+            }
+          : undefined,
+    } as any);
+
+    for await (const text of result.textStream) {
+      chunkCount += 1;
+      if (text && !firstTokenReceived) {
+        firstTokenReceived = true;
+        clearTimeout(ttfbTimer);
+        console.log("llm_stream_established", {
+          trace: "llm_stream_established",
+          ...context,
+          elapsedMs: Date.now() - startedAt,
+        });
+      }
+
+      if (text) chunks.push(text);
+    }
+
+    const assistantText = chunks.join("").trim();
+    if (!assistantText) {
+      throw new AiStreamFailure({
+        message: "llm_sdk_stream_empty_result: provider stream ended without content",
+        partialText: chunks.join(""),
+        trace: "llm_sdk_stream_empty_result",
+        provider: params.provider,
+        model: params.model,
+      });
+    }
+
+    recordProviderRequest(params.provider.key);
+    console.log("llm_sdk_stream_completed", {
+      trace: "llm_sdk_stream_completed",
+      ...context,
+      elapsedMs: Date.now() - startedAt,
+      chunkCount,
+      outputChars: assistantText.length,
+    });
+    logParserRecoveryIfNeeded(assistantText, context);
+    return assistantText;
+  } catch (error) {
+    const partialText = chunks.join("");
+    const trace = ttfbTimedOut
+      ? "ttfb_timeout_triggered"
+      : totalTimedOut
+        ? "llm_stream_total_timeout"
+        : "llm_sdk_stream_failed";
+    const message = ttfbTimedOut
+      ? `ttfb_timeout_triggered: no SDK stream chunk after ${AI_STREAM_TTFB_TIMEOUT_MS}ms`
+      : totalTimedOut
+        ? `llm_stream_total_timeout: SDK stream exceeded ${params.timeoutMs}ms`
+        : getErrorMessage(error);
+
+    console.warn("llm_sdk_stream_attempt_failed", {
+      trace,
+      ...context,
+      elapsedMs: Date.now() - startedAt,
+      chunkCount,
+      partialChars: partialText.length,
+      error: message,
+    });
+
+    if (partialText) {
+      logParserRecoveryIfNeeded(partialText, {
+        ...context,
+        partialChars: partialText.length,
+        failureTrace: trace,
+      });
+    }
+
+    throw new AiStreamFailure({
+      message,
+      partialText,
+      trace,
+      provider: params.provider,
+      model: params.model,
+    });
+  } finally {
+    clearTimeout(ttfbTimer);
+    clearTimeout(totalTimer);
+  }
+}
 async function collectStreamingChatText(params: {
   provider: AiProviderConfig;
   system: string;
@@ -1743,6 +1965,32 @@ async function createStreamingAiChatText(
     }
 
     try {
+      if (canUseAiSdkForRequest(params)) {
+        try {
+          return await collectAiSdkStreamingChatText({
+            provider: attempt.provider,
+            system: params.system,
+            user: params.user as string,
+            temperature,
+            timeoutMs,
+            maxOutputTokens,
+            model: attempt.model,
+            attemptIndex: index + 1,
+            totalAttempts: attempts.length,
+            attemptReason: attempt.reason,
+          });
+        } catch (sdkError) {
+          if (!AI_SDK_MANUAL_FALLBACK_ENABLED) throw sdkError;
+
+          console.warn("llm_sdk_legacy_stream_fallback", {
+            trace: "llm_sdk_legacy_stream_fallback",
+            ...getProviderLogContext({ ...attempt.provider, model: attempt.model }),
+            attemptIndex: index + 1,
+            error: getErrorMessage(sdkError),
+          });
+        }
+      }
+
       return await collectStreamingChatTextWithTokenRetry({
         provider: attempt.provider,
         system: params.system,

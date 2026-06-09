@@ -168,7 +168,7 @@ app.get("/health", (_req, res) => {
   res.json({
     success: true,
     service: "klawpen-builder-api",
-    marker: "forkless-file-write-v12",
+    marker: "ai-sdk-orchestration-v13",
     timestamp: new Date().toISOString(),
   });
 });
@@ -187,7 +187,7 @@ app.get("/diagnostics", (_req, res) => {
   res.json({
     success: true,
     service: "klawpen-builder-api",
-    marker: "forkless-file-write-v12",
+    marker: "ai-sdk-orchestration-v13",
     build: {
       stagedBuild: process.env.KLAWPEN_STAGED_BUILD === "true",
       stagedInlineApply: process.env.KLAWPEN_STAGED_INLINE_APPLY === "true",
@@ -220,6 +220,12 @@ app.get("/diagnostics", (_req, res) => {
         process.env.AI_STREAM_FALLBACK_MODELS ||
         process.env.KLAWPEN_LLM_FALLBACK_MODELS ||
         "deepseek/deepseek-chat,anthropic/claude-3.5-sonnet",
+      aiSdkEnabled:
+        process.env.KLAWPEN_AI_SDK_ENABLED === "true" ||
+        process.env.AI_SDK_ENABLED === "true",
+      aiSdkStreaming:
+        process.env.KLAWPEN_AI_SDK_STREAMING !== "false" &&
+        process.env.AI_SDK_STREAMING !== "false",
     },
     preview: {
       publicOrigin: getPreviewProxyOrigin(),
