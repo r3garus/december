@@ -41,6 +41,9 @@ const DEV_SERVER_START_SCRIPT_PATH = `${DEV_RUNTIME_DIR}/start-dev-server.sh`;
 const DEV_SERVER_LOG_TAIL_BYTES = Number(
   process.env.E2B_DEV_SERVER_LOG_TAIL_BYTES || "12000"
 );
+const PUBLIC_READY_FILE_PATH = "public/__klawpen_ready.txt";
+const PUBLIC_READY_ROUTE = "/__klawpen_ready.txt";
+const PUBLIC_READY_MARKER = "klawpen-ready";
 const DEFAULT_PUBLIC_API_ORIGIN =
   process.env.NODE_ENV === "production"
     ? "https://api.builder.klawpen.com"
@@ -597,6 +600,18 @@ async function writeWorkspaceTextFile(
   );
 }
 
+async function ensurePublicReadyProbeFile(session: ProjectSandboxSession) {
+  await session.sandbox.commands.run(
+    `mkdir -p ${shellQuote(`${PROJECT_WORKSPACE_PATH}/public`)}`,
+    { cwd: PROJECT_WORKSPACE_PATH, timeoutMs: E2B_COMMAND_TIMEOUT_MS }
+  );
+  await writeWorkspaceTextFile(
+    session,
+    PUBLIC_READY_FILE_PATH,
+    `${PUBLIC_READY_MARKER}\n`
+  );
+}
+
 function parsePackageManifest(raw: string | null): PackageManifest | null {
   if (!raw?.trim()) return null;
   try {
@@ -783,6 +798,7 @@ async function ensureProjectWorkspaceReadyForSession(
     if (options.install && (session.manifestDirty || !session.dependenciesInstalled)) {
       await installDependencies(session);
     }
+    await ensurePublicReadyProbeFile(session);
 
     return {
       framework: session.workspaceFramework || "next",
@@ -796,6 +812,7 @@ async function ensureProjectWorkspaceReadyForSession(
   await prepareWorkspaceDirectory(session);
   await ensureNodeRuntime(session);
   const scaffold = await ensureWorkspaceScaffold(session);
+  await ensurePublicReadyProbeFile(session);
 
   const shouldInstall =
     options.install === true &&
@@ -1092,16 +1109,20 @@ async function waitForPublicAppUrl(
   timeoutMs: number
 ) {
   const appUrl = session.appUrl || toAppUrl(session.sandbox);
+  const readyBaseUrl = `${appUrl.replace(/\/$/, "")}${PUBLIC_READY_ROUTE}`;
   const startedAt = Date.now();
   let stableChecks = 0;
   let lastError = "";
+  let lastReadyUrl = readyBaseUrl;
   let attempt = 0;
 
   while (Date.now() - startedAt < timeoutMs) {
     attempt += 1;
+    const readyUrl = `${readyBaseUrl}?t=${Date.now()}-${attempt}`;
+    lastReadyUrl = readyUrl;
 
     try {
-      const response = await fetch(appUrl, {
+      const response = await fetch(readyUrl, {
         redirect: "manual",
         signal: AbortSignal.timeout(Math.min(15_000, E2B_PUBLIC_READY_INTERVAL_MS + 8_000)),
         headers: {
@@ -1111,13 +1132,14 @@ async function waitForPublicAppUrl(
       });
       const body = await response.text().catch(() => "");
 
-      if (response.status < 500 && !/connection refused|closed port|no service running/i.test(body)) {
+      if (response.ok && body.includes(PUBLIC_READY_MARKER)) {
         stableChecks += 1;
         console.log("e2b_public_app_ready_probe_passed", {
           trace: "e2b_public_app_ready_probe_passed",
           containerId: session.containerId,
           sandboxId: session.sandboxId,
           appUrl,
+          readyUrl,
           status: response.status,
           attempt,
           stableChecks,
@@ -1128,7 +1150,7 @@ async function waitForPublicAppUrl(
         }
       } else {
         stableChecks = 0;
-        lastError = `HTTP ${response.status}: ${body.slice(0, 500)}`;
+        lastError = `HTTP ${response.status} from static readiness probe: ${body.slice(0, 500)}`;
       }
     } catch (error) {
       stableChecks = 0;
@@ -1153,7 +1175,7 @@ async function waitForPublicAppUrl(
 
   const diagnostics = await readDevServerDiagnostics(session);
   throw new Error(
-    `E2B public app URL did not become ready at ${appUrl}. Last error: ${lastError || "unknown"}.\n${diagnostics.slice(
+    `E2B public app URL did not become ready at ${appUrl}. Static readiness probe ${lastReadyUrl} failed. Last error: ${lastError || "unknown"}.\n${diagnostics.slice(
       -6_000
     )}`
   );
@@ -1700,6 +1722,10 @@ function createNextWorkspaceTemplateFiles(): Array<{ path: string; content: stri
       path: "src/app/page.tsx",
       content: `import type { Metadata } from "next";\n\nexport const metadata: Metadata = {\n  title: "Klawpen Workspace",\n  description: "Your Klawpen project is being prepared.",\n};\n\nexport default function Home() {\n  return (\n    <main className="min-h-screen overflow-hidden bg-[#f6f8fb] text-[#111827]">\n      <section className="relative flex min-h-screen items-center justify-center px-6 py-16">\n        <div className="absolute left-[-10%] top-[-10%] h-72 w-72 rounded-full bg-[#1689ff]/20 blur-3xl" />\n        <div className="absolute bottom-[-12%] right-[-8%] h-80 w-80 rounded-full bg-[#7cc7ff]/20 blur-3xl" />\n        <div className="relative w-full max-w-3xl rounded-[2rem] border border-white/80 bg-white/85 p-8 text-center shadow-[0_30px_90px_rgba(15,23,42,0.12)] backdrop-blur-xl sm:p-12">\n          <div className="mx-auto mb-7 flex h-16 w-16 items-center justify-center rounded-3xl bg-[#1689ff] text-xl font-black text-white shadow-[0_18px_40px_rgba(22,137,255,0.28)]">\n            K\n          </div>\n          <p className="mb-4 text-xs font-black uppercase tracking-[0.32em] text-[#1689ff]">\n            Klawpen Builder\n          </p>\n          <h1 className="text-4xl font-black tracking-[-0.06em] text-slate-950 sm:text-6xl">\n            Your project is being crafted\n          </h1>\n          <p className="mx-auto mt-5 max-w-xl text-base leading-8 text-slate-500">\n            Klawpen Core is preparing the first version of your website. The preview will refresh automatically as files are generated.\n          </p>\n        </div>\n      </section>\n    </main>\n  );\n}\n`,
     },
+    {
+      path: PUBLIC_READY_FILE_PATH,
+      content: `${PUBLIC_READY_MARKER}\n`,
+    },
   ];
 }
 
@@ -1759,6 +1785,10 @@ function createViteWorkspaceTemplateFiles(): Array<{ path: string; content: stri
     {
       path: "src/styles.css",
       content: `@import "tailwindcss";\n\n:root {\n  background: #f6f8fb;\n  color: #111827;\n  font-family: Inter, ui-sans-serif, system-ui, sans-serif;\n}\n\n* {\n  box-sizing: border-box;\n}\n\nhtml,\nbody,\n#root {\n  min-height: 100%;\n}\n\nbody {\n  margin: 0;\n}\n`,
+    },
+    {
+      path: PUBLIC_READY_FILE_PATH,
+      content: `${PUBLIC_READY_MARKER}\n`,
     },
   ];
 }
