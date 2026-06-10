@@ -38,6 +38,7 @@ const DEV_SERVER_LOG_PATH = `${DEV_RUNTIME_DIR}/dev-server.log`;
 const DEV_SERVER_PID_PATH = `${DEV_RUNTIME_DIR}/dev-server.pid`;
 const DEV_SERVER_EXIT_PATH = `${DEV_RUNTIME_DIR}/dev-server.exit`;
 const DEV_SERVER_START_SCRIPT_PATH = `${DEV_RUNTIME_DIR}/start-dev-server.sh`;
+const DEV_SERVER_READY_PATH = `${DEV_RUNTIME_DIR}/dev-server.ready`;
 const DEV_SERVER_LOG_TAIL_BYTES = Number(
   process.env.E2B_DEV_SERVER_LOG_TAIL_BYTES || "12000"
 );
@@ -247,12 +248,12 @@ function makeContainerInfo(session: ProjectSandboxSession) {
     },
     HostConfig: {
       PortBindings: {
-        "3000/tcp": [{ HostPort: String(PROJECT_PREVIEW_PORT) }],
+        [`${PROJECT_APP_PORT}/tcp`]: [{ HostPort: String(PROJECT_APP_PORT) }],
       },
     },
     NetworkSettings: {
       Ports: {
-        "3000/tcp": [{ HostPort: String(PROJECT_PREVIEW_PORT) }],
+        [`${PROJECT_APP_PORT}/tcp`]: [{ HostPort: String(PROJECT_APP_PORT) }],
       },
     },
   };
@@ -1023,6 +1024,8 @@ async function killExistingDevServer(session: ProjectSandboxSession) {
   try {
     await session.sandbox.commands.run(
       [
+        `fuser -k ${PROJECT_APP_PORT}/tcp 2>/dev/null || true`,
+        `lsof -ti tcp:${PROJECT_APP_PORT} 2>/dev/null | xargs -r kill -9 2>/dev/null || true`,
         "pkill -f '[n]pm run dev' 2>/dev/null || true",
         "pkill -f '[n]ext dev' 2>/dev/null || true",
         "pkill -f '[v]ite' 2>/dev/null || true",
@@ -1045,6 +1048,12 @@ async function readDevServerDiagnostics(
     `cat ${shellQuote(DEV_SERVER_PID_PATH)} 2>/dev/null || true`,
     `echo "--- klawpen dev server exit ---"`,
     `cat ${shellQuote(DEV_SERVER_EXIT_PATH)} 2>/dev/null || true`,
+    `echo "--- klawpen dev server ready ---"`,
+    `cat ${shellQuote(DEV_SERVER_READY_PATH)} 2>/dev/null || true`,
+    `echo "--- port ${PROJECT_APP_PORT} listeners ---"`,
+    `(ss -ltnp 2>/dev/null || netstat -ltnp 2>/dev/null || true) | grep ':${PROJECT_APP_PORT} ' || true`,
+    `echo "--- local readiness probe ---"`,
+    `curl -fsS --max-time 5 ${shellQuote(`http://127.0.0.1:${PROJECT_APP_PORT}${PUBLIC_READY_ROUTE}`)} 2>&1 || true`,
     `echo "--- process list ---"`,
     `ps -ef | grep -E 'next|vite|npm|node' | grep -v grep || true`,
     `echo "--- package.json scripts ---"`,
@@ -1077,7 +1086,7 @@ async function writeDevServerLaunchScript(
 set -eu
 cd ${shellQuote(PROJECT_WORKSPACE_PATH)}
 mkdir -p ${shellQuote(DEV_RUNTIME_DIR)}
-rm -f ${shellQuote(DEV_SERVER_EXIT_PATH)}
+rm -f ${shellQuote(DEV_SERVER_EXIT_PATH)} ${shellQuote(DEV_SERVER_READY_PATH)}
 : > ${shellQuote(DEV_SERVER_LOG_PATH)}
 {
   trap '' HUP
@@ -1146,6 +1155,11 @@ async function waitForPublicAppUrl(
         });
 
         if (stableChecks >= Math.max(1, E2B_PUBLIC_READY_STABLE_CHECKS)) {
+          await session.sandbox.files.write(
+            DEV_SERVER_READY_PATH,
+            new Date().toISOString(),
+            { requestTimeoutMs: E2B_COMMAND_TIMEOUT_MS }
+          ).catch(() => undefined);
           return;
         }
       } else {
@@ -1247,15 +1261,22 @@ export async function startDevServer(
       timeoutMs: E2B_COMMAND_TIMEOUT_MS,
     }
   );
-  const handle = await session.sandbox.commands.run(DEV_SERVER_START_SCRIPT_PATH, {
-    cwd: PROJECT_WORKSPACE_PATH,
-    background: true,
-    timeoutMs: E2B_SANDBOX_TIMEOUT_MS,
-    requestTimeoutMs: E2B_COMMAND_TIMEOUT_MS,
-    onStdout: (data) => logSandboxOutput("stdout", session, data, "dev_server"),
-    onStderr: (data) => logSandboxOutput("stderr", session, data, "dev_server"),
-  });
-  const devServerPid = handle.pid;
+  const launchResult = await session.sandbox.commands.run(
+    `nohup ${shellQuote(DEV_SERVER_START_SCRIPT_PATH)} >/dev/null 2>&1 < /dev/null & echo $!`,
+    {
+      cwd: PROJECT_WORKSPACE_PATH,
+      timeoutMs: E2B_COMMAND_TIMEOUT_MS,
+      requestTimeoutMs: E2B_COMMAND_TIMEOUT_MS,
+      onStdout: (data) => logSandboxOutput("stdout", session, data, "dev_server_launcher"),
+      onStderr: (data) => logSandboxOutput("stderr", session, data, "dev_server_launcher"),
+    }
+  );
+  const devServerPid = extractPid(launchResult.stdout);
+  if (!devServerPid) {
+    throw new Error(
+      `E2B dev server launcher did not return a process id. stdout=${launchResult.stdout || ""} stderr=${launchResult.stderr || ""}`
+    );
+  }
   await session.sandbox.files.write(DEV_SERVER_PID_PATH, String(devServerPid), {
     requestTimeoutMs: E2B_COMMAND_TIMEOUT_MS,
   });
@@ -1565,7 +1586,14 @@ export async function getPreviewRuntime(containerId: string): Promise<{
   upstreamUrls: string[];
 }> {
   const session = await getSession(containerId);
-  await ensureProjectSandboxRunning(containerId, session.owner);
+  try {
+    await ensureProjectSandboxRunning(containerId, session.owner);
+  } catch (error) {
+    const diagnostics = await readDevServerDiagnostics(session);
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)}\n${diagnostics.slice(-6_000)}`
+    );
+  }
   const appUrl = session.appUrl || toAppUrl(session.sandbox);
 
   return {
@@ -1772,7 +1800,7 @@ function createViteWorkspaceTemplateFiles(): Array<{ path: string; content: stri
     },
     {
       path: "vite.config.ts",
-      content: `import { defineConfig } from "vite";\nimport react from "@vitejs/plugin-react";\nimport tailwindcss from "@tailwindcss/vite";\n\nexport default defineConfig({\n  plugins: [react(), tailwindcss()],\n  server: {\n    host: "0.0.0.0",\n    port: 3000,\n  },\n});\n`,
+      content: `import { defineConfig } from "vite";\nimport react from "@vitejs/plugin-react";\nimport tailwindcss from "@tailwindcss/vite";\n\nexport default defineConfig({\n  plugins: [react(), tailwindcss()],\n  server: {\n    host: "0.0.0.0",\n    port: ${PROJECT_APP_PORT},\n    strictPort: true,\n  },\n});\n`,
     },
     {
       path: "src/main.tsx",

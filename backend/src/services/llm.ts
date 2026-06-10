@@ -10193,6 +10193,21 @@ async function runPreviewSmokeCheck(params: {
         trace: "preview_smoke_check_failed",
         error: "No preview upstream URL returned a healthy HTML response.",
       };
+      try {
+        const diagnostics = await dockerService.getProjectDevServerDiagnostics(
+          params.containerId
+        );
+        lastResult.error = [
+          lastResult.error || "Preview smoke check failed.",
+          "Runtime diagnostics:",
+          clipText(diagnostics, 4_000),
+        ].join("\n");
+      } catch (diagnosticError) {
+        lastResult.error = [
+          lastResult.error || "Preview smoke check failed.",
+          `Runtime diagnostics unavailable: ${getErrorMessage(diagnosticError)}`,
+        ].join("\n");
+      }
       console.warn("preview_smoke_check_failed", {
         trace: lastResult.trace,
         containerId: params.containerId,
