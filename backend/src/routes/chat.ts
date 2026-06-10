@@ -204,6 +204,14 @@ router.post("/:containerId/messages", async (req, res) => {
   }
 
   const shouldStream = stream === true;
+  let streamPrepared = false;
+  const ensureStreamPrepared = () => {
+    if (!shouldStream || streamPrepared) return;
+    if (!res.headersSent) {
+      prepareSseResponse(req, res);
+    }
+    streamPrepared = true;
+  };
 
   try {
     const account = req.account;
@@ -212,6 +220,24 @@ router.post("/:containerId/messages", async (req, res) => {
       return res.status(401).json({
         success: false,
         error: "Please sign in to continue.",
+      });
+    }
+
+    if (shouldStream) {
+      ensureStreamPrepared();
+      writeSseData(res, {
+        type: "progress",
+        data: {
+          stage: "scan",
+          title: isLikelyTurkishMessage(message)
+            ? "Klawpen workspace hazırlanıyor"
+            : "Preparing Klawpen workspace",
+          description: isLikelyTurkishMessage(message)
+            ? "Sandbox, dosya sistemi ve canlı önizleme bağlantısı hazırlanıyor."
+            : "Preparing the sandbox, file system, and live preview connection.",
+          percent: 4,
+          files: [],
+        },
       });
     }
 
@@ -227,7 +253,7 @@ router.post("/:containerId/messages", async (req, res) => {
         llmService.addConversationalMessage(containerId, message, shortcutReply);
 
       if (shouldStream) {
-        prepareSseResponse(req, res);
+        ensureStreamPrepared();
         writeSseData(res, { type: "user", data: userMessage });
         writeSseData(res, {
           type: "assistant",
@@ -260,7 +286,7 @@ router.post("/:containerId/messages", async (req, res) => {
         );
 
       if (shouldStream) {
-        prepareSseResponse(req, res);
+        ensureStreamPrepared();
         writeSseData(res, { type: "user", data: userMessage });
         writeSseData(res, {
           type: "assistant",
@@ -340,7 +366,7 @@ router.post("/:containerId/messages", async (req, res) => {
         );
 
       if (shouldStream) {
-        prepareSseResponse(req, res);
+        ensureStreamPrepared();
         writeSseData(res, { type: "user", data: userMessage });
         writeSseData(res, {
           type: "assistant",
@@ -360,7 +386,7 @@ router.post("/:containerId/messages", async (req, res) => {
     }
 
     if (shouldStream) {
-      prepareSseResponse(req, res);
+      ensureStreamPrepared();
 
       const messageStream = llmService.sendMessageStream(
         containerId,
@@ -396,9 +422,7 @@ router.post("/:containerId/messages", async (req, res) => {
   } catch (error) {
     console.log(error);
     if (shouldStream) {
-      if (!res.headersSent) {
-        prepareSseResponse(req, res);
-      }
+      ensureStreamPrepared();
       writeSseData(res, {
         type: "error",
         data: {

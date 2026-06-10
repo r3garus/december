@@ -118,6 +118,9 @@ router.post("/create", async (req, res) => {
   const projectPrompt =
     typeof req.body?.prompt === "string" ? req.body.prompt : null;
   const projectTitle = typeof req.body?.title === "string" ? req.body.title : null;
+  const lazyBootstrap =
+    req.body?.lazyBootstrap === true ||
+    (typeof projectPrompt === "string" && projectPrompt.trim().length > 0);
 
   try {
     const latestSnapshot = requestedProjectId
@@ -134,6 +137,9 @@ router.post("/create", async (req, res) => {
         teamId: req.account!.teamId,
         localUserId: req.account!.localUserId,
         projectId,
+      },
+      {
+        lazyBootstrap,
       }
     );
     await projectSnapshotService.ensureProjectForContainer({
@@ -149,7 +155,7 @@ router.post("/create", async (req, res) => {
         containerId: container.id,
         snapshot: latestSnapshot,
       });
-    } else {
+    } else if (!lazyBootstrap) {
       await fileService.writeFile(
         container.id,
         "src/app/page.tsx",
@@ -163,6 +169,12 @@ router.post("/create", async (req, res) => {
           source: "container_create",
           restored: false,
         },
+      });
+    } else {
+      console.log("project_create_initial_build_deferred", {
+        trace: "project_create_initial_build_deferred",
+        containerId: container.id,
+        projectId,
       });
     }
 

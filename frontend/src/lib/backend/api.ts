@@ -123,6 +123,7 @@ export interface CreateContainerOptions {
   projectId?: string;
   title?: string;
   prompt?: string;
+  lazyBootstrap?: boolean;
 }
 
 export interface StartContainerResponse {

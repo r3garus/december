@@ -211,6 +211,8 @@ export const ProjectPromptInterface = ({ language, theme, accountName }: Project
         "Good question. This box starts a new build when you describe a project. For general questions, open a project and use the agent chat, or write a clear build brief here.",
       vaguePromptResponse:
         "To build this professionally, add the industry, target audience, goal, and visual style. Example: \"Build a premium restaurant landing page with menu, booking CTA, testimonials, and FAQ.\"",
+      creatingProject:
+        "Project request received. Opening the workspace now, then Klawpen Core will start building in the background.",
     },
     tr: {
       title: `Merhaba ${accountName}, ne olu\u015fturmak istiyorsun?`,
@@ -237,6 +239,8 @@ export const ProjectPromptInterface = ({ language, theme, accountName }: Project
         "G\u00fczel soru. Bu alan yeni proje ba\u015flatmak i\u00e7in \u00e7al\u0131\u015f\u0131yor. Genel sorular i\u00e7in bir projenin i\u00e7indeki ajan sohbetini kullanabilir veya burada net bir proje brief'i yazabilirsin.",
       vaguePromptResponse:
         "Bunu profesyonel yapmak i\u00e7in sekt\u00f6r, hedef kullan\u0131c\u0131, ama\u00e7 ve g\u00f6rsel tarz\u0131 da ekle. \u00d6rnek: \"Men\u00fc, rezervasyon CTA's\u0131, yorumlar ve SSS i\u00e7eren premium restoran landing page yap.\"",
+      creatingProject:
+        "Proje iste\u011fin al\u0131nd\u0131. Workspace a\u00e7\u0131l\u0131yor; ard\u0131ndan Klawpen Core arka planda olu\u015fturmaya ba\u015flayacak.",
     },
   }[language];
 
@@ -393,9 +397,11 @@ export const ProjectPromptInterface = ({ language, theme, accountName }: Project
       const projectSummary = buildSummaryFromPrompt(promptValue);
 
       toast(language === "tr" ? "Klawpen projesi olu\u015fturuluyor..." : "Creating Klawpen project...");
+      setPromptGuidance(labels.creatingProject);
       const containerResponse = await createContainer({
         title: projectTitle,
         prompt: promptValue,
+        lazyBootstrap: true,
       });
       const containerId = containerResponse.containerId;
       const existingMetadata = readStoredMetadata();
@@ -554,8 +560,14 @@ export const ProjectPromptInterface = ({ language, theme, accountName }: Project
           <div className={`mx-2 mt-1 flex items-center gap-1.5 rounded-xl px-2 py-1.5 text-[10px] leading-tight ${
             isDark ? "bg-white/[0.045] text-slate-400" : "bg-[#f6f9fc] text-slate-500"
           }`}>
-            <Sparkles className={`h-3 w-3 shrink-0 ${isDark ? "text-cyan-200/75" : "text-[#31577d]/70"}`} />
-            <span className="truncate">{promptHelperText}</span>
+            {isCreatingFromPrompt ? (
+              <span className={`h-3 w-3 shrink-0 rounded-full border border-current border-t-transparent animate-spin ${isDark ? "text-cyan-200/75" : "text-[#31577d]/70"}`} />
+            ) : (
+              <Sparkles className={`h-3 w-3 shrink-0 ${isDark ? "text-cyan-200/75" : "text-[#31577d]/70"}`} />
+            )}
+            <span className="truncate">
+              {isCreatingFromPrompt ? labels.creatingProject : promptHelperText}
+            </span>
           </div>
 
           {selectedImage && selectedImagePreviewUrl ? (

@@ -63,6 +63,7 @@ export interface ProjectOwner {
 
 export interface CreateSandboxOptions {
   restoreSnapshot?: boolean;
+  lazyBootstrap?: boolean;
 }
 
 interface ProjectSandboxSession {
@@ -1473,26 +1474,35 @@ export async function createSandboxWorkspace(
     };
     sessions.set(containerId, session);
 
-    try {
-      await logWorkspacePreflight(session, "sandbox_bootstrap_empty_preflight");
-      await ensureProjectWorkspaceReadyForSession(session, {
-        install: true,
-        force: true,
-      });
-      await logWorkspacePreflight(session, "sandbox_bootstrap_template_preflight");
-      await startDevServer(session);
-    } catch (error) {
-      console.error("e2b_sandbox_bootstrap_failed", {
-        trace: "e2b_sandbox_bootstrap_failed",
+    if (_options.lazyBootstrap) {
+      console.log("e2b_sandbox_lazy_bootstrap_deferred", {
+        trace: "e2b_sandbox_lazy_bootstrap_deferred",
         containerId,
         sandboxId: session.sandboxId,
-        error: error instanceof Error ? error.message : String(error),
+        previewUrl: session.previewUrl,
       });
+    } else {
       try {
-        await sandbox.kill();
-      } catch {}
-      sessions.delete(containerId);
-      throw error;
+        await logWorkspacePreflight(session, "sandbox_bootstrap_empty_preflight");
+        await ensureProjectWorkspaceReadyForSession(session, {
+          install: true,
+          force: true,
+        });
+        await logWorkspacePreflight(session, "sandbox_bootstrap_template_preflight");
+        await startDevServer(session);
+      } catch (error) {
+        console.error("e2b_sandbox_bootstrap_failed", {
+          trace: "e2b_sandbox_bootstrap_failed",
+          containerId,
+          sandboxId: session.sandboxId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        try {
+          await sandbox.kill();
+        } catch {}
+        sessions.delete(containerId);
+        throw error;
+      }
     }
 
     console.log("e2b_sandbox_create_completed", {
