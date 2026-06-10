@@ -11015,7 +11015,7 @@ ${codeContext}`;
     resolvedOptions
   );
 
-  if (applyResult.applied > 0 && applyResult.failed.length === 0) {
+  if (applyResult.applied > 0) {
     let previewSmoke: PreviewSmokeResult;
 
     try {
@@ -11055,7 +11055,16 @@ ${codeContext}`;
       });
     }
 
-    if (!previewSmoke.ok) {
+    if (applyResult.failed.length > 0) {
+      assistantContent += `\n<dec-error>Some generated edits could not be applied automatically, but the preview runtime was refreshed with the successfully written files. Failed edits: ${clipText(
+        applyResult.failed
+          .map((failure) => `${failure.label}: ${failure.error}`)
+          .join("; "),
+        1_200
+      )}</dec-error>`;
+    }
+
+    if (!previewSmoke.ok && applyResult.failed.length === 0) {
       console.warn("runtime_preview_repair_triggered", {
         trace: "runtime_preview_repair_triggered",
         containerId,

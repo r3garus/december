@@ -14,6 +14,18 @@ const MAX_FILE_WRITE_BYTES = 10_000_000;
 const MAX_CONTENT_TREE_FILE_BYTES = Number(
   process.env.KLAWPEN_FILE_CONTENT_MAX_BYTES || "600000"
 );
+const E2B_FILE_LIST_TIMEOUT_MS = Number(
+  process.env.E2B_FILE_LIST_TIMEOUT_MS || "120000"
+);
+const E2B_FILE_READ_TIMEOUT_MS = Number(
+  process.env.E2B_FILE_READ_TIMEOUT_MS || "120000"
+);
+const E2B_FILE_WRITE_TIMEOUT_MS = Number(
+  process.env.E2B_FILE_WRITE_TIMEOUT_MS || "180000"
+);
+const E2B_FILE_WRITE_RETRIES = Number(
+  process.env.E2B_FILE_WRITE_RETRIES || "3"
+);
 
 const FILE_TREE_EXCLUDED_NAMES = new Set(["node_modules", ".next", ".git"]);
 const CONTENT_TREE_EXCLUDED_NAMES = new Set([
@@ -91,6 +103,49 @@ function normalizeLineEndings(content: string): string {
   return content.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 }
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTransientE2bFileError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /Request handshake timed out|deadline_exceeded|timeout|timed out|ECONNRESET|fetch failed|network|socket/i.test(
+    message
+  );
+}
+
+async function withE2bFileRetry<T>(
+  label: string,
+  containerId: string,
+  filePath: string,
+  action: () => Promise<T>
+): Promise<T> {
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= Math.max(1, E2B_FILE_WRITE_RETRIES); attempt++) {
+    try {
+      return await action();
+    } catch (error) {
+      lastError = error;
+      if (!isTransientE2bFileError(error) || attempt >= E2B_FILE_WRITE_RETRIES) {
+        throw error;
+      }
+
+      console.warn("e2b_file_operation_retrying", {
+        trace: "e2b_file_operation_retrying",
+        containerId,
+        path: filePath,
+        label,
+        attempt,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      await sleep(750 * attempt);
+    }
+  }
+
+  throw lastError;
+}
+
 function isPackageManifestPath(filePath: string): boolean {
   return path.posix.relative(BASE_PATH, filePath).replace(/\\/g, "/") === "package.json";
 }
@@ -124,7 +179,7 @@ async function listEntryInfos(
   const safePath = toSafeContainerPath(containerPath);
   return sandbox.files.list(safePath, {
     depth,
-    requestTimeoutMs: Number(process.env.E2B_FILE_LIST_TIMEOUT_MS || "60000"),
+    requestTimeoutMs: E2B_FILE_LIST_TIMEOUT_MS,
   });
 }
 
@@ -227,7 +282,7 @@ export async function getFileContentTree(
       } else {
         try {
           item.content = await sandbox.files.read(absolutePath, {
-            requestTimeoutMs: Number(process.env.E2B_FILE_READ_TIMEOUT_MS || "60000"),
+            requestTimeoutMs: E2B_FILE_READ_TIMEOUT_MS,
           });
         } catch (error) {
           item.content = `Error reading file: ${error instanceof Error ? error.message : "Unknown error"}`;
@@ -251,7 +306,7 @@ export async function readFile(
   const safePath = toSafeMutablePath(filePath);
   const sandbox = await getSandbox(containerId);
   const output = await sandbox.files.read(safePath, {
-    requestTimeoutMs: Number(process.env.E2B_FILE_READ_TIMEOUT_MS || "60000"),
+    requestTimeoutMs: E2B_FILE_READ_TIMEOUT_MS,
   });
 
   return output.replace(/^\uFEFF/, "");
@@ -307,13 +362,17 @@ export async function writeFile(
   });
 
   try {
-    await sandbox.files.write(absolutePath, content, {
-      requestTimeoutMs: Number(process.env.E2B_FILE_WRITE_TIMEOUT_MS || "60000"),
-    });
+    await withE2bFileRetry("write", containerId, filePath, () =>
+      sandbox.files.write(absolutePath, content, {
+        requestTimeoutMs: E2B_FILE_WRITE_TIMEOUT_MS,
+      })
+    );
 
-    const writtenContent = await sandbox.files.read(absolutePath, {
-      requestTimeoutMs: Number(process.env.E2B_FILE_READ_TIMEOUT_MS || "60000"),
-    });
+    const writtenContent = await withE2bFileRetry("read_after_write", containerId, filePath, () =>
+      sandbox.files.read(absolutePath, {
+        requestTimeoutMs: E2B_FILE_READ_TIMEOUT_MS,
+      })
+    );
     const actualBytes = Buffer.byteLength(writtenContent, "utf8");
     const actualHash = hashContent(writtenContent);
 
@@ -390,7 +449,7 @@ export async function renameFile(
   const absoluteNewPath = toSafeMutablePath(newPath);
   const sandbox = await getSandbox(containerId);
   await sandbox.files.rename(absoluteOldPath, absoluteNewPath, {
-    requestTimeoutMs: Number(process.env.E2B_FILE_WRITE_TIMEOUT_MS || "60000"),
+    requestTimeoutMs: E2B_FILE_WRITE_TIMEOUT_MS,
   });
 }
 
@@ -403,6 +462,6 @@ export async function removeFile(
   const absolutePath = toSafeMutablePath(filePath);
   const sandbox = await getSandbox(containerId);
   await sandbox.files.remove(absolutePath, {
-    requestTimeoutMs: Number(process.env.E2B_FILE_WRITE_TIMEOUT_MS || "60000"),
+    requestTimeoutMs: E2B_FILE_WRITE_TIMEOUT_MS,
   });
 }
