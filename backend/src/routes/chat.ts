@@ -43,8 +43,15 @@ function prepareSseResponse(req: express.Request, res: express.Response) {
 }
 
 function writeSseData(res: express.Response, payload: unknown) {
+  if (res.writableEnded || res.destroyed) return;
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
   flushSse(res);
+}
+
+function finishSse(res: express.Response) {
+  if (res.writableEnded || res.destroyed) return;
+  res.write("data: [DONE]\n\n");
+  res.end();
 }
 
 const TURKISH_HINT_PATTERN = /[Ã§ÄŸÄ±Ä°Ã¶ÅŸÃ¼]/i;
@@ -260,8 +267,7 @@ router.post("/:containerId/messages", async (req, res) => {
           data: assistantMessage,
         });
         writeSseData(res, { type: "done", data: assistantMessage });
-        res.write("data: [DONE]\n\n");
-        res.end();
+        finishSse(res);
         return;
       }
 
@@ -293,8 +299,7 @@ router.post("/:containerId/messages", async (req, res) => {
           data: assistantMessage,
         });
         writeSseData(res, { type: "done", data: assistantMessage });
-        res.write("data: [DONE]\n\n");
-        res.end();
+        finishSse(res);
         return;
       }
 
@@ -344,6 +349,19 @@ router.post("/:containerId/messages", async (req, res) => {
             ? "Klawpen Core kredin yetersiz. Devam etmek iÃ§in kredi eklemen veya planÄ±nÄ± yÃ¼kseltmen gerekiyor."
             : "Your Klawpen Core credit is not enough. Add credit or upgrade your plan.";
 
+      if (shouldStream) {
+        ensureStreamPrepared();
+        writeSseData(res, {
+          type: "error",
+          data: {
+            error,
+            usage,
+          },
+        });
+        finishSse(res);
+        return;
+      }
+
       return res.status(402).json({
         success: false,
         error,
@@ -373,8 +391,7 @@ router.post("/:containerId/messages", async (req, res) => {
           data: assistantMessage,
         });
         writeSseData(res, { type: "done", data: assistantMessage });
-        res.write("data: [DONE]\n\n");
-        res.end();
+        finishSse(res);
         return;
       }
 
@@ -401,8 +418,7 @@ router.post("/:containerId/messages", async (req, res) => {
         writeSseData(res, chunk);
       }
 
-      res.write("data: [DONE]\n\n");
-      res.end();
+      finishSse(res);
     } else {
       const { userMessage, assistantMessage } = await llmService.sendMessage(
         containerId,
@@ -429,8 +445,12 @@ router.post("/:containerId/messages", async (req, res) => {
           error: error instanceof Error ? error.message : "Unknown error",
         },
       });
-      res.end();
+      finishSse(res);
     } else {
+      if (res.headersSent) {
+        res.end();
+        return;
+      }
       res.status(500).json({
         success: false,
         error: error instanceof Error ? error.message : "Unknown error",
