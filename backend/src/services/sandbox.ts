@@ -73,6 +73,7 @@ interface ProjectSandboxSession {
   owner: ProjectOwner;
   projectId?: string | null;
   previewUrl: string;
+  appUrl?: string;
   createdAt: string;
   status: "running" | "stopped";
   devServerStarted: boolean;
@@ -172,6 +173,10 @@ function toPreviewUrl(sandbox: Sandbox, port = PROJECT_PREVIEW_PORT) {
     : `https://${host}`;
 }
 
+function toAppUrl(sandbox: Sandbox) {
+  return toPreviewUrl(sandbox, PROJECT_APP_PORT);
+}
+
 function buildPreviewUrlFromSandboxId(sandboxId: string, port = PROJECT_PREVIEW_PORT) {
   return `https://${port}-${sandboxId}.${E2B_DOMAIN}`;
 }
@@ -211,7 +216,8 @@ export function buildPreviewProxyUrl(containerId: string): string {
 }
 
 export function buildDirectPreviewUrl(containerId: string): string | null {
-  return sessions.get(containerId)?.previewUrl || null;
+  const session = sessions.get(containerId);
+  return session?.appUrl || session?.previewUrl || null;
 }
 
 function makeContainerInfo(session: ProjectSandboxSession) {
@@ -307,6 +313,7 @@ async function connectFromInfo(info: SandboxInfo): Promise<ProjectSandboxSession
     owner,
     projectId: owner.projectId,
     previewUrl: buildPreviewUrlFromSandboxId(info.sandboxId),
+    appUrl: buildPreviewUrlFromSandboxId(info.sandboxId, PROJECT_APP_PORT),
     createdAt: info.startedAt?.toISOString?.() || new Date().toISOString(),
     status: info.state === "paused" ? "stopped" : "running",
     devServerStarted: info.state === "running",
@@ -1433,6 +1440,7 @@ export async function startDevServer(
   session.devServerFramework = plan.framework;
   session.status = "running";
   session.previewUrl = toPreviewUrl(session.sandbox, PROJECT_PREVIEW_PORT);
+  session.appUrl = toAppUrl(session.sandbox);
 
   console.log("e2b_dev_server_started", {
     trace: "e2b_dev_server_started",
@@ -1487,6 +1495,7 @@ export async function createSandboxWorkspace(
       owner,
       projectId: owner.projectId,
       previewUrl: toPreviewUrl(sandbox, PROJECT_PREVIEW_PORT),
+      appUrl: toAppUrl(sandbox),
       createdAt: new Date().toISOString(),
       status: "running",
       devServerStarted: false,
@@ -1581,6 +1590,7 @@ export async function ensureProjectSandboxRunning(
     session.devServerStarted = true;
     session.status = "running";
     session.previewUrl = toPreviewUrl(session.sandbox, PROJECT_PREVIEW_PORT);
+    session.appUrl = toAppUrl(session.sandbox);
   } else {
     await startDevServer(session);
   }
@@ -1598,12 +1608,13 @@ export async function startSandbox(
 export async function restartProjectDevServer(
   containerId: string,
   owner?: ProjectOwner | null
-): Promise<{ port: number; previewUrl: string; diagnostics: string }> {
+): Promise<{ port: number; previewUrl: string; appUrl: string; diagnostics: string }> {
   const session = await getSession(containerId, owner);
   await startDevServer(session, { force: true });
   return {
     port: PROJECT_PREVIEW_PORT,
     previewUrl: session.previewUrl,
+    appUrl: session.appUrl || toAppUrl(session.sandbox),
     diagnostics: await readDevServerDiagnostics(session),
   };
 }
@@ -1689,8 +1700,8 @@ export async function listProjectSandboxes(owner?: ProjectOwner | null) {
     image: `e2b:${E2B_TEMPLATE}`,
     created: session.createdAt,
     assignedPort: PROJECT_PREVIEW_PORT,
-    url: session.previewUrl || buildPreviewProxyUrl(session.containerId),
-    rawUrl: session.previewUrl,
+    url: session.appUrl || session.previewUrl || buildPreviewProxyUrl(session.containerId),
+    rawUrl: session.appUrl || session.previewUrl,
     ports: [
       {
         private: PROJECT_PREVIEW_PORT,
@@ -1709,12 +1720,13 @@ export async function getPreviewRuntime(containerId: string): Promise<{
 }> {
   const session = await getSession(containerId);
   await ensureProjectSandboxRunning(containerId, session.owner);
-  const upstreamUrl = session.previewUrl || toPreviewUrl(session.sandbox);
+  const appUrl = session.appUrl || toAppUrl(session.sandbox);
+  const previewUrl = session.previewUrl || toPreviewUrl(session.sandbox);
 
   return {
     containerInfo: makeContainerInfo(session),
     port: PROJECT_PREVIEW_PORT,
-    upstreamUrls: [upstreamUrl],
+    upstreamUrls: Array.from(new Set([appUrl, previewUrl].filter(Boolean))),
   };
 }
 
