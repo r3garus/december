@@ -552,6 +552,15 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function extractPid(value: string | null | undefined): number | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  const match = trimmed.match(/\d+/);
+  if (!match) return undefined;
+  const pid = Number(match[0]);
+  return Number.isFinite(pid) && pid > 0 ? pid : undefined;
+}
+
 async function readWorkspaceTextFile(
   session: ProjectSandboxSession,
   relativePath: string
@@ -1386,20 +1395,23 @@ export async function startDevServer(
 
   await writeDevServerLaunchScript(session, plan);
 
-  const handle = await session.sandbox.commands.run(
-    DEV_SERVER_START_SCRIPT_PATH,
+  const launchResult = await session.sandbox.commands.run(
+    [
+      `rm -f ${shellQuote(DEV_SERVER_PID_PATH)}`,
+      `nohup ${shellQuote(DEV_SERVER_START_SCRIPT_PATH)} >/dev/null 2>&1 &`,
+      `echo $! | tee ${shellQuote(DEV_SERVER_PID_PATH)}`,
+    ].join("\n"),
     {
       cwd: PROJECT_WORKSPACE_PATH,
-      background: true,
       timeoutMs: E2B_COMMAND_TIMEOUT_MS,
-      onStdout: (data) => logSandboxOutput("stdout", session, data),
-      onStderr: (data) => logSandboxOutput("stderr", session, data),
+      onStdout: (data) => logSandboxOutput("stdout", session, data, "dev_server_launch"),
+      onStderr: (data) => logSandboxOutput("stderr", session, data, "dev_server_launch"),
     }
   );
+  const devServerPid =
+    extractPid(launchResult.stdout) ||
+    extractPid(await readWorkspaceTextFile(session, ".klawpen/dev-server.pid"));
 
-  await session.sandbox.files.write(DEV_SERVER_PID_PATH, String(handle.pid), {
-    requestTimeoutMs: E2B_COMMAND_TIMEOUT_MS,
-  });
   try {
     await waitForPreviewPort(session, E2B_START_TIMEOUT_MS);
   } catch (error) {
@@ -1416,7 +1428,7 @@ export async function startDevServer(
   }
 
   session.devServerStarted = true;
-  session.devServerPid = handle.pid;
+  session.devServerPid = devServerPid;
   session.devServerCommand = plan.displayCommand;
   session.devServerFramework = plan.framework;
   session.status = "running";
@@ -1426,7 +1438,7 @@ export async function startDevServer(
     trace: "e2b_dev_server_started",
     containerId: session.containerId,
     sandboxId: session.sandboxId,
-    pid: session.devServerPid,
+    pid: session.devServerPid || null,
     framework: session.devServerFramework,
     command: session.devServerCommand,
     previewUrl: session.previewUrl,
