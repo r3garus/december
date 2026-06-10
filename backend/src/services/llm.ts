@@ -396,6 +396,7 @@ type BuildOutputSource =
   | "bootstrap_rescue_ai"
   | "last_valid_ai_draft"
   | "local_template_fallback"
+  | "local_emergency_fallback"
   | "local_fallback_disabled_error"
   | "unknown";
 
@@ -10055,9 +10056,16 @@ function getPreviewSmokeCandidateUrls(runtime: {
   ).filter(Boolean);
 }
 
-function getPreviewRuntimeError(html: string, status: number) {
+function getPreviewRuntimeError(
+  html: string,
+  status: number,
+  headers?: Headers
+) {
   const normalized = html.replace(/\s+/g, " ").trim();
   const digestMatch = normalized.match(/\bDigest:\s*([a-z0-9-]+)/i);
+  const klawpenRuntimeError =
+    headers?.get("x-klawpen-runtime-error") ||
+    /Klawpen preview runtime failed/i.test(normalized);
   const serverException =
     /Application error:\s*a server-side exception has occurred/i.test(normalized) ||
     /server-side exception has occurred/i.test(normalized);
@@ -10066,9 +10074,16 @@ function getPreviewRuntimeError(html: string, status: number) {
       normalized
     );
 
-  if (serverException || digestMatch || nextRuntimeError || status >= 500) {
+  if (
+    klawpenRuntimeError ||
+    serverException ||
+    digestMatch ||
+    nextRuntimeError ||
+    status >= 500
+  ) {
     return [
       `Preview runtime failed with status ${status}.`,
+      klawpenRuntimeError ? "Klawpen preview proxy reported that the generated app server is unavailable." : "",
       digestMatch ? `Digest: ${digestMatch[1]}.` : "",
       serverException ? "Next.js reported a server-side exception." : "",
       nextRuntimeError ? "The HTML contains a runtime/build error signature." : "",
@@ -10123,7 +10138,11 @@ async function runPreviewSmokeCheck(params: {
               `preview smoke check ${url}`
             );
             const html = await response.text();
-            const runtimeError = getPreviewRuntimeError(html, response.status);
+            const runtimeError = getPreviewRuntimeError(
+              html,
+              response.status,
+              response.headers
+            );
 
             if (!runtimeError) {
               return {
@@ -11131,7 +11150,54 @@ ${codeContext}`;
             assistantContent += `\n<dec-error>Preview runtime failed and automatic repair returned no applied file changes. Trace: runtime_preview_repair_apply_empty.</dec-error>`;
           }
         } else {
-          assistantContent += `\n<dec-error>Preview runtime failed and automatic repair could not produce executable edits. Trace: runtime_preview_repair_empty.</dec-error>`;
+          console.warn("runtime_preview_repair_empty_fallback_triggered", {
+            trace: "runtime_preview_repair_empty_fallback_triggered",
+            containerId,
+            previewError: clipText(previewSmoke.error || "", 1_500),
+          });
+
+          const fallbackRepairContent = buildLocalEmergencyAssistantContent(
+            userMessage,
+            `Preview runtime repair returned no executable edits. ${previewSmoke.error || ""}`
+          );
+          const fallbackRepairApplyResult = await applyCodeOperations(
+            containerId,
+            fallbackRepairContent,
+            userMessage,
+            progress,
+            resolvedOptions
+          );
+          applyResult = mergeApplyResults(applyResult, fallbackRepairApplyResult);
+          assistantContent += `\n\n${fallbackRepairContent}`;
+
+          if (fallbackRepairApplyResult.applied > 0) {
+            outputSource = "local_emergency_fallback";
+            finalOutputStats = getBuildWriteStats(assistantContent);
+            try {
+              await dockerService.restartProjectDevServer(containerId);
+              const fallbackSmoke = await runPreviewSmokeCheck({
+                containerId,
+                userMessage,
+                progress,
+                percent: 95,
+              });
+              if (!fallbackSmoke.ok) {
+                assistantContent += `\n<dec-error>Preview runtime failed after local safety repair. Trace: ${fallbackSmoke.trace}. ${clipText(
+                  fallbackSmoke.error || "No runtime error details were returned.",
+                  1_200
+                )}</dec-error>`;
+              } else {
+                assistantContent += `\n<dec-verification>Preview runtime recovered with local safety repair.</dec-verification>`;
+              }
+            } catch (error) {
+              assistantContent += `\n<dec-error>Preview runtime failed after local safety repair restart. ${clipText(
+                getErrorMessage(error),
+                1_200
+              )}</dec-error>`;
+            }
+          } else {
+            assistantContent += `\n<dec-error>Preview runtime failed and automatic repair could not produce executable edits. Trace: runtime_preview_repair_empty.</dec-error>`;
+          }
         }
       } else {
         assistantContent += `\n<dec-error>Preview runtime failed, but no AI provider was available for automatic repair. Trace: runtime_preview_repair_provider_missing.</dec-error>`;

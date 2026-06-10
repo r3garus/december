@@ -6,6 +6,7 @@ export const PROJECT_WORKSPACE_PATH =
 export const PROJECT_PREVIEW_PORT = Number(
   process.env.E2B_PREVIEW_PORT || "3000"
 );
+const PROJECT_APP_PORT = Number(process.env.E2B_APP_PORT || "3001");
 
 const PROJECT_LABEL = "klawpen";
 const RUNTIME_LABEL = "e2b";
@@ -31,6 +32,9 @@ const DEV_SERVER_LOG_PATH = `${DEV_RUNTIME_DIR}/dev-server.log`;
 const DEV_SERVER_PID_PATH = `${DEV_RUNTIME_DIR}/dev-server.pid`;
 const DEV_SERVER_EXIT_PATH = `${DEV_RUNTIME_DIR}/dev-server.exit`;
 const DEV_SERVER_START_SCRIPT_PATH = `${DEV_RUNTIME_DIR}/start-dev-server.sh`;
+const PREVIEW_PROXY_LOG_PATH = `${DEV_RUNTIME_DIR}/preview-proxy.log`;
+const PREVIEW_PROXY_PID_PATH = `${DEV_RUNTIME_DIR}/preview-proxy.pid`;
+const PREVIEW_PROXY_SCRIPT_PATH = `${DEV_RUNTIME_DIR}/preview-proxy.js`;
 const DEV_SERVER_LOG_TAIL_BYTES = Number(
   process.env.E2B_DEV_SERVER_LOG_TAIL_BYTES || "12000"
 );
@@ -947,8 +951,8 @@ async function prepareDevServerPlan(
 
   const commandText =
     framework === "vite"
-      ? `npm run dev -- --host 0.0.0.0 --port ${PROJECT_PREVIEW_PORT}`
-      : `npx next dev -H 0.0.0.0 -p ${PROJECT_PREVIEW_PORT}`;
+      ? `npm run dev -- --host 0.0.0.0 --port ${PROJECT_APP_PORT}`
+      : `npx next dev -H 0.0.0.0 -p ${PROJECT_APP_PORT}`;
 
   return {
     framework,
@@ -1004,6 +1008,10 @@ async function readDevServerDiagnostics(
     `cat ${shellQuote(DEV_SERVER_PID_PATH)} 2>/dev/null || true`,
     `echo "--- klawpen dev server exit ---"`,
     `cat ${shellQuote(DEV_SERVER_EXIT_PATH)} 2>/dev/null || true`,
+    `echo "--- klawpen preview proxy log (${PREVIEW_PROXY_LOG_PATH}) ---"`,
+    `tail -c ${Math.max(1000, DEV_SERVER_LOG_TAIL_BYTES)} ${shellQuote(PREVIEW_PROXY_LOG_PATH)} 2>/dev/null || echo "No preview-proxy.log found."`,
+    `echo "--- klawpen preview proxy pid ---"`,
+    `cat ${shellQuote(PREVIEW_PROXY_PID_PATH)} 2>/dev/null || true`,
     `echo "--- process list ---"`,
     `ps -ef | grep -E 'next|vite|npm|node' | grep -v grep || true`,
     `echo "--- package.json scripts ---"`,
@@ -1021,6 +1029,204 @@ async function readDevServerDiagnostics(
       error instanceof Error ? error.message : String(error)
     }`;
   }
+}
+
+function createPreviewProxyScript(): string {
+  return `const http = require("http");
+const fs = require("fs");
+
+const previewPort = Number(process.env.KLAWPEN_PREVIEW_PORT || "3000");
+const appPort = Number(process.env.KLAWPEN_APP_PORT || "3001");
+const devLogPath = process.env.KLAWPEN_DEV_LOG_PATH;
+const proxyLogPath = process.env.KLAWPEN_PROXY_LOG_PATH;
+
+function appendProxyLog(message) {
+  if (!proxyLogPath) return;
+  try {
+    fs.appendFileSync(proxyLogPath, \`[\${new Date().toISOString()}] \${message}\\n\`);
+  } catch {}
+}
+
+function readTail(filePath, maxBytes = 12000) {
+  if (!filePath) return "";
+  try {
+    const stat = fs.statSync(filePath);
+    const start = Math.max(0, stat.size - maxBytes);
+    const fd = fs.openSync(filePath, "r");
+    const buffer = Buffer.alloc(stat.size - start);
+    fs.readSync(fd, buffer, 0, buffer.length, start);
+    fs.closeSync(fd);
+    return buffer.toString("utf8");
+  } catch {
+    return "";
+  }
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function sendRuntimeError(res, detail) {
+  const log = readTail(devLogPath);
+  const body = \`<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Klawpen Runtime Error</title>
+    <style>
+      :root { color-scheme: dark; }
+      body { margin: 0; min-height: 100vh; background: #050608; color: #e5e7eb; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      main { min-height: 100vh; display: grid; place-items: center; padding: 32px; }
+      section { width: min(920px, 100%); border: 1px solid rgba(248, 113, 113, 0.35); border-radius: 28px; background: rgba(127, 29, 29, 0.18); box-shadow: 0 30px 120px rgba(0,0,0,0.35); overflow: hidden; }
+      header { padding: 26px 28px 18px; border-bottom: 1px solid rgba(248, 113, 113, 0.2); }
+      h1 { margin: 0; color: #fecaca; font-size: clamp(24px, 4vw, 42px); letter-spacing: -0.04em; }
+      p { margin: 12px 0 0; color: #fca5a5; line-height: 1.7; }
+      pre { margin: 0; padding: 24px 28px; white-space: pre-wrap; word-break: break-word; color: #d1d5db; background: rgba(0,0,0,0.28); font-size: 13px; line-height: 1.65; max-height: 58vh; overflow: auto; }
+      strong { color: #fff; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section>
+        <header>
+          <h1>Klawpen preview runtime failed</h1>
+          <p><strong>Preview runtime error:</strong> \${escapeHtml(detail || "Generated app server is not responding.")}</p>
+          <p>The sandbox preview port is alive, but the generated Next.js/Vite app crashed behind it. Klawpen will use these logs for automatic repair.</p>
+        </header>
+        <pre>\${escapeHtml(log || "No dev-server.log output captured yet.")}</pre>
+      </section>
+    </main>
+  </body>
+</html>\`;
+  res.writeHead(503, {
+    "content-type": "text/html; charset=utf-8",
+    "cache-control": "no-store",
+    "x-klawpen-runtime-error": "app-unavailable",
+  });
+  res.end(body);
+}
+
+const server = http.createServer((req, res) => {
+  if (req.url === "/__klawpen_proxy_health") {
+    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    res.end(JSON.stringify({ ok: true, previewPort, appPort }));
+    return;
+  }
+
+  const upstream = http.request(
+    {
+      hostname: "127.0.0.1",
+      port: appPort,
+      method: req.method,
+      path: req.url || "/",
+      headers: {
+        ...req.headers,
+        host: \`127.0.0.1:\${appPort}\`,
+      },
+    },
+    (upstreamRes) => {
+      res.writeHead(upstreamRes.statusCode || 502, upstreamRes.headers);
+      upstreamRes.pipe(res);
+    }
+  );
+
+  upstream.on("error", (error) => {
+    appendProxyLog(\`upstream_error: \${error.message}\`);
+    sendRuntimeError(res, error.message);
+  });
+
+  req.pipe(upstream);
+});
+
+server.on("clientError", (_error, socket) => {
+  socket.end("HTTP/1.1 400 Bad Request\\r\\n\\r\\n");
+});
+
+server.listen(previewPort, "0.0.0.0", () => {
+  appendProxyLog(\`preview proxy listening on \${previewPort}, forwarding to \${appPort}\`);
+});
+`;
+}
+
+async function writePreviewProxyScript(session: ProjectSandboxSession) {
+  await session.sandbox.commands.run(`mkdir -p ${shellQuote(DEV_RUNTIME_DIR)}`, {
+    cwd: PROJECT_WORKSPACE_PATH,
+    timeoutMs: E2B_COMMAND_TIMEOUT_MS,
+  });
+
+  await session.sandbox.files.write(
+    PREVIEW_PROXY_SCRIPT_PATH,
+    createPreviewProxyScript(),
+    { requestTimeoutMs: E2B_COMMAND_TIMEOUT_MS }
+  );
+}
+
+async function isPortListening(
+  session: ProjectSandboxSession,
+  port: number
+): Promise<boolean> {
+  try {
+    const result = await session.sandbox.commands.run(
+      `node -e "const net=require('net'); const socket=net.connect(${port}, '127.0.0.1'); socket.on('connect', () => { socket.destroy(); process.exit(0); }); socket.on('error', () => process.exit(1)); setTimeout(() => process.exit(1), 1500);"`,
+      {
+        timeoutMs: 10_000,
+      }
+    );
+    return result.exitCode === 0;
+  } catch {
+    return false;
+  }
+}
+
+async function startPreviewProxy(session: ProjectSandboxSession) {
+  if (await isPortListening(session, PROJECT_PREVIEW_PORT)) {
+    return;
+  }
+
+  await writePreviewProxyScript(session);
+  await session.sandbox.commands.run(
+    [
+      `mkdir -p ${shellQuote(DEV_RUNTIME_DIR)}`,
+      `: > ${shellQuote(PREVIEW_PROXY_LOG_PATH)}`,
+      `KLAWPEN_PREVIEW_PORT=${shellQuote(String(PROJECT_PREVIEW_PORT))}`,
+      `KLAWPEN_APP_PORT=${shellQuote(String(PROJECT_APP_PORT))}`,
+      `KLAWPEN_DEV_LOG_PATH=${shellQuote(DEV_SERVER_LOG_PATH)}`,
+      `KLAWPEN_PROXY_LOG_PATH=${shellQuote(PREVIEW_PROXY_LOG_PATH)}`,
+      `nohup node ${shellQuote(PREVIEW_PROXY_SCRIPT_PATH)} >> ${shellQuote(PREVIEW_PROXY_LOG_PATH)} 2>&1 &`,
+      `echo $! > ${shellQuote(PREVIEW_PROXY_PID_PATH)}`,
+    ].join(" "),
+    {
+      cwd: PROJECT_WORKSPACE_PATH,
+      timeoutMs: E2B_COMMAND_TIMEOUT_MS,
+    }
+  );
+
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 15_000) {
+    if (await isPortListening(session, PROJECT_PREVIEW_PORT)) {
+      console.log("e2b_preview_proxy_started", {
+        trace: "e2b_preview_proxy_started",
+        containerId: session.containerId,
+        sandboxId: session.sandboxId,
+        previewPort: PROJECT_PREVIEW_PORT,
+        appPort: PROJECT_APP_PORT,
+      });
+      return;
+    }
+    await sleep(500);
+  }
+
+  const diagnostics = await readDevServerDiagnostics(session);
+  throw new Error(
+    `Klawpen preview proxy did not open port ${PROJECT_PREVIEW_PORT}. Diagnostics:\n${diagnostics.slice(
+      -4_000
+    )}`
+  );
 }
 
 async function writeDevServerLaunchScript(
@@ -1071,7 +1277,7 @@ async function waitForPreviewPort(
   let lastDiagnostics = "";
 
   while (Date.now() - startedAt < timeoutMs) {
-    if (await isPreviewPortListening(session)) {
+    if (await isAppPortListening(session)) {
       return;
     }
 
@@ -1095,30 +1301,24 @@ async function waitForPreviewPort(
     trace: "e2b_dev_server_port_not_listening",
     containerId: session.containerId,
     sandboxId: session.sandboxId,
-    port: PROJECT_PREVIEW_PORT,
+    port: PROJECT_APP_PORT,
     timeoutMs,
     diagnostics: lastDiagnostics.slice(-4_000),
   });
 
   throw new Error(
-    `E2B dev server did not open port ${PROJECT_PREVIEW_PORT}. Diagnostics:\n${lastDiagnostics.slice(
+    `E2B dev server did not open app port ${PROJECT_APP_PORT}. Diagnostics:\n${lastDiagnostics.slice(
       -6_000
     )}`
   );
 }
 
 async function isPreviewPortListening(session: ProjectSandboxSession) {
-  try {
-    const result = await session.sandbox.commands.run(
-      `node -e "const net=require('net'); const socket=net.connect(${PROJECT_PREVIEW_PORT}, '127.0.0.1'); socket.on('connect', () => { socket.destroy(); process.exit(0); }); socket.on('error', () => process.exit(1)); setTimeout(() => process.exit(1), 1500);"`,
-      {
-        timeoutMs: 10_000,
-      }
-    );
-    return result.exitCode === 0;
-  } catch {
-    return false;
-  }
+  return isPortListening(session, PROJECT_PREVIEW_PORT);
+}
+
+async function isAppPortListening(session: ProjectSandboxSession) {
+  return isPortListening(session, PROJECT_APP_PORT);
 }
 
 export async function startDevServer(
@@ -1142,8 +1342,11 @@ export async function startDevServer(
     trace: "e2b_dev_server_starting",
     containerId: session.containerId,
     sandboxId: session.sandboxId,
-    port: PROJECT_PREVIEW_PORT,
+    previewPort: PROJECT_PREVIEW_PORT,
+    appPort: PROJECT_APP_PORT,
   });
+
+  await startPreviewProxy(session);
 
   await logWorkspacePreflight(session, "dev_server_preflight_before_scaffold");
   const scaffold = await ensureProjectWorkspaceReadyForSession(session, {
@@ -1188,7 +1391,20 @@ export async function startDevServer(
   await session.sandbox.files.write(DEV_SERVER_PID_PATH, String(handle.pid), {
     requestTimeoutMs: E2B_COMMAND_TIMEOUT_MS,
   });
-  await waitForPreviewPort(session, E2B_START_TIMEOUT_MS);
+  try {
+    await waitForPreviewPort(session, E2B_START_TIMEOUT_MS);
+  } catch (error) {
+    const diagnostics = await readDevServerDiagnostics(session);
+    console.error("e2b_app_server_failed_but_preview_proxy_alive", {
+      trace: "e2b_app_server_failed_but_preview_proxy_alive",
+      containerId: session.containerId,
+      sandboxId: session.sandboxId,
+      previewPort: PROJECT_PREVIEW_PORT,
+      appPort: PROJECT_APP_PORT,
+      error: error instanceof Error ? error.message : String(error),
+      diagnostics: diagnostics.slice(-4_000),
+    });
+  }
 
   session.devServerStarted = true;
   session.devServerPid = handle.pid;
@@ -1205,6 +1421,7 @@ export async function startDevServer(
     framework: session.devServerFramework,
     command: session.devServerCommand,
     previewUrl: session.previewUrl,
+    appPortHealthy: await isAppPortListening(session),
   });
 }
 
@@ -1328,7 +1545,9 @@ export async function ensureProjectSandboxRunning(
     });
   }
 
-  if (await isPreviewPortListening(session)) {
+  await startPreviewProxy(session);
+
+  if (await isAppPortListening(session)) {
     session.devServerStarted = true;
     session.status = "running";
     session.previewUrl = toPreviewUrl(session.sandbox, PROJECT_PREVIEW_PORT);
