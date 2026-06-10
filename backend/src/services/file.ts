@@ -3,7 +3,9 @@ import path from "path";
 import { FileType, type EntryInfo } from "e2b";
 import {
   PROJECT_WORKSPACE_PATH,
+  ensureProjectWorkspaceReady,
   getSandbox,
+  markProjectWorkspaceManifestDirty,
   runSandboxCommand,
 } from "./sandbox";
 
@@ -89,6 +91,10 @@ function normalizeLineEndings(content: string): string {
   return content.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 }
 
+function isPackageManifestPath(filePath: string): boolean {
+  return path.posix.relative(BASE_PATH, filePath).replace(/\\/g, "/") === "package.json";
+}
+
 function entryType(entry: EntryInfo): "file" | "directory" {
   return entry.type === FileType.DIR || String(entry.type) === "dir"
     ? "directory"
@@ -113,6 +119,7 @@ async function listEntryInfos(
   containerPath: string,
   depth = 25
 ): Promise<EntryInfo[]> {
+  await ensureProjectWorkspaceReady(containerId, undefined, { install: false });
   const sandbox = await getSandbox(containerId);
   const safePath = toSafeContainerPath(containerPath);
   return sandbox.files.list(safePath, {
@@ -240,6 +247,7 @@ export async function readFile(
   filePath: string
 ): Promise<string> {
   assertSafeContainerId(containerId);
+  await ensureProjectWorkspaceReady(containerId, undefined, { install: false });
   const safePath = toSafeMutablePath(filePath);
   const sandbox = await getSandbox(containerId);
   const output = await sandbox.files.read(safePath, {
@@ -286,6 +294,7 @@ export async function writeFile(
   const expectedBytes = Buffer.byteLength(content, "utf8");
   const expectedHash = hashContent(content);
   const absolutePath = toSafeMutablePath(filePath);
+  await ensureProjectWorkspaceReady(containerId, undefined, { install: false });
   const sandbox = await getSandbox(containerId);
 
   console.log("sandbox_file_write_started", {
@@ -341,6 +350,10 @@ export async function writeFile(
       sha256: actualHash.slice(0, 16),
     });
 
+    if (isPackageManifestPath(absolutePath)) {
+      await markProjectWorkspaceManifestDirty(containerId);
+    }
+
     return {
       path: filePath,
       absolutePath,
@@ -372,6 +385,7 @@ export async function renameFile(
   newPath: string
 ): Promise<void> {
   assertSafeContainerId(containerId);
+  await ensureProjectWorkspaceReady(containerId, undefined, { install: false });
   const absoluteOldPath = toSafeMutablePath(oldPath);
   const absoluteNewPath = toSafeMutablePath(newPath);
   const sandbox = await getSandbox(containerId);
@@ -385,6 +399,7 @@ export async function removeFile(
   filePath: string
 ): Promise<void> {
   assertSafeContainerId(containerId);
+  await ensureProjectWorkspaceReady(containerId, undefined, { install: false });
   const absolutePath = toSafeMutablePath(filePath);
   const sandbox = await getSandbox(containerId);
   await sandbox.files.remove(absolutePath, {

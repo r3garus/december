@@ -49,6 +49,8 @@ const PREVIEW_PROXY_SECRET =
 const SESSION_RECONNECT_ENABLED =
   process.env.E2B_RECONNECT_BY_METADATA !== "false";
 
+type WorkspaceFramework = "next" | "vite";
+
 export interface ProjectOwner {
   teamId: number;
   localUserId?: number | null;
@@ -71,7 +73,11 @@ interface ProjectSandboxSession {
   devServerStarted: boolean;
   devServerPid?: number;
   devServerCommand?: string;
-  devServerFramework?: "next" | "vite" | "generic";
+  devServerFramework?: WorkspaceFramework;
+  workspaceReady?: boolean;
+  workspaceFramework?: WorkspaceFramework;
+  dependenciesInstalled?: boolean;
+  manifestDirty?: boolean;
   labels: Record<string, string>;
 }
 
@@ -92,12 +98,20 @@ interface PackageManifest {
 }
 
 interface DevServerPlan {
-  framework: "next" | "vite";
+  framework: WorkspaceFramework;
   commandText: string;
   displayCommand: string;
   manifestChanged: boolean;
   devScript: string;
   shape: ProjectShape;
+}
+
+interface WorkspaceScaffoldResult {
+  framework: WorkspaceFramework;
+  repaired: boolean;
+  repairedFiles: string[];
+  hasPackageJson: boolean;
+  hasNodeModules: boolean;
 }
 
 const sessions = new Map<string, ProjectSandboxSession>();
@@ -507,6 +521,8 @@ async function installDependencies(session: ProjectSandboxSession) {
     containerId: session.containerId,
     sandboxId: session.sandboxId,
   });
+  session.dependenciesInstalled = true;
+  session.manifestDirty = false;
 }
 
 function logSandboxOutput(
@@ -599,7 +615,7 @@ async function detectProjectShape(
 function inferDevFramework(
   manifest: PackageManifest,
   shape: ProjectShape
-): "next" | "vite" {
+): WorkspaceFramework {
   const devScript = manifest.scripts?.dev || "";
   const allDependencies = {
     ...(manifest.dependencies || {}),
@@ -619,44 +635,73 @@ function inferDevFramework(
   return "next";
 }
 
-async function ensureWorkspaceScaffold(session: ProjectSandboxSession) {
+async function ensureWorkspaceScaffold(
+  session: ProjectSandboxSession
+): Promise<WorkspaceScaffoldResult> {
+  const rawManifest = await readWorkspaceTextFile(session, "package.json");
+  const parsedManifest = parsePackageManifest(rawManifest);
+  const shape = await detectProjectShape(session);
+  const framework = inferDevFramework(
+    parsedManifest || defaultPackageManifest(),
+    shape
+  );
+  const templateFiles = createWorkspaceTemplateFiles(framework);
+  const scaffoldCheckScript = [
+    "const fs = require('fs');",
+    "const path = require('path');",
+    `const root = ${JSON.stringify(PROJECT_WORKSPACE_PATH)};`,
+    `const files = ${JSON.stringify(templateFiles.map((file) => file.path))};`,
+    "for (const file of files) {",
+    "  if (fs.existsSync(path.join(root, file))) console.log(file);",
+    "}",
+    "if (fs.existsSync(path.join(root, 'node_modules'))) console.log('__node_modules__');",
+  ].join("\n");
+
   const checks = await runLoggedCommand(
     session,
     "workspace_scaffold_check",
-    [
-      `[ -f ${shellQuote(`${PROJECT_WORKSPACE_PATH}/package.json`)} ] && echo package=1 || true`,
-      `[ -f ${shellQuote(`${PROJECT_WORKSPACE_PATH}/src/app/page.tsx`)} ] && echo appPage=1 || true`,
-      `[ -f ${shellQuote(`${PROJECT_WORKSPACE_PATH}/src/app/layout.tsx`)} ] && echo appLayout=1 || true`,
-      `[ -f ${shellQuote(`${PROJECT_WORKSPACE_PATH}/src/app/globals.css`)} ] && echo globals=1 || true`,
-      `[ -f ${shellQuote(`${PROJECT_WORKSPACE_PATH}/tsconfig.json`)} ] && echo tsconfig=1 || true`,
-    ].join("; "),
+    `node -e ${shellQuote(scaffoldCheckScript)}`,
     { cwd: "/", timeoutMs: E2B_COMMAND_TIMEOUT_MS, allowFailure: true }
   );
   const output = checks.stdout || "";
   const existingFiles = new Set<string>();
-  if (output.includes("package=1")) existingFiles.add("package.json");
-  if (output.includes("appPage=1")) existingFiles.add("src/app/page.tsx");
-  if (output.includes("appLayout=1")) existingFiles.add("src/app/layout.tsx");
-  if (output.includes("globals=1")) existingFiles.add("src/app/globals.css");
-  if (output.includes("tsconfig=1")) existingFiles.add("tsconfig.json");
+  for (const line of output.split(/\r?\n/)) {
+    const filePath = line.trim();
+    if (!filePath || filePath === "__node_modules__") continue;
+    if (filePath === "package.json" && !parsedManifest) continue;
+    existingFiles.add(filePath);
+  }
+  const hasNodeModules = output.includes("__node_modules__");
 
-  const missingFiles = createWorkspaceTemplateFiles().filter(
+  const missingFiles = templateFiles.filter(
     (file) => !existingFiles.has(file.path)
   );
 
   if (!missingFiles.length) {
+    session.workspaceReady = true;
+    session.workspaceFramework = framework;
     console.log("e2b_workspace_scaffold_ready", {
       trace: "e2b_workspace_scaffold_ready",
       containerId: session.containerId,
       sandboxId: session.sandboxId,
+      framework,
+      hasPackageJson: Boolean(parsedManifest),
+      hasNodeModules,
     });
-    return;
+    return {
+      framework,
+      repaired: false,
+      repairedFiles: [],
+      hasPackageJson: Boolean(parsedManifest),
+      hasNodeModules,
+    };
   }
 
   console.warn("e2b_workspace_scaffold_missing_files_repaired", {
     trace: "e2b_workspace_scaffold_missing_files_repaired",
     containerId: session.containerId,
     sandboxId: session.sandboxId,
+    framework,
     files: missingFiles.map((file) => file.path),
   });
 
@@ -667,9 +712,111 @@ async function ensureWorkspaceScaffold(session: ProjectSandboxSession) {
     })),
     { requestTimeoutMs: E2B_COMMAND_TIMEOUT_MS }
   );
+
+  session.workspaceReady = true;
+  session.workspaceFramework = framework;
+  if (missingFiles.some((file) => file.path === "package.json")) {
+    session.manifestDirty = true;
+    session.dependenciesInstalled = false;
+  }
+
+  return {
+    framework,
+    repaired: true,
+    repairedFiles: missingFiles.map((file) => file.path),
+    hasPackageJson: true,
+    hasNodeModules,
+  };
 }
 
-function defaultPackageManifest(): PackageManifest {
+export async function ensureProjectWorkspaceReady(
+  containerId: string,
+  owner?: ProjectOwner | null,
+  options: { install?: boolean; force?: boolean } = {}
+): Promise<WorkspaceScaffoldResult> {
+  const session = await getSession(containerId, owner);
+  return ensureProjectWorkspaceReadyForSession(session, options);
+}
+
+export async function markProjectWorkspaceManifestDirty(
+  containerId: string,
+  owner?: ProjectOwner | null
+): Promise<void> {
+  const session = await getSession(containerId, owner);
+  session.manifestDirty = true;
+  session.dependenciesInstalled = false;
+}
+
+async function ensureProjectWorkspaceReadyForSession(
+  session: ProjectSandboxSession,
+  options: { install?: boolean; force?: boolean } = {}
+): Promise<WorkspaceScaffoldResult> {
+  if (options.force) {
+    session.workspaceReady = false;
+  }
+
+  if (!options.force && session.workspaceReady) {
+    if (options.install && (session.manifestDirty || !session.dependenciesInstalled)) {
+      await installDependencies(session);
+    }
+
+    return {
+      framework: session.workspaceFramework || "next",
+      repaired: false,
+      repairedFiles: [],
+      hasPackageJson: true,
+      hasNodeModules: Boolean(session.dependenciesInstalled),
+    };
+  }
+
+  await prepareWorkspaceDirectory(session);
+  await ensureNodeRuntime(session);
+  const scaffold = await ensureWorkspaceScaffold(session);
+
+  const shouldInstall =
+    options.install === true &&
+    (!scaffold.hasNodeModules ||
+      scaffold.repaired ||
+      session.manifestDirty ||
+      !session.dependenciesInstalled);
+
+  if (shouldInstall) {
+    await installDependencies(session);
+  } else if (scaffold.hasNodeModules) {
+    session.dependenciesInstalled = true;
+  }
+
+  return scaffold;
+}
+
+function defaultPackageManifest(
+  framework: WorkspaceFramework = "next"
+): PackageManifest {
+  if (framework === "vite") {
+    return {
+      name: "klawpen-workspace",
+      version: "0.1.0",
+      private: true,
+      scripts: {
+        dev: "vite",
+        build: "vite build",
+        start: "vite --host 0.0.0.0",
+      },
+      dependencies: {
+        "lucide-react": "^0.511.0",
+        react: "^19.0.0",
+        "react-dom": "^19.0.0",
+      },
+      devDependencies: {
+        "@tailwindcss/vite": "^4.1.7",
+        "@vitejs/plugin-react": "^4.3.4",
+        tailwindcss: "^4.1.7",
+        typescript: "^5",
+        vite: "^6.0.0",
+      },
+    };
+  }
+
   return {
     name: "klawpen-workspace",
     version: "0.1.0",
@@ -727,13 +874,16 @@ async function prepareDevServerPlan(
 ): Promise<DevServerPlan> {
   const rawManifest = await readWorkspaceTextFile(session, "package.json");
   const parsedManifest = parsePackageManifest(rawManifest);
-  const manifest = parsedManifest || defaultPackageManifest();
   const shape = await detectProjectShape(session);
+  const framework = inferDevFramework(
+    parsedManifest || defaultPackageManifest(),
+    shape
+  );
+  const manifest = parsedManifest || defaultPackageManifest(framework);
   manifest.scripts = asStringRecord(manifest.scripts);
   manifest.dependencies = asStringRecord(manifest.dependencies);
   manifest.devDependencies = asStringRecord(manifest.devDependencies);
 
-  const framework = inferDevFramework(manifest, shape);
   const scripts = manifest.scripts;
   let manifestChanged = !rawManifest || !parsedManifest;
 
@@ -791,6 +941,8 @@ async function prepareDevServerPlan(
       "package.json",
       `${JSON.stringify(manifest, null, 2)}\n`
     );
+    session.manifestDirty = true;
+    session.dependenciesInstalled = false;
   }
 
   const commandText =
@@ -993,9 +1145,10 @@ export async function startDevServer(
     port: PROJECT_PREVIEW_PORT,
   });
 
-  await ensureNodeRuntime(session);
   await logWorkspacePreflight(session, "dev_server_preflight_before_scaffold");
-  await ensureWorkspaceScaffold(session);
+  const scaffold = await ensureProjectWorkspaceReadyForSession(session, {
+    install: false,
+  });
   await logWorkspacePreflight(session, "dev_server_preflight_after_scaffold");
 
   const plan = await prepareDevServerPlan(session);
@@ -1010,7 +1163,12 @@ export async function startDevServer(
     shape: plan.shape,
   });
 
-  if (plan.manifestChanged) {
+  if (
+    plan.manifestChanged ||
+    !scaffold.hasNodeModules ||
+    session.manifestDirty ||
+    !session.dependenciesInstalled
+  ) {
     await installDependencies(session);
   }
 
@@ -1099,12 +1257,12 @@ export async function createSandboxWorkspace(
     sessions.set(containerId, session);
 
     try {
-      await prepareWorkspaceDirectory(session);
-      await ensureNodeRuntime(session);
       await logWorkspacePreflight(session, "sandbox_bootstrap_empty_preflight");
-      await writeWorkspaceTemplate(session);
+      await ensureProjectWorkspaceReadyForSession(session, {
+        install: true,
+        force: true,
+      });
       await logWorkspacePreflight(session, "sandbox_bootstrap_template_preflight");
-      await installDependencies(session);
       await startDevServer(session);
     } catch (error) {
       console.error("e2b_sandbox_bootstrap_failed", {
@@ -1322,6 +1480,7 @@ export async function runSandboxCommand(
   opts: { cwd?: string; timeoutMs?: number; background?: false } = {}
 ): Promise<string> {
   const session = await getSession(containerId);
+  await ensureProjectWorkspaceReadyForSession(session, { install: false });
   const commandText = Array.isArray(command)
     ? command.map(shellQuote).join(" ")
     : command;
@@ -1361,7 +1520,16 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
-function createWorkspaceTemplateFiles(): Array<{ path: string; content: string }> {
+function createWorkspaceTemplateFiles(
+  framework: WorkspaceFramework = "next"
+): Array<{ path: string; content: string }> {
+  if (framework === "vite") {
+    return createViteWorkspaceTemplateFiles();
+  }
+  return createNextWorkspaceTemplateFiles();
+}
+
+function createNextWorkspaceTemplateFiles(): Array<{ path: string; content: string }> {
   return [
     {
       path: "package.json",
@@ -1447,6 +1615,66 @@ function createWorkspaceTemplateFiles(): Array<{ path: string; content: string }
     {
       path: "src/app/page.tsx",
       content: `import type { Metadata } from "next";\n\nexport const metadata: Metadata = {\n  title: "Klawpen Workspace",\n  description: "Your Klawpen project is being prepared.",\n};\n\nexport default function Home() {\n  return (\n    <main className="min-h-screen overflow-hidden bg-[#f6f8fb] text-[#111827]">\n      <section className="relative flex min-h-screen items-center justify-center px-6 py-16">\n        <div className="absolute left-[-10%] top-[-10%] h-72 w-72 rounded-full bg-[#1689ff]/20 blur-3xl" />\n        <div className="absolute bottom-[-12%] right-[-8%] h-80 w-80 rounded-full bg-[#7cc7ff]/20 blur-3xl" />\n        <div className="relative w-full max-w-3xl rounded-[2rem] border border-white/80 bg-white/85 p-8 text-center shadow-[0_30px_90px_rgba(15,23,42,0.12)] backdrop-blur-xl sm:p-12">\n          <div className="mx-auto mb-7 flex h-16 w-16 items-center justify-center rounded-3xl bg-[#1689ff] text-xl font-black text-white shadow-[0_18px_40px_rgba(22,137,255,0.28)]">\n            K\n          </div>\n          <p className="mb-4 text-xs font-black uppercase tracking-[0.32em] text-[#1689ff]">\n            Klawpen Builder\n          </p>\n          <h1 className="text-4xl font-black tracking-[-0.06em] text-slate-950 sm:text-6xl">\n            Your project is being crafted\n          </h1>\n          <p className="mx-auto mt-5 max-w-xl text-base leading-8 text-slate-500">\n            Klawpen Core is preparing the first version of your website. The preview will refresh automatically as files are generated.\n          </p>\n        </div>\n      </section>\n    </main>\n  );\n}\n`,
+    },
+  ];
+}
+
+function createViteWorkspaceTemplateFiles(): Array<{ path: string; content: string }> {
+  return [
+    {
+      path: "package.json",
+      content: `${JSON.stringify(defaultPackageManifest("vite"), null, 2)}\n`,
+    },
+    {
+      path: "index.html",
+      content: `<!doctype html>\n<html lang="en">\n  <head>\n    <meta charset="UTF-8" />\n    <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n    <title>Klawpen Workspace</title>\n  </head>\n  <body>\n    <div id="root"></div>\n    <script type="module" src="/src/main.tsx"></script>\n  </body>\n</html>\n`,
+    },
+    {
+      path: "tsconfig.json",
+      content: JSON.stringify(
+        {
+          compilerOptions: {
+            target: "ES2020",
+            useDefineForClassFields: true,
+            lib: ["DOM", "DOM.Iterable", "ES2020"],
+            allowJs: false,
+            skipLibCheck: true,
+            esModuleInterop: true,
+            allowSyntheticDefaultImports: true,
+            strict: true,
+            forceConsistentCasingInFileNames: true,
+            module: "ESNext",
+            moduleResolution: "Node",
+            resolveJsonModule: true,
+            isolatedModules: true,
+            noEmit: true,
+            jsx: "react-jsx",
+            paths: {
+              "@/*": ["./src/*"],
+            },
+          },
+          include: ["src"],
+          references: [],
+        },
+        null,
+        2
+      ),
+    },
+    {
+      path: "vite.config.ts",
+      content: `import { defineConfig } from "vite";\nimport react from "@vitejs/plugin-react";\nimport tailwindcss from "@tailwindcss/vite";\n\nexport default defineConfig({\n  plugins: [react(), tailwindcss()],\n  server: {\n    host: "0.0.0.0",\n    port: 3000,\n  },\n});\n`,
+    },
+    {
+      path: "src/main.tsx",
+      content: `import React from "react";\nimport ReactDOM from "react-dom/client";\nimport App from "./App";\nimport "./styles.css";\n\nReactDOM.createRoot(document.getElementById("root")!).render(\n  <React.StrictMode>\n    <App />\n  </React.StrictMode>\n);\n`,
+    },
+    {
+      path: "src/App.tsx",
+      content: `export default function App() {\n  return (\n    <main className="min-h-screen overflow-hidden bg-[#f6f8fb] text-[#111827]">\n      <section className="relative flex min-h-screen items-center justify-center px-6 py-16">\n        <div className="absolute left-[-10%] top-[-10%] h-72 w-72 rounded-full bg-[#1689ff]/20 blur-3xl" />\n        <div className="absolute bottom-[-12%] right-[-8%] h-80 w-80 rounded-full bg-[#7cc7ff]/20 blur-3xl" />\n        <div className="relative w-full max-w-3xl rounded-[2rem] border border-white/80 bg-white/85 p-8 text-center shadow-[0_30px_90px_rgba(15,23,42,0.12)] backdrop-blur-xl sm:p-12">\n          <div className="mx-auto mb-7 flex h-16 w-16 items-center justify-center rounded-3xl bg-[#1689ff] text-xl font-black text-white shadow-[0_18px_40px_rgba(22,137,255,0.28)]">\n            K\n          </div>\n          <p className="mb-4 text-xs font-black uppercase tracking-[0.32em] text-[#1689ff]">\n            Klawpen Builder\n          </p>\n          <h1 className="text-4xl font-black tracking-[-0.06em] text-slate-950 sm:text-6xl">\n            Your project is being crafted\n          </h1>\n          <p className="mx-auto mt-5 max-w-xl text-base leading-8 text-slate-500">\n            Klawpen Core is preparing the first version of your website. The preview will refresh automatically as files are generated.\n          </p>\n        </div>\n      </section>\n    </main>\n  );\n}\n`,
+    },
+    {
+      path: "src/styles.css",
+      content: `@import "tailwindcss";\n\n:root {\n  background: #f6f8fb;\n  color: #111827;\n  font-family: Inter, ui-sans-serif, system-ui, sans-serif;\n}\n\n* {\n  box-sizing: border-box;\n}\n\nhtml,\nbody,\n#root {\n  min-height: 100%;\n}\n\nbody {\n  margin: 0;\n}\n`,
     },
   ];
 }
