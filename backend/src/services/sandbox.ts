@@ -1155,10 +1155,16 @@ server.listen(previewPort, "0.0.0.0", () => {
 }
 
 async function writePreviewProxyScript(session: ProjectSandboxSession) {
-  await session.sandbox.commands.run(`mkdir -p ${shellQuote(DEV_RUNTIME_DIR)}`, {
-    cwd: PROJECT_WORKSPACE_PATH,
-    timeoutMs: E2B_COMMAND_TIMEOUT_MS,
-  });
+  await session.sandbox.commands.run(
+    [
+      `mkdir -p ${shellQuote(DEV_RUNTIME_DIR)}`,
+      `if [ -d ${shellQuote(PREVIEW_PROXY_SCRIPT_PATH)} ]; then rm -rf ${shellQuote(PREVIEW_PROXY_SCRIPT_PATH)}; fi`,
+    ].join("; "),
+    {
+      cwd: PROJECT_WORKSPACE_PATH,
+      timeoutMs: E2B_COMMAND_TIMEOUT_MS,
+    }
+  );
 
   await session.sandbox.files.write(
     PREVIEW_PROXY_SCRIPT_PATH,
@@ -1194,13 +1200,15 @@ async function startPreviewProxy(session: ProjectSandboxSession) {
     [
       `mkdir -p ${shellQuote(DEV_RUNTIME_DIR)}`,
       `: > ${shellQuote(PREVIEW_PROXY_LOG_PATH)}`,
-      `KLAWPEN_PREVIEW_PORT=${shellQuote(String(PROJECT_PREVIEW_PORT))}`,
-      `KLAWPEN_APP_PORT=${shellQuote(String(PROJECT_APP_PORT))}`,
-      `KLAWPEN_DEV_LOG_PATH=${shellQuote(DEV_SERVER_LOG_PATH)}`,
-      `KLAWPEN_PROXY_LOG_PATH=${shellQuote(PREVIEW_PROXY_LOG_PATH)}`,
-      `nohup node ${shellQuote(PREVIEW_PROXY_SCRIPT_PATH)} >> ${shellQuote(PREVIEW_PROXY_LOG_PATH)} 2>&1 &`,
+      [
+        `KLAWPEN_PREVIEW_PORT=${shellQuote(String(PROJECT_PREVIEW_PORT))}`,
+        `KLAWPEN_APP_PORT=${shellQuote(String(PROJECT_APP_PORT))}`,
+        `KLAWPEN_DEV_LOG_PATH=${shellQuote(DEV_SERVER_LOG_PATH)}`,
+        `KLAWPEN_PROXY_LOG_PATH=${shellQuote(PREVIEW_PROXY_LOG_PATH)}`,
+        `nohup node ${shellQuote(PREVIEW_PROXY_SCRIPT_PATH)} >> ${shellQuote(PREVIEW_PROXY_LOG_PATH)} 2>&1 &`,
+      ].join(" "),
       `echo $! > ${shellQuote(PREVIEW_PROXY_PID_PATH)}`,
-    ].join(" "),
+    ].join("\n"),
     {
       cwd: PROJECT_WORKSPACE_PATH,
       timeoutMs: E2B_COMMAND_TIMEOUT_MS,
